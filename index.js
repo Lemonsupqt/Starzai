@@ -1373,30 +1373,74 @@ bot.on("message:text", async (ctx) => {
     if (!mentioned) return;
   }
 
+  // Check if user is replying to a specific message
+  const replyToMsg = ctx.message?.reply_to_message;
+  let replyContext = "";
+  if (replyToMsg && replyToMsg.text) {
+    // User is replying to a specific message - include that context
+    const replyFrom = replyToMsg.from?.is_bot ? "AI" : "User";
+    replyContext = `[Replying to ${replyFrom}'s message: "${replyToMsg.text.slice(0, 200)}"]
+
+`;
+  }
+
+  const startTime = Date.now();
+  let statusMsg = null;
+
   try {
+    // Send initial processing status
+    statusMsg = await ctx.reply(`⏳ Processing with *${model}*...`, { parse_mode: "Markdown" });
+
+    // Keep typing indicator active
+    const typingInterval = setInterval(() => {
+      ctx.replyWithChatAction("typing").catch(() => {});
+    }, 4000);
     await ctx.replyWithChatAction("typing");
 
-    const systemPrompt =
-      "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+    const systemPrompt = replyContext
+      ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
+      : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+
+    const userTextWithContext = replyContext + text;
 
     const out = await llmChatReply({
       chatId: chat.id,
-      userText: text,
+      userText: userTextWithContext,
       systemPrompt,
       model,
     });
 
+    clearInterval(typingInterval);
+
     // Track usage
     trackUsage(u.id, "message");
 
-    await ctx.reply(out.slice(0, 3800));
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    // Delete status message and send response
+    try {
+      await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
+    } catch {}
+
+    // Add timing footer
+    const response = `${out.slice(0, 3700)}\n\n_⚡ ${elapsed}s • ${model}_`;
+    await ctx.reply(response, { parse_mode: "Markdown" });
   } catch (e) {
     console.error(e);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const isTimeout = e.message?.includes("timed out");
+    
+    // Delete status message
+    if (statusMsg) {
+      try {
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
+      } catch {}
+    }
+
     const errMsg = isTimeout 
-      ? `Model ${model} is slow right now. Try /model to switch, or try again.`
-      : "Error talking to the model. Try again in a moment.";
-    await ctx.reply(errMsg);
+      ? `⏱️ Model *${model}* timed out after ${elapsed}s. Try /model to switch, or try again.`
+      : `❌ Error after ${elapsed}s. Try again in a moment.`;
+    await ctx.reply(errMsg, { parse_mode: "Markdown" });
   }
 });
 
@@ -1413,7 +1457,18 @@ bot.on("message:photo", async (ctx) => {
 
   if (!getUserRecord(u.id)) registerUser(u);
 
+  const model = ensureChosenModelValid(u.id);
+  const startTime = Date.now();
+  let statusMsg = null;
+
   try {
+    // Send initial processing status for images
+    statusMsg = await ctx.reply(`🖼️ Analyzing image with *${model}*...`, { parse_mode: "Markdown" });
+
+    // Keep typing indicator active
+    const typingInterval = setInterval(() => {
+      ctx.replyWithChatAction("typing").catch(() => {});
+    }, 4000);
     await ctx.replyWithChatAction("typing");
 
     const caption = (ctx.message.caption || "").trim();
@@ -1423,9 +1478,6 @@ bot.on("message:photo", async (ctx) => {
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const b64 = await telegramFileToBase64(fileUrl);
 
-    // Use user's selected model for vision (all MegaLLM models support vision!)
-    const model = ensureChosenModelValid(u.id);
-
     const out = await llmVisionReply({
       chatId: chat.id,
       userText: caption || "What's in this image? Describe it clearly.",
@@ -1434,10 +1486,37 @@ bot.on("message:photo", async (ctx) => {
       model,
     });
 
-    await ctx.reply(out.slice(0, 3800));
+    clearInterval(typingInterval);
+
+    // Track usage
+    trackUsage(u.id, "message");
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    // Delete status message and send response
+    try {
+      await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
+    } catch {}
+
+    // Add timing footer
+    const response = `${out.slice(0, 3700)}\n\n_👁️ ${elapsed}s • ${model}_`;
+    await ctx.reply(response, { parse_mode: "Markdown" });
   } catch (e) {
     console.error("Vision error:", e.message);
-    await ctx.reply("❌ Couldn't process that image. Try again or switch models with /model.");
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    
+    // Delete status message
+    if (statusMsg) {
+      try {
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
+      } catch {}
+    }
+
+    const isTimeout = e.message?.includes("timed out");
+    const errMsg = isTimeout
+      ? `⏱️ Vision model *${model}* timed out after ${elapsed}s. Try /model to switch.`
+      : `❌ Couldn't process image after ${elapsed}s. Try again or /model to switch.`;
+    await ctx.reply(errMsg, { parse_mode: "Markdown" });
   }
 });
 
