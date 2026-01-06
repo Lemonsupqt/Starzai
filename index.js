@@ -1054,6 +1054,55 @@ function getSharedChatPageCount(session) {
   return Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
 }
 
+// =====================
+// SETTINGS MENU KEYBOARDS (for editable inline message)
+// =====================
+
+// Main settings menu - shows model categories
+function settingsMainKeyboard(userId) {
+  const kb = new InlineKeyboard();
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  
+  kb.text("🆓 Free Models", "setmenu:free").row();
+  
+  if (tier === "premium" || tier === "ultra") {
+    kb.text("⭐ Premium Models", "setmenu:premium").row();
+  }
+  
+  if (tier === "ultra") {
+    kb.text("💎 Ultra Models", "setmenu:ultra").row();
+  }
+  
+  kb.text("❌ Close", "setmenu:close");
+  
+  return kb;
+}
+
+// Category submenu - shows models in a category
+function settingsCategoryKeyboard(category, userId, currentModel) {
+  const kb = new InlineKeyboard();
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  
+  let models = [];
+  if (category === "free") models = FREE_MODELS;
+  else if (category === "premium" && (tier === "premium" || tier === "ultra")) models = PREMIUM_MODELS;
+  else if (category === "ultra" && tier === "ultra") models = ULTRA_MODELS;
+  
+  // Show models (max 8 per page for now)
+  models.slice(0, 8).forEach((m, i) => {
+    const mShort = m.split("/").pop();
+    const isSelected = m === currentModel;
+    const label = isSelected ? `✅ ${mShort}` : mShort;
+    kb.text(label, `setmodel:${m}`).row();
+  });
+  
+  kb.text("⬅️ Back", "setmenu:back");
+  
+  return kb;
+}
+
 function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
   const kb = new InlineKeyboard();
   
@@ -1837,6 +1886,107 @@ bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
 });
 
 // =====================
+// SETTINGS MENU CALLBACKS (Editable inline message menu)
+// =====================
+
+// Handle category selection (Free/Premium/Ultra)
+bot.callbackQuery(/^setmenu:(free|premium|ultra)$/, async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const category = ctx.callbackQuery.data.split(":")[1];
+  const currentModel = ensureChosenModelValid(userId);
+  const shortModel = currentModel.split("/").pop();
+  
+  await ctx.answerCallbackQuery();
+  
+  const categoryNames = { free: "🆓 Free", premium: "⭐ Premium", ultra: "💎 Ultra" };
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *${categoryNames[category]} Models*\n\nCurrent: \`${shortModel}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: settingsCategoryKeyboard(category, userId, currentModel)
+      }
+    );
+  } catch (e) {
+    console.error("Edit settings error:", e.message);
+  }
+});
+
+// Handle model selection
+bot.callbackQuery(/^setmodel:(.+)$/, async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const newModel = ctx.callbackQuery.data.slice(9); // Remove "setmodel:"
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  const allowed = allModelsForTier(tier);
+  
+  if (!allowed.includes(newModel)) {
+    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
+  }
+  
+  // Set the model
+  setUserModel(userId, newModel);
+  const inlineSess = getInlineSession(userId);
+  inlineSess.model = newModel;
+  
+  const shortModel = newModel.split("/").pop();
+  await ctx.answerCallbackQuery({ text: `✅ Model set to ${shortModel}` });
+  
+  // Show confirmation and go back to main menu
+  try {
+    await ctx.editMessageText(
+      `⚙️ *StarzAI Settings*\n\n✅ Model changed to: \`${shortModel}\`\n\nSelect a category:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: settingsMainKeyboard(userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit settings error:", e.message);
+  }
+});
+
+// Handle back button
+bot.callbackQuery(/^setmenu:back$/, async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const currentModel = ensureChosenModelValid(userId);
+  const shortModel = currentModel.split("/").pop();
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *StarzAI Settings*\n\nCurrent model: \`${shortModel}\`\n\nSelect a category:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: settingsMainKeyboard(userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit settings error:", e.message);
+  }
+});
+
+// Handle close button
+bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Settings closed" });
+  
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {
+    // Can't delete inline messages, just acknowledge
+    console.error("Delete settings error:", e.message);
+  }
+});
+
+// =====================
 // SHARED CHAT CALLBACKS (Multi-user inline chat)
 // Now uses switch_inline_query_current_chat - no DM needed!
 // =====================
@@ -2447,12 +2597,15 @@ bot.on("inline_query", async (ctx) => {
       },
       {
         type: "article",
-        id: `nav_settings_${sessionKey}`,
+        id: `settings_menu_${sessionKey}`,
         title: `⚙️ Settings (${shortModel})`,
-        description: "▶️ Tap button to change model",
+        description: "Tap to open model settings",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
-        input_message_content: { message_text: "_" },
-        reply_markup: new InlineKeyboard().switchInlineCurrent("⚙️ View Models", "s "),
+        input_message_content: { 
+          message_text: `⚙️ *StarzAI Settings*\n\nCurrent model: \`${shortModel}\`\n\nSelect a category:`,
+          parse_mode: "Markdown"
+        },
+        reply_markup: settingsMainKeyboard(userId),
       },
       {
         type: "article",
