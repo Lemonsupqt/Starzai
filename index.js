@@ -446,22 +446,49 @@ bot.command("model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const u = ensureUser(ctx.from.id, ctx.from);
-  const allowed = allModelsForTier(u.tier);
   const current = ensureChosenModelValid(ctx.from.id);
 
-  if (!allowed.length) return ctx.reply("No models configured.");
+  // Build buttons grouped by tier
+  const rows = [];
+  
+  // FREE tier models (available to all)
+  if (FREE_MODELS.length) {
+    rows.push([{ text: "── 🆓 FREE ──", callback_data: "noop" }]);
+    for (const m of FREE_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
+  
+  // PREMIUM tier models (premium + ultra)
+  if (PREMIUM_MODELS.length && (u.tier === "premium" || u.tier === "ultra")) {
+    rows.push([{ text: "── ⭐ PREMIUM ──", callback_data: "noop" }]);
+    for (const m of PREMIUM_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
+  
+  // ULTRA tier models (ultra only)
+  if (ULTRA_MODELS.length && u.tier === "ultra") {
+    rows.push([{ text: "── 💎 ULTRA ──", callback_data: "noop" }]);
+    for (const m of ULTRA_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
 
-  // Build buttons
-  const rows = allowed.map((m) => [
-    {
-      text: `${m === current ? "✅ " : ""}${m}`,
-      callback_data: `setmodel:${m}`,
-    },
-  ]);
+  if (!rows.length) return ctx.reply("No models configured.");
 
   await ctx.reply(
-    `Plan: ${u.tier}\nCurrent model: ${current}\nChoose:`,
-    { reply_markup: { inline_keyboard: rows } }
+    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: *${current}*\n\nChoose a model:`,
+    { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
   );
 });
 
@@ -562,6 +589,12 @@ bot.command("deny", async (ctx) => {
 // =====================
 // CALLBACKS: HELP / REGISTER / MODEL
 // =====================
+
+// Noop callback for tier headers (non-clickable)
+bot.callbackQuery("noop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
 bot.callbackQuery("help_features", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   await ctx.answerCallbackQuery();
@@ -594,25 +627,53 @@ bot.callbackQuery("open_model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const u = ensureUser(ctx.from.id, ctx.from);
-  const allowed = allModelsForTier(u.tier);
   const current = ensureChosenModelValid(ctx.from.id);
 
-  if (!allowed.length) {
+  // Build buttons grouped by tier
+  const rows = [];
+  
+  // FREE tier models (available to all)
+  if (FREE_MODELS.length) {
+    rows.push([{ text: "── 🆓 FREE ──", callback_data: "noop" }]);
+    for (const m of FREE_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
+  
+  // PREMIUM tier models (premium + ultra)
+  if (PREMIUM_MODELS.length && (u.tier === "premium" || u.tier === "ultra")) {
+    rows.push([{ text: "── ⭐ PREMIUM ──", callback_data: "noop" }]);
+    for (const m of PREMIUM_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
+  
+  // ULTRA tier models (ultra only)
+  if (ULTRA_MODELS.length && u.tier === "ultra") {
+    rows.push([{ text: "── 💎 ULTRA ──", callback_data: "noop" }]);
+    for (const m of ULTRA_MODELS) {
+      rows.push([{
+        text: `${m === current ? "✅ " : ""}${m}`,
+        callback_data: `setmodel:${m}`,
+      }]);
+    }
+  }
+
+  if (!rows.length) {
     await ctx.answerCallbackQuery({ text: "No models configured.", show_alert: true });
     return;
   }
 
-  const rows = allowed.map((m) => [
-    {
-      text: `${m === current ? "✅ " : ""}${m}`,
-      callback_data: `setmodel:${m}`,
-    },
-  ]);
-
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    `Plan: ${u.tier}\nCurrent model: ${current}\nChoose:`,
-    { reply_markup: { inline_keyboard: rows } }
+    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: *${current}*\n\nChoose a model:`,
+    { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
   );
 });
 
