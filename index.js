@@ -16,20 +16,31 @@ const PORT = Number(process.env.PORT || 3000);
 const RATE_LIMIT_PER_MINUTE = Number(process.env.RATE_LIMIT_PER_MINUTE || 12);
 
 // Model access rules (paste real MegaLLM model IDs here via Railway variables)
-const FREE_MODELS = (process.env.FREE_MODELS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+function parseCsvEnv(name, fallback = "") {
+  const raw = (process.env[name] ?? fallback).trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
-const PREMIUM_MODELS = (process.env.PREMIUM_MODELS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const FREE_MODELS = parseCsvEnv("FREE_MODELS");
+const PREMIUM_MODELS = parseCsvEnv("PREMIUM_MODELS");
+const ULTRA_MODELS = parseCsvEnv("ULTRA_MODELS"); // optional, can be empty
 
 const DEFAULT_FREE_MODEL =
-  process.env.DEFAULT_FREE_MODEL || FREE_MODELS[0] || "deepseek";
+  (process.env.DEFAULT_FREE_MODEL || FREE_MODELS[0] || "").trim();
 const DEFAULT_PREMIUM_MODEL =
-  process.env.DEFAULT_PREMIUM_MODEL || PREMIUM_MODELS[0] || DEFAULT_FREE_MODEL;
+  (process.env.DEFAULT_PREMIUM_MODEL || PREMIUM_MODELS[0] || DEFAULT_FREE_MODEL || "").trim();
+const DEFAULT_ULTRA_MODEL =
+  (process.env.DEFAULT_ULTRA_MODEL || ULTRA_MODELS[0] || DEFAULT_PREMIUM_MODEL || DEFAULT_FREE_MODEL || "").trim();
+
+function allModelsForTier(tier) {
+  if (tier === "ultra") return [...FREE_MODELS, ...PREMIUM_MODELS, ...ULTRA_MODELS];
+  if (tier === "premium") return [...FREE_MODELS, ...PREMIUM_MODELS];
+  return [...FREE_MODELS];
+}
 
 const MODEL_VISION = process.env.MODEL_VISION || ""; // optional
 
@@ -171,63 +182,59 @@ function getUserRecord(userId) {
   return usersDb.users[String(userId)] || null;
 }
 
+function ensureUser(userId, from = null) {
+  const id = String(userId);
+  if (!usersDb.users[id]) {
+    usersDb.users[id] = {
+      registeredAt: new Date().toISOString(),
+      username: from?.username || null,
+      firstName: from?.first_name || null,
+      role: "free",
+      tier: "free",
+      model: DEFAULT_FREE_MODEL,
+      allowedModels: [],
+    };
+    saveUsers();
+  } else {
+    // migration: if old users exist without tier
+    if (!usersDb.users[id].tier) {
+      usersDb.users[id].tier = usersDb.users[id].role || "free";
+    }
+    if (!usersDb.users[id].model) {
+      usersDb.users[id].model = DEFAULT_FREE_MODEL;
+    }
+    saveUsers();
+  }
+  return usersDb.users[id];
+}
+
 function registerUser(from) {
-  const key = String(from.id);
-  if (usersDb.users[key]) return usersDb.users[key];
-
-  usersDb.users[key] = {
-    registeredAt: new Date().toISOString(),
-    username: from.username || null,
-    firstName: from.first_name || null,
-    role: "free",
-    allowedModels: [],
-  };
-  saveUsers();
-  return usersDb.users[key];
-}
-
-function getAllowedModels(userId) {
-  const rec = getUserRecord(userId);
-  const free = FREE_MODELS.length ? FREE_MODELS : [DEFAULT_FREE_MODEL];
-
-  if (!rec) return free;
-
-  const base =
-    rec.role === "premium"
-      ? [...new Set([...free, ...PREMIUM_MODELS])]
-      : [...new Set([...free])];
-
-  const extra = Array.isArray(rec.allowedModels) ? rec.allowedModels : [];
-  return [...new Set([...base, ...extra])];
-}
-
-function getDefaultModelForUser(userId) {
-  const rec = getUserRecord(userId);
-  return rec?.role === "premium" ? DEFAULT_PREMIUM_MODEL : DEFAULT_FREE_MODEL;
-}
-
-function getUserModel(userId) {
-  return prefsDb.userModel[String(userId)] || getDefaultModelForUser(userId);
-}
-
-function setUserModel(userId, modelId) {
-  prefsDb.userModel[String(userId)] = modelId;
-  savePrefs();
-}
-
-function ensureModelAllowed(userId, modelId) {
-  return getAllowedModels(userId).includes(modelId);
+  return ensureUser(from.id, from);
 }
 
 function ensureChosenModelValid(userId) {
-  const chosen = getUserModel(userId);
-  const allowed = getAllowedModels(userId);
+  const u = ensureUser(userId);
+  const allowed = allModelsForTier(u.tier);
 
-  if (allowed.includes(chosen)) return chosen;
+  // If no allowed models, fail safe
+  if (!allowed.length) {
+    u.model = "";
+    saveUsers();
+    return "";
+  }
 
-  const fallback = getDefaultModelForUser(userId);
-  setUserModel(userId, fallback);
-  return fallback;
+  if (!allowed.includes(u.model)) {
+    // Choose tier-appropriate default
+    if (u.tier === "ultra") u.model = DEFAULT_ULTRA_MODEL;
+    else if (u.tier === "premium") u.model = DEFAULT_PREMIUM_MODEL;
+    else u.model = DEFAULT_FREE_MODEL;
+
+    // final fallback
+    if (!allowed.includes(u.model)) u.model = allowed[0];
+
+    saveUsers();
+  }
+  return u.model;
 }
 
 // =====================
@@ -385,34 +392,30 @@ bot.command("reset", async (ctx) => {
 bot.command("model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
-  const u = ctx.from;
-  if (!u?.id) return ctx.reply("Couldn’t read your user id.");
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const allowed = allModelsForTier(u.tier);
+  const current = ensureChosenModelValid(ctx.from.id);
 
-  // Auto-register on first use (nice UX)
-  if (!getUserRecord(u.id)) registerUser(u);
+  if (!allowed.length) return ctx.reply("No models configured.");
 
-  const current = ensureChosenModelValid(u.id);
-  const allowed = getAllowedModels(u.id);
-  const role = getUserRecord(u.id)?.role || "free";
+  // Build buttons
+  const rows = allowed.map((m) => [
+    {
+      text: `${m === current ? "✅ " : ""}${m}`,
+      callback_data: `setmodel:${m}`,
+    },
+  ]);
 
-  const kb = new InlineKeyboard();
-  for (const m of allowed) {
-    kb.text(m === current ? `✅ ${m}` : m, `set_model:${m}`).row();
-  }
-
-  await ctx.reply(`Plan: *${role}*\nCurrent model: *${current}*\nChoose:`, {
-    parse_mode: "Markdown",
-    reply_markup: kb,
-  });
+  await ctx.reply(
+    `Plan: ${u.tier}\nCurrent model: ${current}\nChoose:`,
+    { reply_markup: { inline_keyboard: rows } }
+  );
 });
 
 bot.command("whoami", async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  const rec = getUserRecord(u.id);
-  await ctx.reply(
-    `Your userId: ${u.id}\nRole: ${rec?.role || "free"}\nCurrent model: ${ensureChosenModelValid(u.id)}`
-  );
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const model = ensureChosenModelValid(ctx.from.id);
+  await ctx.reply(`Your userId: ${ctx.from.id}\nTier: ${u.tier}\nCurrent model: ${model}`);
 });
 
 // =====================
@@ -424,21 +427,20 @@ bot.command("grant", async (ctx) => {
 
   const parts = ctx.message.text.trim().split(/\s+/);
   const userId = parts[1];
-  const role = parts[2];
+  const tier = (parts[2] || "").toLowerCase();
 
-  if (!userId || !role) return ctx.reply("Usage: /grant <userId> premium");
+  if (!userId || !["free", "premium", "ultra"].includes(tier)) {
+    return ctx.reply("Usage: /grant <userId> <free|premium|ultra>");
+  }
 
-  usersDb.users[userId] ||= {
-    registeredAt: new Date().toISOString(),
-    role: "free",
-    allowedModels: [],
-    username: null,
-    firstName: null,
-  };
-  usersDb.users[userId].role = role.toLowerCase() === "premium" ? "premium" : "free";
+  const u = ensureUser(userId);
+  u.tier = tier;
+  u.role = tier; // keep role in sync for backwards compatibility
+  // set default model for tier
+  ensureChosenModelValid(userId);
   saveUsers();
 
-  await ctx.reply(`✅ Set ${userId} role to ${usersDb.users[userId].role}`);
+  await ctx.reply(`Granted ${tier} to ${userId}.`);
 });
 
 bot.command("revoke", async (ctx) => {
@@ -449,12 +451,13 @@ bot.command("revoke", async (ctx) => {
   const userId = parts[1];
   if (!userId) return ctx.reply("Usage: /revoke <userId>");
 
-  if (!usersDb.users[userId]) return ctx.reply("User not found.");
-  usersDb.users[userId].role = "free";
-  usersDb.users[userId].allowedModels = [];
+  const u = ensureUser(userId);
+  u.tier = "free";
+  u.role = "free";
+  ensureChosenModelValid(userId);
   saveUsers();
 
-  await ctx.reply(`✅ Revoked premium + cleared extra models for ${userId}`);
+  await ctx.reply(`Reverted ${userId} to free.`);
 });
 
 bot.command("allow", async (ctx) => {
@@ -527,60 +530,56 @@ bot.callbackQuery("do_register", async (ctx) => {
 bot.callbackQuery("open_model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
-  const u = ctx.from;
-  if (!u?.id) return ctx.answerCallbackQuery({ text: "No user id.", show_alert: true });
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const allowed = allModelsForTier(u.tier);
+  const current = ensureChosenModelValid(ctx.from.id);
 
-  if (!getUserRecord(u.id)) registerUser(u);
-
-  const current = ensureChosenModelValid(u.id);
-  const allowed = getAllowedModels(u.id);
-  const role = getUserRecord(u.id)?.role || "free";
-
-  const kb = new InlineKeyboard();
-  for (const m of allowed) {
-    kb.text(m === current ? `✅ ${m}` : m, `set_model:${m}`).row();
+  if (!allowed.length) {
+    await ctx.answerCallbackQuery({ text: "No models configured.", show_alert: true });
+    return;
   }
+
+  const rows = allowed.map((m) => [
+    {
+      text: `${m === current ? "✅ " : ""}${m}`,
+      callback_data: `setmodel:${m}`,
+    },
+  ]);
 
   await ctx.answerCallbackQuery();
-  await ctx.reply(`Plan: *${role}*\nCurrent model: *${current}*\nChoose:`, {
-    parse_mode: "Markdown",
-    reply_markup: kb,
-  });
+  await ctx.reply(
+    `Plan: ${u.tier}\nCurrent model: ${current}\nChoose:`,
+    { reply_markup: { inline_keyboard: rows } }
+  );
 });
 
-bot.callbackQuery(/^set_model:/, async (ctx) => {
+bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
-  const u = ctx.from;
-  const model = ctx.callbackQuery.data.split(":").slice(1).join(":");
-  if (!u?.id) return ctx.answerCallbackQuery({ text: "No user id.", show_alert: true });
+  const model = ctx.match[2];
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const allowed = allModelsForTier(u.tier);
 
-  if (!getUserRecord(u.id)) registerUser(u);
-
-  if (!ensureModelAllowed(u.id, model)) {
-    return ctx.answerCallbackQuery({ text: "Not available on your plan.", show_alert: true });
+  if (!allowed.includes(model)) {
+    await ctx.answerCallbackQuery({ text: "Not allowed for your plan.", show_alert: true });
+    return;
   }
 
-  setUserModel(u.id, model);
-  await ctx.answerCallbackQuery({ text: `Model set: ${model}` });
-
-  // refresh buttons
-  const current = ensureChosenModelValid(u.id);
-  const allowed = getAllowedModels(u.id);
-  const role = getUserRecord(u.id)?.role || "free";
-
-  const kb = new InlineKeyboard();
-  for (const m of allowed) {
-    kb.text(m === current ? `✅ ${m}` : m, `set_model:${m}`).row();
-  }
-
+  u.model = model;
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: `Switched to ${model}` });
+  
+  // Optional: refresh message
   try {
-    await ctx.editMessageText(`Plan: *${role}*\nCurrent model: *${current}*\nChoose:`, {
-      parse_mode: "Markdown",
-      reply_markup: kb,
+    await ctx.editMessageText(`Plan: ${u.tier}\nCurrent model: ${model}\nChoose:`, {
+      reply_markup: {
+        inline_keyboard: allowed.map((m) => [
+          { text: `${m === model ? "✅ " : ""}${m}`, callback_data: `setmodel:${m}` },
+        ]),
+      },
     });
   } catch {
-    await ctx.reply(`Model set: *${current}*`, { parse_mode: "Markdown", reply_markup: kb });
+    // Message unchanged or too old
   }
 });
 
@@ -612,7 +611,7 @@ bot.on("message:text", async (ctx) => {
     "You are StarzTechBot. Be helpful, practical, and concise. If the user asks for code, provide runnable code. If unclear, ask one short question.";
 
   try {
-    await ctx.chatAction("typing");
+    await ctx.replyWithChatAction("typing");
     const out = await llmChatReply({
       chatId: chat.id,
       userText: cleaned,
@@ -640,7 +639,7 @@ bot.on("message:photo", async (ctx) => {
   if (!getUserRecord(u.id)) registerUser(u);
 
   try {
-    await ctx.chatAction("typing");
+    await ctx.replyWithChatAction("typing");
 
     const caption = (ctx.message.caption || "").trim();
     const photos = ctx.message.photo;
