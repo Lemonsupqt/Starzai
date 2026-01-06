@@ -55,6 +55,10 @@ const OWNER_IDS = new Set(
 // Telegram channel for persistent storage (optional but recommended)
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || "";
 
+// Supabase for permanent persistent storage (recommended)
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
+
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 
@@ -94,10 +98,106 @@ function writeJson(file, obj) {
   fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8");
 }
 
-// Initialize with local fallback (will be overwritten by Telegram data on startup)
+// Initialize with local fallback (will be overwritten by Supabase/Telegram data on startup)
 let usersDb = readJson(USERS_FILE, { users: {} });
 let prefsDb = readJson(PREFS_FILE, { userModel: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
+
+// =====================
+// SUPABASE STORAGE (Primary - permanent persistence)
+// =====================
+async function supabaseGet(key) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/bot_data?key=eq.${key}&select=value`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.length > 0 ? data[0].value : null;
+  } catch (e) {
+    console.error(`Supabase GET ${key} error:`, e.message);
+    return null;
+  }
+}
+
+async function supabaseSet(key, value) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/bot_data`, {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+      },
+      body: JSON.stringify({
+        key,
+        value,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.error(`Supabase SET ${key} error:`, e.message);
+    return false;
+  }
+}
+
+async function loadFromSupabase() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.log("No Supabase configured, skipping.");
+    return false;
+  }
+  
+  console.log("Loading data from Supabase...");
+  
+  try {
+    const [users, prefs, sessions] = await Promise.all([
+      supabaseGet("users"),
+      supabaseGet("prefs"),
+      supabaseGet("inlineSessions"),
+    ]);
+    
+    if (users) {
+      usersDb = users;
+      console.log(`Loaded ${Object.keys(usersDb.users || {}).length} users from Supabase`);
+    }
+    if (prefs) {
+      prefsDb = prefs;
+      console.log(`Loaded prefs from Supabase`);
+    }
+    if (sessions) {
+      inlineSessionsDb = sessions;
+      console.log(`Loaded inline sessions from Supabase`);
+    }
+    
+    return true;
+  } catch (e) {
+    console.error("Failed to load from Supabase:", e.message);
+    return false;
+  }
+}
+
+async function saveToSupabase(dataType) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+  
+  let data;
+  if (dataType === "users") data = usersDb;
+  else if (dataType === "prefs") data = prefsDb;
+  else if (dataType === "inlineSessions") data = inlineSessionsDb;
+  else return false;
+  
+  const success = await supabaseSet(dataType, data);
+  if (success) {
+    console.log(`Saved ${dataType} to Supabase`);
+  }
+  return success;
+}
 
 // Track message IDs for each data type in the storage channel
 // Persist to file so we can delete old messages after restart
@@ -130,7 +230,17 @@ async function flushSaves() {
   pendingSaves.clear();
   
   for (const dataType of toSave) {
-    await saveToTelegram(dataType);
+    // Try Supabase first (permanent), then Telegram as backup
+    const supabaseOk = await saveToSupabase(dataType);
+    if (!supabaseOk) {
+      // Fall back to Telegram channel storage
+      await saveToTelegram(dataType);
+    } else {
+      // Also save locally as backup
+      if (dataType === "users") writeJson(USERS_FILE, usersDb);
+      if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
+      if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    }
   }
 }
 
@@ -2778,8 +2888,11 @@ http
   .listen(PORT, async () => {
     console.log("Listening on", PORT);
 
-    // Initialize Telegram storage
-    await loadFromTelegram();
+    // Initialize storage - try Supabase first (permanent), then Telegram as fallback
+    const supabaseLoaded = await loadFromSupabase();
+    if (!supabaseLoaded) {
+      await loadFromTelegram();
+    }
 
     if (PUBLIC_URL) {
       const url = `${PUBLIC_URL.replace(/\/$/, "")}/webhook`;
