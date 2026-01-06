@@ -18,9 +18,9 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 | 🧠 Explain | `e:` | Simple ELI5 explanations |
 | 🎭 Character | `as [char]:` | Roleplay as any character |
 | 📝 Summarize | `sum:` | Condense long text |
-| 💕 Partner | `p:` | Chat with your AI companion |
+| 🤝🏻 Partner | `p:` | Chat with your AI companion |
 
-### 💕 AI Partner
+### 🤝🏻 AI Partner
 Create your personalized AI companion with:
 - Custom name, personality, background, and speaking style
 - Persistent chat memory (20 messages)

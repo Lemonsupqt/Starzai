@@ -271,7 +271,7 @@ async function saveToTelegram(dataType) {
       label = "💬 INLINE_SESSIONS";
     } else if (dataType === "partners") {
       data = partnersDb;
-      label = "💕 PARTNERS_DATA";
+      label = "🤝🏻 PARTNERS_DATA";
     } else {
       return;
     }
@@ -1040,7 +1040,7 @@ function helpText() {
     "• `e:` — 🧠 Explain (ELI5)",
     "• `as [char]:` — 🎭 Character roleplay",
     "• `sum:` — 📝 Summarize text",
-    "• `p:` — 💕 Partner chat",
+    "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
     "• /status, /info, /grant, /revoke",
@@ -1336,7 +1336,7 @@ bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   await ctx.reply(
-    `⚡ *Welcome to StarzAI!*\n\n💬 *DM* - Chat directly with AI\n👥 *Groups* - Mention @starztechbot\n⌨️ *Inline* - Type @starztechbot anywhere\n\n🌟 *Features:*\n• Multiple AI modes (Quark, Blackhole, Code...)\n• 💕 AI Partner with persistent memory\n• 🎭 Character roleplay\n• 📊 Usage stats & history\n\n_Tap Features below to learn more!_`,
+    `⚡ *Welcome to StarzAI!*\n\n💬 *DM* - Chat directly with AI\n👥 *Groups* - Mention @starztechbot\n⌨️ *Inline* - Type @starztechbot anywhere\n\n🌟 *Features:*\n• Multiple AI modes (Quark, Blackhole, Code...)\n• 🤝🏻 AI Partner with persistent memory\n• 🎭 Character roleplay\n• 📊 Usage stats & history\n\n_Tap Features below to learn more!_`,
     { parse_mode: "Markdown", reply_markup: helpKeyboard() }
   );
 });
@@ -1499,7 +1499,7 @@ bot.command("partner", async (ctx) => {
   if (!subcommand) {
     if (!partner) {
       return ctx.reply(
-        `💕 *Create Your AI Partner*\n\nSet up a personalized AI companion!\n\n*Commands:*\n• \`/partner name [name]\` - Set name\n• \`/partner personality [traits]\` - Set personality\n• \`/partner background [story]\` - Set backstory\n• \`/partner style [how they talk]\` - Set speaking style\n• \`/partner chat\` - Start chatting\n• \`/partner stop\` - Stop partner mode\n• \`/partner clear\` - Delete partner\n\n_Example: \`/partner name Luna\`_`,
+        `🤝🏻 *Create Your AI Partner*\n\nSet up a personalized AI companion!\n\n*Commands:*\n• \`/partner name [name]\` - Set name\n• \`/partner personality [traits]\` - Set personality\n• \`/partner background [story]\` - Set backstory\n• \`/partner style [how they talk]\` - Set speaking style\n• \`/partner chat\` - Start chatting\n• \`/partner stop\` - Stop partner mode\n• \`/partner clear\` - Delete partner\n\n_Example: \`/partner name Luna\`_`,
         { parse_mode: "Markdown" }
       );
     }
@@ -1508,7 +1508,7 @@ bot.command("partner", async (ctx) => {
     const status = partner.active ? "🟢 Active" : "⚪ Inactive";
     const chatCount = partner.chatHistory?.length || 0;
     
-    let info = `💕 *Your Partner: ${partner.name || "Unnamed"}*\n\n`;
+    let info = `🤝🏻 *Your Partner: ${partner.name || "Unnamed"}*\n\n`;
     info += `${status}\n\n`;
     if (partner.personality) info += `🎭 *Personality:* ${partner.personality}\n`;
     if (partner.background) info += `📖 *Background:* ${partner.background}\n`;
@@ -1552,7 +1552,7 @@ bot.command("partner", async (ctx) => {
         return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]` to start.", { parse_mode: "Markdown" });
       }
       setPartner(u.id, { active: true });
-      return ctx.reply(`💕 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\n\n_Use \`/partner stop\` to end the conversation._`, { parse_mode: "Markdown" });
+      return ctx.reply(`🤝🏻 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\n\n_Use \`/partner stop\` to end the conversation._`, { parse_mode: "Markdown" });
       
     case "stop":
       if (partner) {
@@ -1589,7 +1589,7 @@ bot.callbackQuery("partner_chat", async (ctx) => {
   
   setPartner(u.id, { active: true });
   await ctx.editMessageText(
-    `💕 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages!\n\n_Use \`/partner stop\` to end._`,
+    `🤝🏻 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages!\n\n_Use \`/partner stop\` to end._`,
     { parse_mode: "Markdown" }
   );
 });
@@ -1986,7 +1986,7 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• 🎭 *Character* (`as:`) - Roleplay as any character",
     "• 📝 *Summarize* (`sum:`) - Condense long text",
     "",
-    "💕 *AI Partner*",
+    "🤝🏻 *AI Partner*",
     "Create your personalized AI companion!",
     "• Custom name, personality, background",
     "• Persistent chat memory",
@@ -3033,7 +3033,7 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    const partnerLabel = isPartnerMode ? `💕 *${partner.name}*\n\n` : "";
+    const partnerLabel = isPartnerMode ? `🤝🏻 *${partner.name}*\n\n` : "";
     const response = `${partnerLabel}${out.slice(0, 3600)}\n\n_⚡ ${elapsed}s • ${model}_`;
     if (statusMsg) {
       try {
@@ -3183,7 +3183,7 @@ bot.on("inline_query", async (ctx) => {
         description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n💕 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n🤝🏻 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
@@ -3196,7 +3196,7 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("🎭 Character", "as ")
           .switchInlineCurrent("📝 Summarize", "sum: ")
           .row()
-          .switchInlineCurrent("💕 Partner", "p: "),
+          .switchInlineCurrent("🤝🏻 Partner", "p: "),
       },
       {
         type: "article",
@@ -3680,11 +3680,11 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `p_nopartner_${sessionKey}`,
-          title: "💕 No Partner Set Up",
+          title: "🤝🏻 No Partner Set Up",
           description: "Use /partner in bot DM to create your AI companion",
           thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
           input_message_content: { 
-            message_text: "💕 *Set up your Partner first!*\n\nGo to @starztechbot DM and use:\n\n\`/partner name [name]\`\n\`/partner personality [traits]\`\n\`/partner background [story]\`\n\`/partner style [how they talk]\`\n\nThen come back and chat!",
+            message_text: "🤝🏻 *Set up your Partner first!*\n\nGo to @starztechbot DM and use:\n\n\`/partner name [name]\`\n\`/partner personality [traits]\`\n\`/partner background [story]\`\n\`/partner style [how they talk]\`\n\nThen come back and chat!",
             parse_mode: "Markdown"
           },
         },
@@ -3696,7 +3696,7 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `p_typing_${sessionKey}`,
-          title: `💕 Chat with ${partner.name}`,
+          title: `🤝🏻 Chat with ${partner.name}`,
           description: "Type your message to your partner",
           thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
           input_message_content: { message_text: "_" },
@@ -3751,11 +3751,11 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `partner_${pKey}`,
-          title: `💕 ${partner.name}: ${message.slice(0, 30)}`,
+          title: `🤝🏻 ${partner.name}: ${message.slice(0, 30)}`,
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
           input_message_content: {
-            message_text: `💕 *${partner.name}*\n\n${answer}\n\n_via StarzAI • Partner • ${shortModel}_`,
+            message_text: `🤝🏻 *${partner.name}*\n\n${answer}\n\n_via StarzAI • Partner • ${shortModel}_`,
             parse_mode: "Markdown",
           },
           reply_markup: new InlineKeyboard()
