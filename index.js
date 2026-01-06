@@ -253,14 +253,34 @@ function pushHistory(chatId, role, content) {
 // =====================
 // LLM HELPERS
 // =====================
+
+// Timeout wrapper for API calls
+function withTimeout(promise, ms, errorMsg = "Request timed out") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), ms)
+    ),
+  ]);
+}
+
 async function llmText({ model, messages, temperature = 0.7, max_tokens = 350 }) {
-  const resp = await openai.chat.completions.create({
-    model,
-    messages,
-    temperature,
-    max_tokens,
-  });
-  return (resp?.choices?.[0]?.message?.content || "").trim();
+  try {
+    const resp = await withTimeout(
+      openai.chat.completions.create({
+        model,
+        messages,
+        temperature,
+        max_tokens,
+      }),
+      55000, // 55 second timeout (less than webhook timeout)
+      `Model ${model} timed out`
+    );
+    return (resp?.choices?.[0]?.message?.content || "").trim();
+  } catch (err) {
+    console.error("LLM Error:", err.message);
+    throw err;
+  }
 }
 
 async function llmChatReply({ chatId, userText, systemPrompt, model }) {
@@ -620,8 +640,11 @@ bot.on("message:text", async (ctx) => {
     });
     await ctx.reply(out.slice(0, 3800));
   } catch (e) {
-    console.error(e);
-    await ctx.reply("Error talking to the model. Try again in a moment.");
+    console.error("Chat error:", e.message);
+    const errMsg = e.message?.includes("timed out")
+      ? `Model ${model} is slow right now. Try /model to switch, or try again.`
+      : "Error talking to the model. Try again in a moment.";
+    await ctx.reply(errMsg);
   }
 });
 
@@ -734,15 +757,20 @@ bot.on("inline_query", async (ctx) => {
 
     await ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
   } catch (e) {
-    console.error(e);
+    console.error("Inline error:", e.message);
+    const isTimeout = e.message?.includes("timed out");
     await ctx.answerInlineQuery(
       [
         {
           type: "article",
           id: "err_inline",
-          title: "Bot error",
-          input_message_content: { message_text: "Model call failed. Try again in a moment." },
-          description: "Temporary issue",
+          title: isTimeout ? "Model slow" : "Bot error",
+          input_message_content: { 
+            message_text: isTimeout 
+              ? `Model ${model} is slow. Try again or use /model to switch.`
+              : "Model call failed. Try again in a moment." 
+          },
+          description: isTimeout ? "Try a different model" : "Temporary issue",
         },
       ],
       { cache_time: 1, is_personal: true }
@@ -851,7 +879,9 @@ setInterval(() => {
 // =====================
 // WEBHOOK SERVER (Railway)
 // =====================
-const callback = webhookCallback(bot, "http");
+const callback = webhookCallback(bot, "http", {
+  timeoutMilliseconds: 60000, // 60 second timeout for webhook responses
+});
 
 http
   .createServer(async (req, res) => {
