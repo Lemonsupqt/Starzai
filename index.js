@@ -538,6 +538,8 @@ function ensureUser(userId, from = null) {
         lastActive: new Date().toISOString(),
         lastModel: defaultModel,
       },
+      // Recent prompts history (max 10)
+      history: [],
     };
     saveUsers();
   } else {
@@ -590,6 +592,23 @@ function trackUsage(userId, type = "message", tokens = 0) {
   u.stats.totalTokensUsed += tokens;
   u.stats.lastActive = new Date().toISOString();
   u.stats.lastModel = u.model;
+  saveUsers();
+}
+
+// Add prompt to user's history (max 10 recent)
+function addToHistory(userId, prompt, mode = "default") {
+  const u = ensureUser(userId);
+  if (!u.history) u.history = [];
+  
+  // Add to beginning (most recent first)
+  u.history.unshift({
+    prompt: prompt.slice(0, 100),
+    mode,
+    timestamp: Date.now(),
+  });
+  
+  // Keep only last 10
+  if (u.history.length > 10) u.history = u.history.slice(0, 10);
   saveUsers();
 }
 
@@ -927,7 +946,9 @@ function inlineAnswerKeyboard(key) {
     .text("🔁 Regen", `inl_regen:${key}`)
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
-    .text("📈 Longer", `inl_long:${key}`);
+    .text("📈 Longer", `inl_long:${key}`)
+    .row()
+    .switchInline("📤 Share", ""); // Opens inline in another chat to share
 }
 
 // =====================
@@ -1299,6 +1320,63 @@ bot.command("persona", async (ctx) => {
   
   await ctx.reply(`✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`, { parse_mode: "Markdown" });
 });
+
+// /history - Show recent prompts and allow quick re-use
+bot.command("history", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = getUserRecord(u.id);
+  if (!user || !user.history || user.history.length === 0) {
+    return ctx.reply("📜 *No history yet!*\n\nYour recent inline queries will appear here.\n\n_Try using @starztechbot in any chat!_", { parse_mode: "Markdown" });
+  }
+  
+  const modeEmojis = {
+    quark: "⭐",
+    blackhole: "🕳️",
+    code: "💻",
+    explain: "🧠",
+    character: "🎭",
+    summarize: "📝",
+    default: "⚡",
+  };
+  
+  let historyText = "📜 *Recent Prompts*\n\n";
+  user.history.forEach((item, i) => {
+    const emoji = modeEmojis[item.mode] || "⚡";
+    const timeAgo = getTimeAgo(item.timestamp);
+    historyText += `${i + 1}. ${emoji} _${item.prompt}_\n   ⏰ ${timeAgo}\n\n`;
+  });
+  
+  historyText += "_Tap a button to re-use a prompt!_";
+  
+  // Create buttons for quick re-use (first 5)
+  const keyboard = new InlineKeyboard();
+  user.history.slice(0, 5).forEach((item, i) => {
+    const prefix = item.mode === "quark" ? "q: " : 
+                   item.mode === "blackhole" ? "b: " :
+                   item.mode === "code" ? "code: " :
+                   item.mode === "explain" ? "e: " :
+                   item.mode === "summarize" ? "sum: " : "";
+    keyboard.switchInlineCurrent(`${i + 1}. ${item.prompt.slice(0, 15)}...`, `${prefix}${item.prompt}`);
+    if (i % 2 === 1) keyboard.row();
+  });
+  
+  await ctx.reply(historyText, { parse_mode: "Markdown", reply_markup: keyboard });
+});
+
+// Helper for time ago
+function getTimeAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 // =====================
 // MODEL CATEGORY HELPERS
@@ -2869,6 +2947,9 @@ bot.on("inline_query", async (ctx) => {
       });
       setTimeout(() => inlineCache.delete(quarkKey), 30 * 60 * 1000);
       
+      // Track in history
+      addToHistory(userId, question, "quark");
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -2939,6 +3020,9 @@ bot.on("inline_query", async (ctx) => {
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(bhKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(userId, topic, "blackhole");
       
       return ctx.answerInlineQuery([
         {
@@ -3011,6 +3095,9 @@ bot.on("inline_query", async (ctx) => {
       });
       setTimeout(() => inlineCache.delete(codeKey), 30 * 60 * 1000);
       
+      // Track in history
+      addToHistory(userId, codeQ, "code");
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -3081,6 +3168,9 @@ bot.on("inline_query", async (ctx) => {
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(expKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(userId, concept, "explain");
       
       return ctx.answerInlineQuery([
         {
@@ -3156,6 +3246,9 @@ bot.on("inline_query", async (ctx) => {
       });
       setTimeout(() => inlineCache.delete(asKey), 30 * 60 * 1000);
       
+      // Track in history
+      addToHistory(userId, `as ${character}: ${question}`, "character");
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -3226,6 +3319,9 @@ bot.on("inline_query", async (ctx) => {
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(sumKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(userId, textToSum.slice(0, 50), "summarize");
       
       return ctx.answerInlineQuery([
         {
@@ -4182,6 +4278,9 @@ bot.on("inline_query", async (ctx) => {
     
     // Schedule cleanup
     setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
+    
+    // Track in history
+    addToHistory(userId, q, "default");
     
     await ctx.answerInlineQuery([
       {
