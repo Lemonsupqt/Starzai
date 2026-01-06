@@ -152,48 +152,25 @@ async function saveToTelegram(dataType) {
     }
     
     const jsonStr = JSON.stringify(data);
-    const messageText = `${label}\n\`\`\`json\n${jsonStr}\n\`\`\``;
     
-    // Telegram message limit is 4096 chars, use document for larger data
-    if (messageText.length > 4000) {
-      // Upload as document
-      const buffer = Buffer.from(jsonStr, "utf8");
-      const inputFile = new InputFile(buffer, `${dataType}.json`);
-      
-      if (storageMessageIds[dataType]) {
-        // Delete old message and send new one (can't edit documents)
-        try {
-          await bot.api.deleteMessage(STORAGE_CHANNEL_ID, storageMessageIds[dataType]);
-        } catch (e) {
-          // Ignore delete errors
-        }
-      }
-      
-      const msg = await bot.api.sendDocument(STORAGE_CHANNEL_ID, inputFile, {
-        caption: `${label} (${new Date().toISOString()})`,
-      });
-      storageMessageIds[dataType] = msg.message_id;
-    } else {
-      // Send/edit as text message
-      if (storageMessageIds[dataType]) {
-        try {
-          await bot.api.editMessageText(STORAGE_CHANNEL_ID, storageMessageIds[dataType], messageText, {
-            parse_mode: "Markdown",
-          });
-        } catch (e) {
-          // If edit fails, send new message
-          const msg = await bot.api.sendMessage(STORAGE_CHANNEL_ID, messageText, {
-            parse_mode: "Markdown",
-          });
-          storageMessageIds[dataType] = msg.message_id;
-        }
-      } else {
-        const msg = await bot.api.sendMessage(STORAGE_CHANNEL_ID, messageText, {
-          parse_mode: "Markdown",
-        });
-        storageMessageIds[dataType] = msg.message_id;
+    // Always use document upload - more reliable and no size/formatting issues
+    const buffer = Buffer.from(jsonStr, "utf8");
+    const inputFile = new InputFile(buffer, `${dataType}.json`);
+    
+    if (storageMessageIds[dataType]) {
+      // Delete old message and send new one (can't edit documents)
+      try {
+        await bot.api.deleteMessage(STORAGE_CHANNEL_ID, storageMessageIds[dataType]);
+      } catch (e) {
+        // Ignore delete errors
       }
     }
+    
+    const msg = await bot.api.sendDocument(STORAGE_CHANNEL_ID, inputFile, {
+      caption: `${label} | Updated: ${new Date().toISOString()}`,
+    });
+    storageMessageIds[dataType] = msg.message_id;
+    console.log(`Saved ${dataType} to Telegram (msg_id: ${msg.message_id})`);
     
     // Also save locally as backup
     if (dataType === "users") writeJson(USERS_FILE, usersDb);
@@ -215,27 +192,20 @@ async function loadFromTelegram() {
     return;
   }
   
-  console.log("Loading data from Telegram storage channel...");
+  console.log("Initializing Telegram storage channel...");
   
   try {
-    // Get recent messages from the channel (up to 100)
-    // We'll search for our data markers
-    const updates = await bot.api.getUpdates({ limit: 0 }); // Clear any pending updates first
-    
-    // Use getChat to verify channel access
-    await bot.api.getChat(STORAGE_CHANNEL_ID);
-    console.log("Storage channel access verified.");
-    
-    // Unfortunately, bots can't easily read channel history without being in a group
-    // We'll use a workaround: pin messages or use a specific approach
-    // For now, we'll rely on the local backup + Telegram for new saves
-    
-    console.log("Telegram storage initialized. Data will be saved to channel on changes.");
-    console.log("Tip: First run will use local data, subsequent saves go to Telegram.");
+    // Verify channel access by getting chat info
+    const chat = await bot.api.getChat(STORAGE_CHANNEL_ID);
+    console.log(`Storage channel verified: ${chat.title || chat.id}`);
+    console.log("Telegram storage ready. Data will be saved to channel on changes.");
+    console.log("Using local files as primary data source, Telegram as backup/sync.");
     
   } catch (e) {
     console.error("Failed to access storage channel:", e.message);
-    console.log("Make sure the bot is admin in the storage channel.");
+    console.log("Make sure:");
+    console.log("  1. STORAGE_CHANNEL_ID is correct (should be -100XXXXXXXXXX)");
+    console.log("  2. Bot is admin in the storage channel");
     console.log("Falling back to local storage only.");
   }
 }
