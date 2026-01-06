@@ -2555,16 +2555,18 @@ bot.on("message:text", async (ctx) => {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // Delete status message and send response
+    // Edit status message with response (cleaner than delete+send)
+    const response = `${out.slice(0, 3700)}\n\n_⚡ ${elapsed}s • ${model}_`;
     if (statusMsg) {
       try {
-        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
-      } catch {}
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
+      } catch (editErr) {
+        // Fallback to new message if edit fails
+        await ctx.reply(response, { parse_mode: "Markdown" });
+      }
+    } else {
+      await ctx.reply(response, { parse_mode: "Markdown" });
     }
-
-    // Add timing footer
-    const response = `${out.slice(0, 3700)}\n\n_⚡ ${elapsed}s • ${model}_`;
-    await ctx.reply(response, { parse_mode: "Markdown" });
   } catch (e) {
     console.error(e);
     responseSent = true;
@@ -2573,17 +2575,19 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const isTimeout = e.message?.includes("timed out");
     
-    // Delete status message
-    if (statusMsg) {
-      try {
-        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
-      } catch {}
-    }
-
+    // Edit status message with error (cleaner than delete+send)
     const errMsg = isTimeout 
       ? `⏱️ Model *${model}* timed out after ${elapsed}s. Try /model to switch, or try again.`
       : `❌ Error after ${elapsed}s. Try again in a moment.`;
-    await ctx.reply(errMsg, { parse_mode: "Markdown" });
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "Markdown" });
+      } catch {
+        await ctx.reply(errMsg, { parse_mode: "Markdown" });
+      }
+    } else {
+      await ctx.reply(errMsg, { parse_mode: "Markdown" });
+    }
   }
 });
 
@@ -2636,30 +2640,35 @@ bot.on("message:photo", async (ctx) => {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // Delete status message and send response
-    try {
-      await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
-    } catch {}
-
-    // Add timing footer
+    // Edit status message with response (cleaner than delete+send)
     const response = `${out.slice(0, 3700)}\n\n_👁️ ${elapsed}s • ${model}_`;
-    await ctx.reply(response, { parse_mode: "Markdown" });
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
+      } catch {
+        await ctx.reply(response, { parse_mode: "Markdown" });
+      }
+    } else {
+      await ctx.reply(response, { parse_mode: "Markdown" });
+    }
   } catch (e) {
     console.error("Vision error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    // Delete status message
-    if (statusMsg) {
-      try {
-        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
-      } catch {}
-    }
-
+    // Edit status message with error (cleaner than delete+send)
     const isTimeout = e.message?.includes("timed out");
     const errMsg = isTimeout
       ? `⏱️ Vision model *${model}* timed out after ${elapsed}s. Try /model to switch.`
       : `❌ Couldn't process image after ${elapsed}s. Try again or /model to switch.`;
-    await ctx.reply(errMsg, { parse_mode: "Markdown" });
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "Markdown" });
+      } catch {
+        await ctx.reply(errMsg, { parse_mode: "Markdown" });
+      }
+    } else {
+      await ctx.reply(errMsg, { parse_mode: "Markdown" });
+    }
   }
 });
 
@@ -2691,11 +2700,14 @@ bot.on("inline_query", async (ctx) => {
     const results = [
       {
         type: "article",
-        id: `hint_quick_${sessionKey}`,
+        id: `ask_ai_${sessionKey}`,
         title: "⚡ Ask AI",
-        description: "Type your question • Tap Reply to continue chat!",
+        description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
-        input_message_content: { message_text: `⚡ *StarzAI*\n\nJust type your question after @starztechbot\n\nExample: \`@starztechbot what is AI\`\n\n_Tap 💬 Reply on any answer to continue the conversation!_`, parse_mode: "Markdown" },
+        input_message_content: { 
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick, concise answers\n\`@starztechbot q: your question\`\n\n🕳️ *Blackhole* - Deep research & analysis\n\`@starztechbot b: your topic\`\n\n💻 *Code* - Programming help & snippets\n\`@starztechbot c: your code question\`\n\n🧠 *Explain* - Simple explanations (ELI5)\n\`@starztechbot e: concept to explain\`\n\n_Or just type your question directly!_`,
+          parse_mode: "Markdown"
+        },
       },
       {
         type: "article",
@@ -2719,10 +2731,294 @@ bot.on("inline_query", async (ctx) => {
   const shortModel = model.split("/").pop();
   
   // =====================
-  // SHORT PREFIX HANDLERS - r, t, s for quick access
+  // SHORT PREFIX HANDLERS - q, b, code, e, r, s for quick access
   // =====================
   
-  // "r " or "r:" - Research shortcut
+  // "q:" or "q " - Quark mode (quick, concise answers)
+  if (qLower.startsWith("q:") || qLower.startsWith("q ")) {
+    const question = q.slice(2).trim();
+    
+    if (!question) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `q_typing_${sessionKey}`,
+          title: "⭐ Quark - Quick Answer",
+          description: "Type your question for a fast, concise answer",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Give extremely concise answers. 1-2 sentences max. Be direct and to the point. No fluff." },
+          { role: "user", content: question },
+        ],
+        temperature: 0.5,
+        max_tokens: 100,
+        timeout: 8000,
+        retries: 0,
+      });
+      
+      const answer = (out || "No answer").slice(0, 500);
+      const quarkKey = makeId(6);
+      
+      inlineCache.set(quarkKey, {
+        prompt: question,
+        answer,
+        userId: String(userId),
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(quarkKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `quark_${quarkKey}`,
+          title: `⭐ ${question.slice(0, 40)}`,
+          description: answer.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+          input_message_content: {
+            message_text: `⭐ *${question}*\n\n${answer}\n\n_via StarzAI • Quark • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(quarkKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `q_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "b:" or "b " - Blackhole mode (deep research & analysis)
+  if (qLower.startsWith("b:") || qLower.startsWith("b ")) {
+    const topic = q.slice(2).trim();
+    
+    if (!topic) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `b_typing_${sessionKey}`,
+          title: "🕳️ Blackhole - Deep Research",
+          description: "Type your topic for in-depth analysis",
+          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use bullet points for clarity when appropriate." },
+          { role: "user", content: `Provide deep analysis on: ${topic}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+        timeout: 15000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No results").slice(0, 3000);
+      const bhKey = makeId(6);
+      
+      inlineCache.set(bhKey, {
+        prompt: topic,
+        answer,
+        userId: String(userId),
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(bhKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `blackhole_${bhKey}`,
+          title: `🕳️ ${topic.slice(0, 40)}`,
+          description: answer.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+          input_message_content: {
+            message_text: `🕳️ *Blackhole Analysis: ${topic}*\n\n${answer}\n\n_via StarzAI • Blackhole • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(bhKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `b_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try a simpler topic",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "code:" - Code mode (programming help)
+  if (qLower.startsWith("code:") || qLower.startsWith("code ")) {
+    const codeQ = q.slice(5).trim();
+    
+    if (!codeQ) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `code_typing_${sessionKey}`,
+          title: "💻 Code - Programming Help",
+          description: "Type your coding question",
+          thumbnail_url: "https://img.icons8.com/fluency/96/code.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are an expert programmer. Provide clear, working code with brief explanations. Use proper code formatting with language tags. Focus on best practices and clean code." },
+          { role: "user", content: codeQ },
+        ],
+        temperature: 0.3,
+        max_tokens: 600,
+        timeout: 12000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No code").slice(0, 2500);
+      const codeKey = makeId(6);
+      
+      inlineCache.set(codeKey, {
+        prompt: codeQ,
+        answer,
+        userId: String(userId),
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(codeKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `code_${codeKey}`,
+          title: `💻 ${codeQ.slice(0, 40)}`,
+          description: answer.slice(0, 80).replace(/```/g, ""),
+          thumbnail_url: "https://img.icons8.com/fluency/96/code.png",
+          input_message_content: {
+            message_text: `💻 *Code: ${codeQ}*\n\n${answer}\n\n_via StarzAI • Code • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(codeKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `code_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "e:" or "e " - Explain mode (ELI5 style)
+  if (qLower.startsWith("e:") || qLower.startsWith("e ")) {
+    const concept = q.slice(2).trim();
+    
+    if (!concept) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `e_typing_${sessionKey}`,
+          title: "🧠 Explain - Simple Explanations",
+          description: "Type a concept to explain simply",
+          thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Explain concepts in the simplest possible way, like explaining to a 5-year-old (ELI5). Use analogies, simple words, and relatable examples. Avoid jargon. Make it fun and easy to understand." },
+          { role: "user", content: `Explain simply: ${concept}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 400,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No explanation").slice(0, 1500);
+      const expKey = makeId(6);
+      
+      inlineCache.set(expKey, {
+        prompt: concept,
+        answer,
+        userId: String(userId),
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(expKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `explain_${expKey}`,
+          title: `🧠 ${concept.slice(0, 40)}`,
+          description: answer.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
+          input_message_content: {
+            message_text: `🧠 *Explain: ${concept}*\n\n${answer}\n\n_via StarzAI • Explain • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(expKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `e_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "r " or "r:" - Research shortcut (legacy, now same as Blackhole)
   if (qLower.startsWith("r ") || qLower.startsWith("r:")) {
     const topic = q.slice(2).trim();
     
