@@ -1028,7 +1028,7 @@ function formatSharedChatDisplay(session, page = -1) {
   display += `\n━━━━━━━━━━━━━━━\n\n`;
   
   if (history.length === 0) {
-    display += `_No messages yet._\n_Anyone can tap 💬 Ask to start!_`;
+    display += `_No messages yet._\n_Reply to this message to chat!_`;
   } else {
     // Get messages for this page
     const startIdx = (page - 1) * MESSAGES_PER_PAGE;
@@ -1121,11 +1121,7 @@ function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
     kb.row();
   }
   
-  // Main action - Ask AI via callback (will DM user for input)
-  kb.text("💬 Ask AI", `schat_ask:${chatKey}`);
-  kb.row();
-  
-  // Secondary actions
+  // Simple actions - users just reply to the message to chat!
   kb.text("🔄 Refresh", `schat_refresh:${chatKey}`)
     .text("🗑️ Clear", `schat_clear:${chatKey}`);
   
@@ -2270,6 +2266,116 @@ bot.on("message:text", async (ctx) => {
   // Auto-register
   if (!getUserRecord(u.id)) registerUser(u);
   
+  // Check if this is a reply to a Yap message (via @starztechbot)
+  const replyTo = ctx.message?.reply_to_message;
+  if (replyTo && replyTo.via_bot?.username === "starztechbot") {
+    // This is a reply to a Yap! Find the session by checking the message content
+    const yapText = replyTo.text || "";
+    
+    // Look for a Yap session that matches this chat
+    // We need to find the chatKey from the inline message
+    // For now, search all sessions for one with matching inlineMessageId or recent activity
+    let foundChatKey = null;
+    let foundSession = null;
+    
+    for (const [chatKey, session] of sharedChats.entries()) {
+      // Check if this session was recently active (within 1 hour)
+      const lastActivity = session.history?.length > 0 
+        ? session.history[session.history.length - 1].timestamp 
+        : session.createdAt;
+      
+      if (Date.now() - lastActivity < 60 * 60 * 1000) {
+        // Check if the message looks like a Yap
+        if (yapText.includes("StarzAI Yap")) {
+          foundChatKey = chatKey;
+          foundSession = session;
+          break;
+        }
+      }
+    }
+    
+    if (foundSession && foundSession.inlineMessageId) {
+      const userName = u.first_name || "User";
+      
+      // Add user message to session
+      addSharedChatMessage(foundChatKey, userName, text);
+      addSharedChatParticipant(foundChatKey, userName);
+      
+      // Delete the reply message to keep chat clean (optional)
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {
+        // Can't delete in some chats, that's ok
+      }
+      
+      // Update Yap with "thinking..."
+      const totalPages = getSharedChatPageCount(foundSession);
+      try {
+        await bot.api.editMessageTextInline(
+          foundSession.inlineMessageId,
+          formatSharedChatDisplay(foundSession, -1) + "\n\n_🤖 AI is thinking..._",
+          { 
+            parse_mode: "Markdown",
+            reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
+          }
+        );
+      } catch (e) {
+        console.error("Failed to update Yap:", e.message);
+      }
+      
+      // Get AI response
+      try {
+        const yapModel = foundSession.model || ensureChosenModelValid(u.id);
+        const messages = [
+          { role: "system", content: "You are StarzAI in a chat. Be friendly, helpful, and concise." },
+          ...foundSession.history.slice(-10).map(m => ({
+            role: m.role,
+            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
+          }))
+        ];
+        
+        const aiResponse = await llmText({
+          model: yapModel,
+          messages,
+          temperature: 0.7,
+          max_tokens: 500,
+        });
+        
+        // Add AI response to session
+        addSharedChatMessage(foundChatKey, "AI", aiResponse, "assistant");
+        
+        // Update Yap with response
+        const updatedSession = getSharedChat(foundChatKey);
+        const newTotalPages = getSharedChatPageCount(updatedSession);
+        
+        await bot.api.editMessageTextInline(
+          foundSession.inlineMessageId,
+          formatSharedChatDisplay(updatedSession, -1),
+          { 
+            parse_mode: "Markdown",
+            reply_markup: sharedChatKeyboard(foundChatKey, -1, newTotalPages)
+          }
+        );
+        
+      } catch (e) {
+        console.error("Yap AI error:", e.message);
+        // Show error in Yap
+        try {
+          await bot.api.editMessageTextInline(
+            foundSession.inlineMessageId,
+            formatSharedChatDisplay(foundSession, -1) + "\n\n_⚠️ AI response failed_",
+            { 
+              parse_mode: "Markdown",
+              reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
+            }
+          );
+        } catch {}
+      }
+      
+      return; // Don't process as regular message
+    }
+  }
+  
   // Check if user has pending shared chat input
   const pendingInput = pendingSharedInput.get(String(u.id));
   if (pendingInput && chat.type === "private") {
@@ -2577,29 +2683,20 @@ bot.on("inline_query", async (ctx) => {
       {
         type: "article",
         id: `yap_start_${chatKey}`,
-        title: "👥 Yap (Group Chat)",
-        description: "Start a shared AI chat anyone can join",
-        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        title: "💬 Yap",
+        description: "Chat with AI together • Just reply to talk!",
+        thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${shortModel}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${shortModel}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Reply to this message to chat!_\n\n━━━━━━━━━━━━━━━`,
           parse_mode: "Markdown",
         },
         reply_markup: sharedChatKeyboard(chatKey),
       },
       {
         type: "article",
-        id: `nav_research_${sessionKey}`,
-        title: "🔍 Research",
-        description: "▶️ Tap button to enter topic",
-        thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
-        input_message_content: { message_text: "_" },
-        reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Enter Research Topic", "r "),
-      },
-      {
-        type: "article",
         id: `settings_menu_${sessionKey}`,
-        title: `⚙️ Settings (${shortModel})`,
-        description: "Tap to open model settings",
+        title: `⚙️ Settings`,
+        description: `Model: ${shortModel} • Tap to change`,
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
         input_message_content: { 
           message_text: `⚙️ *StarzAI Settings*\n\nCurrent model: \`${shortModel}\`\n\nSelect a category:`,
@@ -2611,7 +2708,7 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `hint_quick_${sessionKey}`,
         title: "⚡ Quick Answer",
-        description: "Just type your question directly!",
+        description: "Just type your question!",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { message_text: `⚡ *Quick Answer*\n\nJust type any question to get a fast answer!\n\nExample: \`what is photosynthesis\``, parse_mode: "Markdown" },
       },
@@ -2858,7 +2955,7 @@ bot.on("inline_query", async (ctx) => {
         description: "Anyone in this chat can talk to AI together!",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Reply to this message to chat!_\n\n━━━━━━━━━━━━━━━`,
           parse_mode: "Markdown",
         },
         reply_markup: sharedChatKeyboard(chatKey),
@@ -2866,8 +2963,58 @@ bot.on("inline_query", async (ctx) => {
     ], { cache_time: 0, is_personal: true });
   }
   
-  // NOTE: yap:chatKey:message inline query was removed because it creates duplicate messages
-  // Instead, users tap "💬 Ask AI" button which DMs them for input, then edits the ORIGINAL message
+  // yap:chatKey: message - User is typing a message for the Yap
+  if (qLower.startsWith("yap:") && q.includes(": ")) {
+    const parts = q.split(": ");
+    const chatKeyPart = parts[0].split(":")[1]; // Get chatKey from "yap:chatKey"
+    const userMessage = parts.slice(1).join(": ").trim();
+    
+    const session = getSharedChat(chatKeyPart);
+    
+    if (!session) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `yap_expired_${sessionKey}`,
+          title: "⚠️ Session Expired",
+          description: "Start a new Yap session",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    if (!userMessage) {
+      // Show typing hint
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `yap_typing_${sessionKey}`,
+          title: "✍️ Type your message...",
+          description: "Your message will be added to the Yap",
+          thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // User has typed a message - show send button
+    const userName = ctx.from?.first_name || "User";
+    
+    return ctx.answerInlineQuery([
+      {
+        type: "article",
+        id: `yap_send_${chatKeyPart}_${makeId(4)}`,
+        title: `✉️ Send: ${userMessage.slice(0, 40)}${userMessage.length > 40 ? "..." : ""}`,
+        description: `Tap to send your message to the Yap`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+        input_message_content: { 
+          message_text: `💬 *${userName}:* ${userMessage}`,
+          parse_mode: "Markdown"
+        },
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
   
   // =====================
   // SETTINGS - All in popup, no messages sent!
@@ -3453,6 +3600,124 @@ bot.on("chosen_inline_result", async (ctx) => {
       setSharedChatInlineMessageId(chatKey, inlineMessageId);
       console.log(`Stored inlineMessageId for chatKey=${chatKey}: ${inlineMessageId}`);
     }
+    return;
+  }
+  
+  // Handle yap_send - user sent a message to the Yap
+  if (resultId.startsWith("yap_send_")) {
+    // Extract chatKey from "yap_send_CHATKEY_RANDOM"
+    const parts = resultId.split("_");
+    const chatKey = parts[2]; // yap_send_CHATKEY_xxxx
+    
+    const session = getSharedChat(chatKey);
+    if (!session) {
+      console.log(`Yap session not found for chatKey=${chatKey}`);
+      return;
+    }
+    
+    // Get the user's message from the inline query
+    const query = ctx.chosenInlineResult.query || "";
+    // Query format: "yap:chatKey: message"
+    const messageParts = query.split(": ");
+    const userMessage = messageParts.slice(1).join(": ").trim();
+    
+    if (!userMessage) {
+      console.log("No message found in query");
+      return;
+    }
+    
+    console.log(`Yap message from ${userName}: ${userMessage}`);
+    
+    // Add user message to session
+    addSharedChatMessage(chatKey, userName, userMessage);
+    
+    // Add user as participant
+    addSharedChatParticipant(chatKey, userName);
+    
+    // Get the inline message ID for the original Yap
+    const yapInlineMessageId = session.inlineMessageId;
+    
+    if (!yapInlineMessageId) {
+      console.log("No inlineMessageId stored for Yap");
+      return;
+    }
+    
+    // Update the Yap message to show "Thinking..."
+    try {
+      const totalPages = getSharedChatPageCount(session);
+      await bot.api.editMessageTextInline(
+        yapInlineMessageId,
+        formatSharedChatDisplay(session, -1) + "\n\n_🤖 AI is thinking..._",
+        { 
+          parse_mode: "Markdown",
+          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
+        }
+      );
+    } catch (e) {
+      console.error("Failed to update Yap with thinking:", e.message);
+    }
+    
+    // Get AI response
+    try {
+      const model = session.model || "openrouter/quasar-alpha";
+      
+      // Build conversation history for context
+      const messages = [
+        { role: "system", content: "You are a helpful AI assistant in a group chat. Keep responses concise and friendly. Multiple users may be chatting with you." },
+      ];
+      
+      // Add recent history (last 10 messages)
+      const recentHistory = (session.history || []).slice(-10);
+      for (const msg of recentHistory) {
+        if (msg.role === "user") {
+          messages.push({ role: "user", content: `${msg.userName}: ${msg.content}` });
+        } else {
+          messages.push({ role: "assistant", content: msg.content });
+        }
+      }
+      
+      const aiResponse = await llmText({
+        model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 500,
+      });
+      
+      // Add AI response to session
+      addSharedChatMessage(chatKey, "AI", aiResponse, "assistant");
+      
+      // Update the Yap message with the response
+      const updatedSession = getSharedChat(chatKey);
+      const totalPages = getSharedChatPageCount(updatedSession);
+      
+      await bot.api.editMessageTextInline(
+        yapInlineMessageId,
+        formatSharedChatDisplay(updatedSession, -1),
+        { 
+          parse_mode: "Markdown",
+          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
+        }
+      );
+      
+      console.log(`Yap updated with AI response for chatKey=${chatKey}`);
+      
+    } catch (e) {
+      console.error("Failed to get AI response for Yap:", e.message);
+      
+      // Update Yap to show error
+      try {
+        const totalPages = getSharedChatPageCount(session);
+        await bot.api.editMessageTextInline(
+          yapInlineMessageId,
+          formatSharedChatDisplay(session, -1) + "\n\n_⚠️ AI response failed_",
+          { 
+            parse_mode: "Markdown",
+            reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
+          }
+        );
+      } catch {}
+    }
+    
     return;
   }
   
