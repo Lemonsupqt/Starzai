@@ -3566,77 +3566,37 @@ bot.on("inline_query", async (ctx) => {
   }
 
   // Regular query - quick one-shot answer
-  // First, immediately show a "loading" option so user sees something
-  const loadingKey = makeId(6);
+  // Send immediately with "Thinking..." - AI response will update via chosen_inline_result
+  const quickKey = makeId(6);
+  const quickShortModel = model.split("/").pop();
   
-  // Use Promise.race to either get the answer or timeout gracefully
-  const getAnswer = async () => {
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
-          { role: "user", content: q },
-        ],
-        temperature: 0.7,
-        max_tokens: 240,
-        timeout: 10000, // 10s timeout for inline
-        retries: 0, // No retries for inline - need to be fast
-      });
-      return { success: true, answer: (out || "(no output)").slice(0, 3500) };
-    } catch (e) {
-      console.error("Inline LLM error:", e.message);
-      return { success: false, error: e.message };
-    }
-  };
+  // Store pending query info so chosen_inline_result can process it
+  inlineCache.set(`quick_${quickKey}`, {
+    prompt: q,
+    userId: String(userId),
+    model,
+    timestamp: Date.now(),
+  });
   
-  const result = await getAnswer();
+  // Schedule cleanup
+  setTimeout(() => inlineCache.delete(`quick_${quickKey}`), 5 * 60 * 1000);
   
-  if (result.success) {
-    const answer = result.answer;
-    const key = makeId(6);
-    inlineCache.set(key, {
-      prompt: q,
-      answer,
-      model,
-      createdAt: nowMs(),
-      userId: String(userId),
-    });
-
-    const results = [
-      {
-        type: "article",
-        id: key,
-        title: `⚡ ${q.slice(0, 40)}`,
-        description: answer.slice(0, 90),
-        input_message_content: { message_text: `❓ *${q}*\n\n${answer}`, parse_mode: "Markdown" },
-        reply_markup: inlineAnswerKeyboard(key),
+  // Return immediately - no waiting for AI!
+  await ctx.answerInlineQuery([
+    {
+      type: "article",
+      id: `quick_${quickKey}`,
+      title: `⚡ ${q.slice(0, 40)}`,
+      description: "Tap to send - AI will respond!",
+      thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+      input_message_content: {
+        message_text: `❓ *${q}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${quickShortModel}_`,
+        parse_mode: "Markdown",
       },
-    ];
-
-    trackUsage(userId, "inline");
-    await ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
-  } else {
-    const isTimeout = result.error?.includes("timed out");
-    const shortModel = model.split("/").pop();
-    await ctx.answerInlineQuery(
-      [
-        {
-          type: "article",
-          id: "err_inline",
-          title: isTimeout ? `⏱️ ${shortModel} is slow` : "⚠️ Error",
-          description: isTimeout ? "Try gpt-4o-mini for faster results" : "Try again",
-          input_message_content: { 
-            message_text: isTimeout 
-              ? `⏱️ Model \`${shortModel}\` is slow.\n\nTry using \`gpt-4o-mini\` for faster inline answers!\n\nUse /model in DM to switch.`
-              : "⚠️ Request failed. Try again!",
-            parse_mode: "Markdown"
-          },
-        },
-      ],
-      { cache_time: 1, is_personal: true }
-    );
-  }
+    },
+  ], { cache_time: 0, is_personal: true });
+  
+  trackUsage(userId, "inline");
 });
 
 // =====================
@@ -3868,6 +3828,81 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Clean up pending
     inlineCache.delete(`pending_${replyKey}`);
+    return;
+  }
+  
+  // Handle quick answer - user sent a quick question
+  if (resultId.startsWith("quick_")) {
+    const quickKey = resultId.replace("quick_", "");
+    const pending = inlineCache.get(`quick_${quickKey}`);
+    
+    if (!pending) {
+      console.log(`Pending quick answer not found for key=${quickKey}`);
+      return;
+    }
+    
+    const { prompt, model } = pending;
+    const quickShortModel = model.split("/").pop();
+    
+    console.log(`Processing quick answer: ${prompt}`);
+    
+    // Get AI response
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.7,
+        max_tokens: 240,
+      });
+      
+      const answer = (out || "I couldn't generate a response.").slice(0, 2000);
+      const newKey = makeId(6);
+      
+      // Store for Reply/Regen/Shorter/Longer buttons
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      
+      // Schedule cleanup
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      // Update the inline message with the AI response
+      if (inlineMessageId) {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `❓ *${prompt}*\n\n${answer}\n\n_via StarzAI • ${quickShortModel}_`,
+          { 
+            parse_mode: "Markdown",
+            reply_markup: inlineAnswerKeyboard(newKey)
+          }
+        );
+        console.log(`Quick answer updated with AI response`);
+      }
+      
+    } catch (e) {
+      console.error("Failed to get AI response for quick answer:", e.message);
+      
+      // Update message to show error
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `❓ *${prompt}*\n\n⚠️ _Error getting response. Try again!_\n\n_via StarzAI_`,
+            { parse_mode: "Markdown" }
+          );
+        } catch {}
+      }
+    }
+    
+    // Clean up pending
+    inlineCache.delete(`quick_${quickKey}`);
     return;
   }
   
