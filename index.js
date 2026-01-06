@@ -210,6 +210,14 @@ function ensureUser(userId, from = null) {
       tier: defaultTier,
       model: defaultModel,
       allowedModels: [],
+      // Usage stats
+      stats: {
+        totalMessages: 0,
+        totalInlineQueries: 0,
+        totalTokensUsed: 0,
+        lastActive: new Date().toISOString(),
+        lastModel: defaultModel,
+      },
     };
     saveUsers();
   } else {
@@ -226,9 +234,43 @@ function ensureUser(userId, from = null) {
     if (!usersDb.users[id].model) {
       usersDb.users[id].model = DEFAULT_FREE_MODEL;
     }
+    // migration: add stats if missing
+    if (!usersDb.users[id].stats) {
+      usersDb.users[id].stats = {
+        totalMessages: 0,
+        totalInlineQueries: 0,
+        totalTokensUsed: 0,
+        lastActive: usersDb.users[id].registeredAt || new Date().toISOString(),
+        lastModel: usersDb.users[id].model,
+      };
+    }
+    // Update username/firstName if provided
+    if (from?.username) usersDb.users[id].username = from.username;
+    if (from?.first_name) usersDb.users[id].firstName = from.first_name;
     saveUsers();
   }
   return usersDb.users[id];
+}
+
+// Track user activity
+function trackUsage(userId, type = "message", tokens = 0) {
+  const u = ensureUser(userId);
+  if (!u.stats) {
+    u.stats = {
+      totalMessages: 0,
+      totalInlineQueries: 0,
+      totalTokensUsed: 0,
+      lastActive: new Date().toISOString(),
+      lastModel: u.model,
+    };
+  }
+  
+  if (type === "message") u.stats.totalMessages++;
+  if (type === "inline") u.stats.totalInlineQueries++;
+  u.stats.totalTokensUsed += tokens;
+  u.stats.lastActive = new Date().toISOString();
+  u.stats.lastModel = u.model;
+  saveUsers();
 }
 
 function registerUser(from) {
@@ -452,6 +494,8 @@ function helpText() {
     "Type @starztechbot in any chat for interactive AI!",
     "",
     "🔧 *Owner commands*",
+    "• /status — Bot status & stats",
+    "• /info <userId> — User details",
     "• /grant <userId> <free|premium|ultra>",
     "• /revoke <userId>",
     "• /allow <userId> <modelId>",
@@ -641,12 +685,141 @@ bot.command("model", async (ctx) => {
 bot.command("whoami", async (ctx) => {
   const u = ensureUser(ctx.from.id, ctx.from);
   const model = ensureChosenModelValid(ctx.from.id);
-  await ctx.reply(`Your userId: ${ctx.from.id}\nTier: ${u.tier}\nCurrent model: ${model}`);
+  const stats = u.stats || {};
+  
+  const lines = [
+    `👤 *Your Profile*`,
+    ``,
+    `🆔 User ID: \`${ctx.from.id}\``,
+    `📛 Username: ${u.username ? "@" + u.username : "_not set_"}`,
+    `👋 Name: ${u.firstName || "_not set_"}`,
+    ``,
+    `🎫 *Tier:* ${u.tier.toUpperCase()}`,
+    `🤖 *Model:* \`${model}\``,
+    ``,
+    `📊 *Usage Stats*`,
+    `• Messages: ${stats.totalMessages || 0}`,
+    `• Inline queries: ${stats.totalInlineQueries || 0}`,
+    `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "_unknown_"}`,
+    ``,
+    `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
+  ];
+  
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 });
 
 // =====================
 // OWNER COMMANDS
 // =====================
+
+// Bot status command
+bot.command("status", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  
+  const totalUsers = Object.keys(usersDb.users).length;
+  const usersByTier = { free: 0, premium: 0, ultra: 0 };
+  let totalMessages = 0;
+  let totalInline = 0;
+  let activeToday = 0;
+  let activeWeek = 0;
+  
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const weekMs = 7 * dayMs;
+  
+  for (const [id, user] of Object.entries(usersDb.users)) {
+    usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
+    if (user.stats) {
+      totalMessages += user.stats.totalMessages || 0;
+      totalInline += user.stats.totalInlineQueries || 0;
+      
+      const lastActive = new Date(user.stats.lastActive).getTime();
+      if (now - lastActive < dayMs) activeToday++;
+      if (now - lastActive < weekMs) activeWeek++;
+    }
+  }
+  
+  const inlineSessions = Object.keys(inlineSessionsDb.sessions).length;
+  const uptime = process.uptime();
+  const uptimeStr = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
+  
+  const lines = [
+    `📊 *Bot Status*`,
+    ``,
+    `⏱ *Uptime:* ${uptimeStr}`,
+    `🖥 *Memory:* ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
+    ``,
+    `👥 *Users*`,
+    `• Total: ${totalUsers}`,
+    `• Free: ${usersByTier.free}`,
+    `• Premium: ${usersByTier.premium}`,
+    `• Ultra: ${usersByTier.ultra}`,
+    ``,
+    `📈 *Activity*`,
+    `• Active today: ${activeToday}`,
+    `• Active this week: ${activeWeek}`,
+    `• Total messages: ${totalMessages}`,
+    `• Total inline queries: ${totalInline}`,
+    ``,
+    `💬 *Sessions*`,
+    `• Inline chat sessions: ${inlineSessions}`,
+    `• Active DM chats: ${chatHistory.size}`,
+    `• Inline cache entries: ${inlineCache.size}`,
+    ``,
+    `⚙️ *Config*`,
+    `• Free models: ${FREE_MODELS.length}`,
+    `• Premium models: ${PREMIUM_MODELS.length}`,
+    `• Ultra models: ${ULTRA_MODELS.length}`,
+    `• Rate limit: ${RATE_LIMIT_PER_MINUTE}/min`,
+  ];
+  
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// User info command
+bot.command("info", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /info <userId>");
+  
+  const [targetId] = args;
+  const user = getUserRecord(targetId);
+  
+  if (!user) {
+    return ctx.reply(`❌ User ${targetId} not found.`);
+  }
+  
+  const stats = user.stats || {};
+  const inlineSession = inlineSessionsDb.sessions[targetId];
+  
+  const lines = [
+    `👤 *User Info*`,
+    ``,
+    `🆔 ID: \`${targetId}\``,
+    `📛 Username: ${user.username ? "@" + user.username : "_not set_"}`,
+    `👋 Name: ${user.firstName || "_not set_"}`,
+    ``,
+    `🎫 *Tier:* ${user.tier?.toUpperCase() || "FREE"}`,
+    `🤖 *Current Model:* \`${user.model || "_default_"}\``,
+    ``,
+    `📊 *Usage Stats*`,
+    `• Total messages: ${stats.totalMessages || 0}`,
+    `• Inline queries: ${stats.totalInlineQueries || 0}`,
+    `• Last model used: ${stats.lastModel || "_unknown_"}`,
+    `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "_unknown_"}`,
+    ``,
+    `💬 *Inline Session*`,
+    `• History length: ${inlineSession?.history?.length || 0} messages`,
+    `• Session model: ${inlineSession?.model || "_none_"}`,
+    ``,
+    `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "_unknown_"}`,
+    `🔑 Allowed models: ${user.allowedModels?.length ? user.allowedModels.join(", ") : "_none_"}`,
+  ];
+  
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
 bot.command("grant", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("Owner only.");
 
@@ -1054,6 +1227,9 @@ bot.on("message:text", async (ctx) => {
       model,
     });
 
+    // Track usage
+    trackUsage(u.id, "message");
+
     await ctx.reply(out.slice(0, 3800));
   } catch (e) {
     console.error(e);
@@ -1325,6 +1501,9 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrentChat("💬 Continue chat...", "chat:"),
       },
     ];
+
+    // Track inline usage
+    trackUsage(userId, "inline");
 
     await ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
   } catch (e) {
