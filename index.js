@@ -3176,7 +3176,8 @@ bot.on("message:text", async (ctx) => {
 
     // Edit status message with response (cleaner than delete+send)
     const partnerLabel = isPartnerMode ? `🤝🏻 *${partner.name}*\n\n` : "";
-    const response = `${partnerLabel}${out.slice(0, 3600)}\n\n_⚡ ${elapsed}s • ${model}_`;
+    const outputText = (out && out.trim()) ? out.slice(0, 3600) : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
+    const response = `${partnerLabel}${outputText}\n\n_⚡ ${elapsed}s • ${model}_`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
