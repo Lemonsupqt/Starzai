@@ -1981,10 +1981,18 @@ bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: "Settings closed" });
   
   try {
+    // Try to delete first (works for regular messages)
     await ctx.deleteMessage();
   } catch (e) {
-    // Can't delete inline messages, just acknowledge
-    console.error("Delete settings error:", e.message);
+    // Can't delete inline messages, edit to show closed state
+    try {
+      await ctx.editMessageText(
+        `⚙️ *Settings closed*\n\n_Use @starztechbot to open again_`,
+        { parse_mode: "Markdown" }
+      );
+    } catch {
+      // Message unchanged or other error
+    }
   }
 });
 
