@@ -2203,6 +2203,8 @@ bot.on("inline_query", async (ctx) => {
 
   const q = (ctx.inlineQuery.query || "").trim();
   const userId = ctx.from?.id;
+  
+  console.log(`Inline query from ${userId}: "${q}" (length: ${q.length})`);
 
   if (!userId) return;
 
@@ -2214,7 +2216,8 @@ bot.on("inline_query", async (ctx) => {
   const sessionKey = makeId(6);
 
   // Empty query - show main menu with all modes
-  if (!q) {
+  if (!q || q.length === 0) {
+    console.log("Showing main menu (empty query)");
     const chatKey = makeId(8);
     const userName = ctx.from?.first_name || "User";
     
