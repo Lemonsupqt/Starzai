@@ -389,6 +389,8 @@ function helpKeyboard() {
     .text("Register", "do_register")
     .text("Model", "open_model")
     .row()
+    .text("Who am I", "do_whoami")
+    .row()
     .switchInline("Try inline", "yap explain black holes like I'm 12");
 }
 
@@ -576,6 +578,16 @@ bot.callbackQuery("do_register", async (ctx) => {
 
   await ctx.answerCallbackQuery({ text: "Registered ✅" });
   await ctx.reply("✅ Registered! Use /model to choose models.", { reply_markup: helpKeyboard() });
+});
+
+bot.callbackQuery("do_whoami", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const model = ensureChosenModelValid(ctx.from.id);
+  
+  await ctx.answerCallbackQuery();
+  await ctx.reply(`Your userId: ${ctx.from.id}\nTier: ${u.tier}\nCurrent model: ${model}`);
 });
 
 bot.callbackQuery("open_model", async (ctx) => {
