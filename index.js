@@ -488,6 +488,42 @@ function withTimeout(promise, ms, errorMsg = "Request timed out") {
   ]);
 }
 
+// Special vision function with much longer timeouts (images take longer to process)
+async function llmTextVision({ model, messages, temperature = 0.7, max_tokens = 1000, retries = 2 }) {
+  const timeouts = [60000, 90000, 120000]; // Vision timeouts: 60s, 90s, 120s
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const timeout = timeouts[Math.min(attempt, timeouts.length - 1)];
+    
+    try {
+      console.log(`Vision LLM attempt ${attempt + 1}/${retries + 1} with ${timeout/1000}s timeout`);
+      const resp = await withTimeout(
+        openai.chat.completions.create({
+          model,
+          messages,
+          temperature,
+          max_tokens,
+        }),
+        timeout,
+        `Vision model ${model} timed out (attempt ${attempt + 1})`
+      );
+      return (resp?.choices?.[0]?.message?.content || "").trim();
+    } catch (err) {
+      console.error(`Vision LLM Error (attempt ${attempt + 1}):`, err.message);
+      
+      if (attempt === retries) {
+        throw err;
+      }
+      
+      if (!err.message?.includes("timed out")) {
+        throw err;
+      }
+      
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+
 async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2 }) {
   const timeouts = [25000, 35000, 50000]; // Progressive timeouts: 25s, 35s, 50s
   
@@ -574,7 +610,8 @@ async function llmVisionReply({ chatId, userText, imageBase64, mime, model }) {
     },
   ];
 
-  const out = await llmText({ model, messages, temperature: 0.6, max_tokens: 400 });
+  // Vision requests need longer timeouts and more tokens
+  const out = await llmTextVision({ model, messages, temperature: 0.6, max_tokens: 1000 });
   pushHistory(chatId, "user", userText);
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
