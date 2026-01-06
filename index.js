@@ -2961,10 +2961,11 @@ bot.on("inline_query", async (ctx) => {
   }
   
   // c:key: message - Continue conversation (Reply button)
-  if (qLower.startsWith("c:") && q.includes(": ")) {
-    const parts = q.split(": ");
-    const cacheKey = parts[0].split(":")[1]; // Get key from "c:key"
-    const userMessage = parts.slice(1).join(": ").trim();
+  // Match c:XXXXXX: or c:XXXXXX (with or without trailing colon/space)
+  const cMatch = q.match(/^c:([a-zA-Z0-9]+):?\s*(.*)$/i);
+  if (cMatch) {
+    const cacheKey = cMatch[1];
+    const userMessage = (cMatch[2] || "").trim();
     
     const cached = inlineCache.get(cacheKey);
     
