@@ -821,7 +821,7 @@ bot.command("info", async (ctx) => {
 });
 
 bot.command("grant", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("Owner only.");
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
   if (args.length < 2) return ctx.reply("Usage: /grant <userId> <free|premium|ultra>");
@@ -829,15 +829,26 @@ bot.command("grant", async (ctx) => {
   const [targetId, tierArg] = args;
   const tier = tierArg.toLowerCase();
   if (!["free", "premium", "ultra"].includes(tier)) {
-    return ctx.reply("Tier must be free, premium, or ultra.");
+    return ctx.reply("⚠️ Tier must be free, premium, or ultra.");
   }
 
   const rec = ensureUser(targetId);
+  const currentTier = rec.tier || "free";
+  
+  // Check if user already has this tier
+  if (currentTier === tier) {
+    const tierEmoji = tier === "ultra" ? "💎" : tier === "premium" ? "⭐" : "🆓";
+    return ctx.reply(`${tierEmoji} User ${targetId} is already ${tier.toUpperCase()}.`);
+  }
+  
+  const oldTier = currentTier;
   rec.tier = tier;
   rec.role = tier;
   saveUsers();
 
-  await ctx.reply(`User ${targetId} is now ${tier}.`);
+  const tierEmoji = tier === "ultra" ? "💎" : tier === "premium" ? "⭐" : "🆓";
+  const arrow = ["free", "premium", "ultra"].indexOf(tier) > ["free", "premium", "ultra"].indexOf(oldTier) ? "⬆️" : "⬇️";
+  await ctx.reply(`${arrow} User ${targetId}: ${oldTier.toUpperCase()} → ${tierEmoji} ${tier.toUpperCase()}`);
 });
 
 bot.command("revoke", async (ctx) => {
