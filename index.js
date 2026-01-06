@@ -829,21 +829,38 @@ function inlineModelSelectKeyboard(sessionKey, userId) {
 // =====================
 // SHARED CHAT UI (Multi-user inline chat)
 // =====================
-function formatSharedChatDisplay(session) {
+const MESSAGES_PER_PAGE = 6;
+
+function formatSharedChatDisplay(session, page = -1) {
   const history = session.history || [];
   const model = session.model || "gpt-4o-mini";
   const participantCount = session.participants?.size || 1;
   
-  let display = `🤖 *StarzAI Group Chat*\n`;
-  display += `👥 ${participantCount} participant${participantCount > 1 ? "s" : ""} • 📊 \`${model.split("/").pop()}\`\n`;
-  display += `━━━━━━━━━━━━━━━\n\n`;
+  // Calculate total pages
+  const totalPages = Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
+  
+  // -1 means last page (default)
+  if (page === -1 || page > totalPages) page = totalPages;
+  if (page < 1) page = 1;
+  
+  let display = `🤖 *StarzAI Yap*\n`;
+  display += `👥 ${participantCount} participant${participantCount > 1 ? "s" : ""} • 📊 \`${model.split("/").pop()}\``;
+  
+  // Show page indicator if multiple pages
+  if (totalPages > 1) {
+    display += ` • 📄 ${page}/${totalPages}`;
+  }
+  display += `\n━━━━━━━━━━━━━━━\n\n`;
   
   if (history.length === 0) {
     display += `_No messages yet._\n_Anyone can tap 💬 Ask to start!_`;
   } else {
-    // Show last 6 messages
-    const recentHistory = history.slice(-6);
-    for (const msg of recentHistory) {
+    // Get messages for this page
+    const startIdx = (page - 1) * MESSAGES_PER_PAGE;
+    const endIdx = startIdx + MESSAGES_PER_PAGE;
+    const pageHistory = history.slice(startIdx, endIdx);
+    
+    for (const msg of pageHistory) {
       if (msg.role === "user") {
         const name = msg.userName || "User";
         display += `👤 *${name}:* ${msg.content.slice(0, 150)}${msg.content.length > 150 ? "..." : ""}\n\n`;
@@ -857,11 +874,30 @@ function formatSharedChatDisplay(session) {
   return display.slice(0, 3800);
 }
 
-function sharedChatKeyboard(chatKey) {
+function getSharedChatPageCount(session) {
+  const history = session?.history || [];
+  return Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
+}
+
+function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
   const kb = new InlineKeyboard();
   
-  // Main action - type message directly in this chat using switch_inline_query_current_chat
-  // This opens the inline query with a prefix, user types their message, and it gets processed
+  // -1 means last page
+  if (page === -1) page = totalPages;
+  
+  // Page navigation (only if multiple pages)
+  if (totalPages > 1) {
+    if (page > 1) {
+      kb.text("◀️ Prev", `schat_page:${chatKey}:${page - 1}`);
+    }
+    kb.text(`📄 ${page}/${totalPages}`, `schat_noop`);
+    if (page < totalPages) {
+      kb.text("Next ▶️", `schat_page:${chatKey}:${page + 1}`);
+    }
+    kb.row();
+  }
+  
+  // Main action - type message directly in this chat
   kb.switchInlineCurrentChat("💬 Ask AI", `yap:${chatKey}:`);
   kb.row();
   
@@ -1630,7 +1666,41 @@ bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
 // Now uses switch_inline_query_current_chat - no DM needed!
 // =====================
 
-// Refresh shared chat display
+// Page navigation
+bot.callbackQuery(/^schat_page:(.+):(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const parts = ctx.callbackQuery.data.split(":");
+  const chatKey = parts[1];
+  const page = parseInt(parts[2], 10);
+  
+  const session = getSharedChat(chatKey);
+  if (!session) {
+    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
+  }
+  
+  const totalPages = getSharedChatPageCount(session);
+  await ctx.answerCallbackQuery({ text: `Page ${page}/${totalPages}` });
+  
+  try {
+    await ctx.editMessageText(
+      formatSharedChatDisplay(session, page),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: sharedChatKeyboard(chatKey, page, totalPages)
+      }
+    );
+  } catch {
+    // Message unchanged
+  }
+});
+
+// Noop for page indicator button
+bot.callbackQuery(/^schat_noop$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
+// Refresh shared chat display (shows last page)
 bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -1641,14 +1711,15 @@ bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
     return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
   }
   
+  const totalPages = getSharedChatPageCount(session);
   await ctx.answerCallbackQuery({ text: "Refreshed! 🔄" });
   
   try {
     await ctx.editMessageText(
-      formatSharedChatDisplay(session),
+      formatSharedChatDisplay(session, -1), // -1 = last page
       { 
         parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey)
+        reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
       }
     );
   } catch {
@@ -1671,10 +1742,10 @@ bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
   
   try {
     await ctx.editMessageText(
-      formatSharedChatDisplay(session),
+      formatSharedChatDisplay(session, 1),
       { 
         parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey)
+        reply_markup: sharedChatKeyboard(chatKey, 1, 1)
       }
     );
   } catch {
@@ -2174,6 +2245,7 @@ bot.on("inline_query", async (ctx) => {
         
         // Get updated session
         const updatedSession = getSharedChat(chatKey);
+        const totalPages = getSharedChatPageCount(updatedSession);
         
         return ctx.answerInlineQuery([
           {
@@ -2182,10 +2254,10 @@ bot.on("inline_query", async (ctx) => {
             title: `💬 ${userMessage.slice(0, 30)}...`,
             description: aiResponse.slice(0, 80),
             input_message_content: {
-              message_text: formatSharedChatDisplay(updatedSession),
+              message_text: formatSharedChatDisplay(updatedSession, -1), // Show last page
               parse_mode: "Markdown",
             },
-            reply_markup: sharedChatKeyboard(chatKey),
+            reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
           },
         ], { cache_time: 0, is_personal: true });
       } catch (e) {
