@@ -2501,21 +2501,21 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Get research answer
+    // Get research answer - must be fast for inline queries (Telegram has ~10s timeout)
     try {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are a research assistant. Provide detailed, well-structured, informative answers. Be thorough but clear." },
-          { role: "user", content: `Research and explain: ${topic}` },
+          { role: "system", content: "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct." },
+          { role: "user", content: `Briefly explain: ${topic}` },
         ],
         temperature: 0.7,
-        max_tokens: 800,
-        timeout: 15000,
-        retries: 1,
+        max_tokens: 400,
+        timeout: 8000,  // Must be fast for inline
+        retries: 0,  // No retries for inline - need speed
       });
       
-      const answer = (out || "No results").slice(0, 3500);
+      const answer = (out || "No results").slice(0, 2000);
       
       return ctx.answerInlineQuery([
         {
@@ -2577,7 +2577,7 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Get translation
+    // Get translation - must be fast for inline
     try {
       const out = await llmText({
         model,
@@ -2586,9 +2586,9 @@ bot.on("inline_query", async (ctx) => {
           { role: "user", content: textToTranslate },
         ],
         temperature: 0.3,
-        max_tokens: 500,
-        timeout: 10000,
-        retries: 1,
+        max_tokens: 300,
+        timeout: 8000,  // Must be fast for inline
+        retries: 0,
       });
       
       const translation = (out || "Translation failed").trim();
