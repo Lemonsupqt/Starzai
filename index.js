@@ -1228,6 +1228,78 @@ bot.command("reset", async (ctx) => {
   await ctx.reply("Done. Memory cleared for this chat.");
 });
 
+// /stats - Show user usage statistics
+bot.command("stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = getUserRecord(u.id);
+  if (!user) {
+    return ctx.reply("❌ You're not registered yet. Send /start first!");
+  }
+  
+  const stats = user.stats || { totalMessages: 0, totalInlineQueries: 0, totalTokensUsed: 0, lastActive: "Never" };
+  const shortModel = (user.model || "None").split("/").pop();
+  
+  // Calculate days since registration
+  const regDate = new Date(user.registeredAt || Date.now());
+  const daysSinceReg = Math.floor((Date.now() - regDate.getTime()) / (1000 * 60 * 60 * 24));
+  
+  // Format last active
+  const lastActive = stats.lastActive ? new Date(stats.lastActive).toLocaleDateString() : "Never";
+  
+  const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
+  
+  const statsMsg = `📊 *Your StarzAI Stats*
+
+👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})
+${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
+🤖 *Model:* \`${shortModel}\`
+
+💬 *DM Messages:* ${stats.totalMessages.toLocaleString()}
+⚡ *Inline Queries:* ${stats.totalInlineQueries.toLocaleString()}
+📝 *Total Interactions:* ${(stats.totalMessages + stats.totalInlineQueries).toLocaleString()}
+
+📅 *Member for:* ${daysSinceReg} days
+🕒 *Last Active:* ${lastActive}
+
+_Keep chatting to grow your stats!_`;
+  
+  await ctx.reply(statsMsg, { parse_mode: "Markdown" });
+});
+
+// /persona - Set custom AI personality
+bot.command("persona", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const args = ctx.message.text.split(" ").slice(1).join(" ").trim();
+  
+  if (!args) {
+    // Show current persona and help
+    const currentPersona = user.persona || "Default (helpful AI assistant)";
+    return ctx.reply(
+      `🎭 *Custom Persona*\n\nCurrent: _${currentPersona}_\n\n*Usage:*\n\`/persona friendly teacher\`\n\`/persona sarcastic comedian\`\n\`/persona wise philosopher\`\n\`/persona reset\` - Back to default\n\n_Your persona affects all AI responses!_`,
+      { parse_mode: "Markdown" }
+    );
+  }
+  
+  if (args.toLowerCase() === "reset") {
+    delete user.persona;
+    saveUsers();
+    return ctx.reply("✅ Persona reset to default helpful AI assistant!");
+  }
+  
+  // Set new persona
+  user.persona = args.slice(0, 100); // Limit to 100 chars
+  saveUsers();
+  
+  await ctx.reply(`✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`, { parse_mode: "Markdown" });
+});
+
 // =====================
 // MODEL CATEGORY HELPERS
 // =====================
@@ -2533,9 +2605,20 @@ bot.on("message:text", async (ctx) => {
     }, 4000);
     await ctx.replyWithChatAction("typing");
 
-    const systemPrompt = replyContext
-      ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
-      : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+    // Get user's custom persona if set
+    const userRecord = getUserRecord(u.id);
+    const persona = userRecord?.persona;
+    
+    let systemPrompt;
+    if (persona) {
+      systemPrompt = replyContext
+        ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
+        : `You are StarzTechBot with the personality of: ${persona}. Stay in character throughout your response. Answer clearly.`;
+    } else {
+      systemPrompt = replyContext
+        ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
+        : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+    }
 
     const userTextWithContext = replyContext + text;
 
