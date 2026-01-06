@@ -3566,35 +3566,68 @@ bot.on("inline_query", async (ctx) => {
   }
 
   // Regular query - quick one-shot answer
-  // Send immediately with "Thinking..." - AI response will update via chosen_inline_result
+  // Wait for AI response, then show send button (works in private DMs and groups)
   const quickKey = makeId(6);
   const quickShortModel = model.split("/").pop();
   
-  // Store pending query info so chosen_inline_result can process it
-  inlineCache.set(`quick_${quickKey}`, {
-    prompt: q,
-    userId: String(userId),
-    model,
-    timestamp: Date.now(),
-  });
-  
-  // Schedule cleanup
-  setTimeout(() => inlineCache.delete(`quick_${quickKey}`), 5 * 60 * 1000);
-  
-  // Return immediately - no waiting for AI!
-  await ctx.answerInlineQuery([
-    {
-      type: "article",
-      id: `quick_${quickKey}`,
-      title: `⚡ ${q.slice(0, 40)}`,
-      description: "Tap to send - AI will respond!",
-      thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
-      input_message_content: {
-        message_text: `❓ *${q}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${quickShortModel}_`,
-        parse_mode: "Markdown",
+  try {
+    const out = await llmText({
+      model,
+      messages: [
+        { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
+        { role: "user", content: q },
+      ],
+      temperature: 0.7,
+      max_tokens: 240,
+      timeout: 12000,
+      retries: 1,
+    });
+    
+    const answer = (out || "I couldn't generate a response.").slice(0, 2000);
+    
+    // Store for Reply/Regen/Shorter/Longer buttons
+    inlineCache.set(quickKey, {
+      prompt: q,
+      answer,
+      userId: String(userId),
+      model,
+      createdAt: Date.now(),
+    });
+    
+    // Schedule cleanup
+    setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
+    
+    await ctx.answerInlineQuery([
+      {
+        type: "article",
+        id: `answer_${quickKey}`,
+        title: `⚡ ${q.slice(0, 40)}`,
+        description: answer.slice(0, 80),
+        thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+        input_message_content: {
+          message_text: `❓ *${q}*\n\n${answer}\n\n_via StarzAI • ${quickShortModel}_`,
+          parse_mode: "Markdown",
+        },
+        reply_markup: inlineAnswerKeyboard(quickKey),
       },
-    },
-  ], { cache_time: 0, is_personal: true });
+    ], { cache_time: 0, is_personal: true });
+    
+  } catch (e) {
+    console.error("Quick answer error:", e.message);
+    await ctx.answerInlineQuery([
+      {
+        type: "article",
+        id: `error_${quickKey}`,
+        title: `⚡ ${q.slice(0, 40)}`,
+        description: "⚠️ Model is slow. Try again.",
+        thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+        input_message_content: {
+          message_text: `❓ *${q}*\n\n⚠️ _Model is slow right now. Please try again._\n\n_via StarzAI_`,
+          parse_mode: "Markdown",
+        },
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
   
   trackUsage(userId, "inline");
 });
