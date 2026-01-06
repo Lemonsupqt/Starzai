@@ -1391,7 +1391,7 @@ bot.command("info", async (ctx) => {
     `• Session model: ${inlineSession?.model || "_none_"}`,
     ``,
     `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "_unknown_"}`,
-    `🔑 Allowed models: ${user.allowedModels?.length ? user.allowedModels.join(", ") : "_none_"}`,
+    `🔑 Allowed models: ${allModelsForTier(user.tier || "free").length} (${user.tier || "free"} tier)`,
   ];
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
