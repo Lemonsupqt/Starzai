@@ -406,6 +406,15 @@ bot.command("model", async (ctx) => {
   });
 });
 
+bot.command("whoami", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  const rec = getUserRecord(u.id);
+  await ctx.reply(
+    `Your userId: ${u.id}\nRole: ${rec?.role || "free"}\nCurrent model: ${ensureChosenModelValid(u.id)}`
+  );
+});
+
 // =====================
 // OWNER COMMANDS
 // =====================
