@@ -853,6 +853,63 @@ function sharedChatKeyboard(chatKey) {
   return kb;
 }
 
+// Inline settings keyboard - shows model categories
+function inlineSettingsCategoryKeyboard(sessionKey, userId) {
+  const kb = new InlineKeyboard();
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  
+  // Show categories based on user tier
+  kb.text("🆓 Free Models", `iset_cat:free:${sessionKey}`);
+  kb.row();
+  
+  if (tier === "premium" || tier === "ultra") {
+    kb.text("⭐ Premium Models", `iset_cat:premium:${sessionKey}`);
+    kb.row();
+  }
+  
+  if (tier === "ultra") {
+    kb.text("💎 Ultra Models", `iset_cat:ultra:${sessionKey}`);
+    kb.row();
+  }
+  
+  return kb;
+}
+
+// Inline settings - model list for a category
+function inlineSettingsModelKeyboard(category, sessionKey, userId) {
+  const kb = new InlineKeyboard();
+  const user = getUserRecord(userId);
+  const currentModel = user?.model || "";
+  
+  let models = [];
+  if (category === "free") models = FREE_MODELS;
+  else if (category === "premium") models = PREMIUM_MODELS;
+  else if (category === "ultra") models = ULTRA_MODELS;
+  
+  // Add model buttons (2 per row)
+  for (let i = 0; i < models.length; i += 2) {
+    const m1 = models[i];
+    const m2 = models[i + 1];
+    const shortName1 = m1.split("/").pop();
+    const label1 = m1 === currentModel ? `✅ ${shortName1}` : shortName1;
+    
+    if (m2) {
+      const shortName2 = m2.split("/").pop();
+      const label2 = m2 === currentModel ? `✅ ${shortName2}` : shortName2;
+      kb.text(label1, `iset_model:${m1}:${sessionKey}`).text(label2, `iset_model:${m2}:${sessionKey}`);
+    } else {
+      kb.text(label1, `iset_model:${m1}:${sessionKey}`);
+    }
+    kb.row();
+  }
+  
+  // Back button
+  kb.text("← Back", `iset_back:${sessionKey}`);
+  
+  return kb;
+}
+
 // =====================
 // COMMANDS
 // =====================
@@ -1668,6 +1725,124 @@ bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
 });
 
 // =====================
+// INLINE SETTINGS CALLBACKS
+// =====================
+
+// Category selection - show models for that category
+bot.callbackQuery(/^iset_cat:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const parts = ctx.callbackQuery.data.split(":");
+  const category = parts[1];
+  const sessionKey = parts[2];
+  
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  
+  // Check if user has access to this category
+  if (category === "premium" && tier === "free") {
+    return ctx.answerCallbackQuery({ text: "🔒 Premium required!", show_alert: true });
+  }
+  if (category === "ultra" && tier !== "ultra") {
+    return ctx.answerCallbackQuery({ text: "🔒 Ultra required!", show_alert: true });
+  }
+  
+  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
+  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+  
+  await ctx.answerCallbackQuery({ text: `${categoryEmoji} ${categoryName} Models` });
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Model selection - set the model
+bot.callbackQuery(/^iset_model:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const data = ctx.callbackQuery.data;
+  // Parse: iset_model:model_name:sessionKey
+  const firstColon = data.indexOf(":");
+  const lastColon = data.lastIndexOf(":");
+  const model = data.slice(firstColon + 1, lastColon);
+  const sessionKey = data.slice(lastColon + 1);
+  
+  const user = getUserRecord(userId);
+  if (!user) {
+    return ctx.answerCallbackQuery({ text: "User not found. Use /start first!", show_alert: true });
+  }
+  
+  // Check if user can use this model
+  const allowed = allModelsForTier(user.tier);
+  if (!allowed.includes(model)) {
+    return ctx.answerCallbackQuery({ text: "🔒 You don't have access to this model!", show_alert: true });
+  }
+  
+  // Set the model
+  user.model = model;
+  saveUsers();
+  
+  // Also update inline session
+  updateInlineSession(userId, { model });
+  
+  const shortName = model.split("/").pop();
+  await ctx.answerCallbackQuery({ text: `✅ Switched to ${shortName}!` });
+  
+  try {
+    await ctx.editMessageText(
+      `✅ *Model Changed!*\n\n🤖 Now using: \`${model}\`\n\n_Your new model is ready to use!_`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("← Back to Categories", `iset_back:${sessionKey}`)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Back to categories
+bot.callbackQuery(/^iset_back:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const sessionKey = ctx.callbackQuery.data.split(":")[1];
+  const user = getUserRecord(userId);
+  const model = user?.model || "gpt-4o-mini";
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *Model Settings*\n\n🤖 Current: \`${model}\`\n\nSelect a category to change model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// =====================
 // DM / GROUP TEXT
 // =====================
 
@@ -2029,12 +2204,13 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `settings_${sessionKey}`,
         title: `⚙️ Settings (${model.split("/").pop()})`,
-        description: "View current model and settings",
+        description: "Change your AI model",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
         input_message_content: {
-          message_text: `⚙️ *Settings*\n\nCurrent Model: \`${model}\`\n\nUse /model in DM with @starztechbot to change your model.`,
+          message_text: `⚙️ *Model Settings*\n\n🤖 Current: \`${model}\`\n\nSelect a category to change model:`,
           parse_mode: "Markdown",
         },
+        reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId),
       },
     ];
 
@@ -2298,23 +2474,35 @@ bot.on("inline_query", async (ctx) => {
     }
   }
 
-  // Regular query - quick one-shot answer (legacy behavior) + chat option
-  try {
-    // Quick answer - use shorter timeout for inline (Telegram has ~15s limit)
-    const out = await llmText({
-      model,
-      messages: [
-        { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
-        { role: "user", content: q },
-      ],
-      temperature: 0.7,
-      max_tokens: 240,
-      timeout: 12000, // 12s timeout for inline queries
-      retries: 1, // Only 1 retry for inline
-    });
-
-    const answer = (out || "(no output)").slice(0, 3500);
-
+  // Regular query - quick one-shot answer
+  // First, immediately show a "loading" option so user sees something
+  const loadingKey = makeId(6);
+  
+  // Use Promise.race to either get the answer or timeout gracefully
+  const getAnswer = async () => {
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
+          { role: "user", content: q },
+        ],
+        temperature: 0.7,
+        max_tokens: 240,
+        timeout: 10000, // 10s timeout for inline
+        retries: 0, // No retries for inline - need to be fast
+      });
+      return { success: true, answer: (out || "(no output)").slice(0, 3500) };
+    } catch (e) {
+      console.error("Inline LLM error:", e.message);
+      return { success: false, error: e.message };
+    }
+  };
+  
+  const result = await getAnswer();
+  
+  if (result.success) {
+    const answer = result.answer;
     const key = makeId(6);
     inlineCache.set(key, {
       prompt: q,
@@ -2328,44 +2516,31 @@ bot.on("inline_query", async (ctx) => {
       {
         type: "article",
         id: key,
-        title: "⚡ Quick Answer",
+        title: `⚡ ${q.slice(0, 40)}`,
         description: answer.slice(0, 90),
-        input_message_content: { message_text: answer },
+        input_message_content: { message_text: `❓ *${q}*\n\n${answer}`, parse_mode: "Markdown" },
         reply_markup: inlineAnswerKeyboard(key),
-      },
-      {
-        type: "article",
-        id: `addtochat_${sessionKey}`,
-        title: "💬 Add to Chat",
-        description: "Add this Q&A to your chat history",
-        input_message_content: {
-          message_text: `❓ *Question:* ${q}\n\n💡 *Answer:* ${answer}`,
-          parse_mode: "Markdown",
-        },
-        reply_markup: new InlineKeyboard()
-          .switchInlineCurrentChat("💬 Continue chat...", "chat:"),
       },
     ];
 
-    // Track inline usage
     trackUsage(userId, "inline");
-
     await ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
-  } catch (e) {
-    console.error("Inline error:", e.message);
-    const isTimeout = e.message?.includes("timed out");
+  } else {
+    const isTimeout = result.error?.includes("timed out");
+    const shortModel = model.split("/").pop();
     await ctx.answerInlineQuery(
       [
         {
           type: "article",
           id: "err_inline",
-          title: isTimeout ? "Model slow" : "Bot error",
+          title: isTimeout ? `⏱️ ${shortModel} is slow` : "⚠️ Error",
+          description: isTimeout ? "Try gpt-4o-mini for faster results" : "Try again",
           input_message_content: { 
             message_text: isTimeout 
-              ? `Model ${model} is slow. Try again or use /model to switch.`
-              : "Model call failed. Try again in a moment." 
+              ? `⏱️ Model \`${shortModel}\` is slow.\n\nTry using \`gpt-4o-mini\` for faster inline answers!\n\nUse /model in DM to switch.`
+              : "⚠️ Request failed. Try again!",
+            parse_mode: "Markdown"
           },
-          description: isTimeout ? "Try a different model" : "Temporary issue",
         },
       ],
       { cache_time: 1, is_personal: true }
