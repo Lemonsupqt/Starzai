@@ -42,7 +42,8 @@ function allModelsForTier(tier) {
   return [...FREE_MODELS];
 }
 
-const MODEL_VISION = process.env.MODEL_VISION || ""; // optional
+// MODEL_VISION is optional - all MegaLLM models support vision, so user's selected model is used
+const MODEL_VISION = process.env.MODEL_VISION || ""; // kept for backward compatibility
 
 const OWNER_IDS = new Set(
   (process.env.OWNER_IDS || "")
@@ -1385,11 +1386,12 @@ bot.on("message:photo", async (ctx) => {
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const b64 = await telegramFileToBase64(fileUrl);
 
-    const model = MODEL_VISION || ensureChosenModelValid(u.id);
+    // Use user's selected model for vision (all MegaLLM models support vision!)
+    const model = ensureChosenModelValid(u.id);
 
     const out = await llmVisionReply({
       chatId: chat.id,
-      userText: caption || "What's in this image? Answer clearly.",
+      userText: caption || "What's in this image? Describe it clearly.",
       imageBase64: b64,
       mime: "image/jpeg",
       model,
@@ -1397,8 +1399,8 @@ bot.on("message:photo", async (ctx) => {
 
     await ctx.reply(out.slice(0, 3800));
   } catch (e) {
-    console.error(e);
-    await ctx.reply("I couldn't process that image. If this keeps happening, set MODEL_VISION.");
+    console.error("Vision error:", e.message);
+    await ctx.reply("❌ Couldn't process that image. Try again or switch models with /model.");
   }
 });
 
