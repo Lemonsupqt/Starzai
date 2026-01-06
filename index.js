@@ -1015,7 +1015,7 @@ function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
   }
   
   // Main action - type message directly in this chat
-  kb.switchInlineCurrentChat("💬 Ask AI", `yap:${chatKey}:`);
+  kb.switchInlineCurrent("💬 Ask AI", `yap:${chatKey}:`);
   kb.row();
   
   // Secondary actions
