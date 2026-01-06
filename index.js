@@ -2445,15 +2445,7 @@ bot.on("inline_query", async (ctx) => {
         input_message_content: { message_text: "_" },
         reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Start Research", "r "),
       },
-      {
-        type: "article",
-        id: `nav_translate_${sessionKey}`,
-        title: "🌐 Translate",
-        description: "➡️ Tap the button below to start",
-        thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
-        input_message_content: { message_text: "_" },
-        reply_markup: new InlineKeyboard().switchInlineCurrent("🌐 Start Translate", "t "),
-      },
+
       {
         type: "article",
         id: `nav_settings_${sessionKey}`,
@@ -2544,81 +2536,6 @@ bot.on("inline_query", async (ctx) => {
     }
   }
   
-  // "t " - Translate shortcut (t [lang] [text])
-  if (qLower.startsWith("t ")) {
-    const parts = q.slice(2).trim().split(/\s+/);
-    const targetLang = parts[0] || "";
-    const textToTranslate = parts.slice(1).join(" ");
-    
-    if (!targetLang) {
-      // Show language options
-      const languages = ["English", "Spanish", "French", "German", "Chinese", "Japanese", "Korean", "Hindi"];
-      const results = languages.map((lang, i) => ({
-        type: "article",
-        id: `t_lang_${i}_${sessionKey}`,
-        title: `🌐 ${lang}`,
-        description: `Translate to ${lang}`,
-        thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
-        input_message_content: { message_text: "_" },
-      }));
-      return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
-    }
-    
-    if (!textToTranslate) {
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `t_typing_${sessionKey}`,
-          title: `✍️ Type text to translate to ${targetLang}...`,
-          description: `Example: t ${targetLang} hello world`,
-          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-    
-    // Get translation - must be fast for inline
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: `Translate to ${targetLang}. Output only the translation.` },
-          { role: "user", content: textToTranslate },
-        ],
-        temperature: 0.3,
-        max_tokens: 300,
-        timeout: 8000,  // Must be fast for inline
-        retries: 0,
-      });
-      
-      const translation = (out || "Translation failed").trim();
-      
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `t_send_${makeId(6)}`,
-          title: `✉️ Send: ${translation.slice(0, 35)}`,
-          description: `🌐 ${targetLang}`,
-          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-          input_message_content: {
-            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}\n\n_via StarzAI_`,
-            parse_mode: "Markdown",
-          },
-        },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `t_err_${sessionKey}`,
-          title: "⚠️ Translation failed",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-  }
   
   // "s" or "s " - Settings shortcut - show model categories with navigation buttons
   if (qLower === "s" || qLower === "s ") {
