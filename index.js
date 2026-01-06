@@ -524,14 +524,16 @@ async function llmTextVision({ model, messages, temperature = 0.7, max_tokens = 
   }
 }
 
-async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2 }) {
-  const timeouts = [25000, 35000, 50000]; // Progressive timeouts: 25s, 35s, 50s
+async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout: customTimeout = null }) {
+  // Use custom timeout if provided, otherwise use progressive timeouts
+  const defaultTimeouts = [25000, 35000, 50000]; // Progressive timeouts: 25s, 35s, 50s
+  const timeouts = customTimeout ? [customTimeout, customTimeout, customTimeout] : defaultTimeouts;
   
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const timeout = timeouts[Math.min(attempt, timeouts.length - 1)];
+    const attemptTimeout = timeouts[Math.min(attempt, timeouts.length - 1)];
     
     try {
-      console.log(`LLM attempt ${attempt + 1}/${retries + 1} with ${timeout/1000}s timeout`);
+      console.log(`LLM attempt ${attempt + 1}/${retries + 1} with ${attemptTimeout/1000}s timeout`);
       const resp = await withTimeout(
         openai.chat.completions.create({
           model,
@@ -539,7 +541,7 @@ async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, r
           temperature,
           max_tokens,
         }),
-        timeout,
+        attemptTimeout,
         `Model ${model} timed out (attempt ${attempt + 1})`
       );
       return (resp?.choices?.[0]?.message?.content || "").trim();
@@ -1022,13 +1024,52 @@ bot.command("grant", async (ctx) => {
   }
   
   const oldTier = currentTier;
+  const isUpgrade = ["free", "premium", "ultra"].indexOf(tier) > ["free", "premium", "ultra"].indexOf(oldTier);
+  
   rec.tier = tier;
   rec.role = tier;
   saveUsers();
 
   const tierEmoji = tier === "ultra" ? "💎" : tier === "premium" ? "⭐" : "🆓";
-  const arrow = ["free", "premium", "ultra"].indexOf(tier) > ["free", "premium", "ultra"].indexOf(oldTier) ? "⬆️" : "⬇️";
+  const arrow = isUpgrade ? "⬆️" : "⬇️";
   await ctx.reply(`${arrow} User ${targetId}: ${oldTier.toUpperCase()} → ${tierEmoji} ${tier.toUpperCase()}`);
+  
+  // Send congratulations message to the user if upgraded
+  if (isUpgrade && (tier === "premium" || tier === "ultra")) {
+    try {
+      const congratsMsg = tier === "ultra" 
+        ? [
+            `🎉 *Congratulations!* 🎉`,
+            ``,
+            `You've been upgraded to 💎 *ULTRA* tier!`,
+            ``,
+            `✨ *New features unlocked:*`,
+            `• Access to ALL models including GPT-5, Gemini 2.5 Pro, Grok 4.1`,
+            `• Fastest response times`,
+            `• Priority support`,
+            ``,
+            `Use /model to explore your new models!`,
+          ].join("\n")
+        : [
+            `🎉 *Congratulations!* 🎉`,
+            ``,
+            `You've been upgraded to ⭐ *PREMIUM* tier!`,
+            ``,
+            `✨ *New features unlocked:*`,
+            `• Access to premium models like Claude, GLM, Mistral`,
+            `• Better response quality`,
+            `• Priority support`,
+            ``,
+            `Use /model to explore your new models!`,
+          ].join("\n");
+      
+      await bot.api.sendMessage(targetId, congratsMsg, { parse_mode: "Markdown" });
+      await ctx.reply(`✅ Congratulations message sent to user.`);
+    } catch (e) {
+      console.error("Failed to send congrats:", e.message);
+      await ctx.reply(`⚠️ Could not send message to user (they may need to start the bot first).`);
+    }
+  }
 });
 
 bot.command("revoke", async (ctx) => {
@@ -1403,17 +1444,36 @@ bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
 // =====================
 // DM / GROUP TEXT
 // =====================
+
+// Track processing messages to prevent duplicates
+const processingMessages = new Map(); // chatId:messageId -> timestamp
+
 bot.on("message:text", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const chat = ctx.chat;
   const u = ctx.from;
   const text = (ctx.message?.text || "").trim();
+  const messageId = ctx.message?.message_id;
 
   if (!text || !u?.id) return;
 
   // Ignore commands
   if (text.startsWith("/")) return;
+  
+  // Deduplicate - prevent processing same message twice
+  const dedupeKey = `${chat.id}:${messageId}`;
+  if (processingMessages.has(dedupeKey)) {
+    console.log(`Skipping duplicate message: ${dedupeKey}`);
+    return;
+  }
+  processingMessages.set(dedupeKey, Date.now());
+  
+  // Clean up old entries (older than 5 minutes)
+  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+  for (const [key, time] of processingMessages) {
+    if (time < fiveMinAgo) processingMessages.delete(key);
+  }
 
   // Auto-register
   if (!getUserRecord(u.id)) registerUser(u);
@@ -1444,14 +1504,18 @@ bot.on("message:text", async (ctx) => {
 
   const startTime = Date.now();
   let statusMsg = null;
+  let typingInterval = null;
+  let responseSent = false;
 
   try {
     // Send initial processing status
     statusMsg = await ctx.reply(`⏳ Processing with *${model}*...`, { parse_mode: "Markdown" });
 
     // Keep typing indicator active
-    const typingInterval = setInterval(() => {
-      ctx.replyWithChatAction("typing").catch(() => {});
+    typingInterval = setInterval(() => {
+      if (!responseSent) {
+        ctx.replyWithChatAction("typing").catch(() => {});
+      }
     }, 4000);
     await ctx.replyWithChatAction("typing");
 
@@ -1468,7 +1532,9 @@ bot.on("message:text", async (ctx) => {
       model,
     });
 
-    clearInterval(typingInterval);
+    // Mark response as sent to stop typing
+    responseSent = true;
+    if (typingInterval) clearInterval(typingInterval);
 
     // Track usage
     trackUsage(u.id, "message");
@@ -1476,15 +1542,20 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Delete status message and send response
-    try {
-      await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
-    } catch {}
+    if (statusMsg) {
+      try {
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id);
+      } catch {}
+    }
 
     // Add timing footer
     const response = `${out.slice(0, 3700)}\n\n_⚡ ${elapsed}s • ${model}_`;
     await ctx.reply(response, { parse_mode: "Markdown" });
   } catch (e) {
     console.error(e);
+    responseSent = true;
+    if (typingInterval) clearInterval(typingInterval);
+    
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const isTimeout = e.message?.includes("timed out");
     
@@ -1754,7 +1825,7 @@ bot.on("inline_query", async (ctx) => {
 
   // Regular query - quick one-shot answer (legacy behavior) + chat option
   try {
-    // Quick answer
+    // Quick answer - use shorter timeout for inline (Telegram has ~15s limit)
     const out = await llmText({
       model,
       messages: [
@@ -1763,6 +1834,8 @@ bot.on("inline_query", async (ctx) => {
       ],
       temperature: 0.7,
       max_tokens: 240,
+      timeout: 12000, // 12s timeout for inline queries
+      retries: 1, // Only 1 retry for inline
     });
 
     const answer = (out || "(no output)").slice(0, 3500);
