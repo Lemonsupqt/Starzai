@@ -946,9 +946,7 @@ function inlineAnswerKeyboard(key) {
     .text("🔁 Regen", `inl_regen:${key}`)
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
-    .text("📈 Longer", `inl_long:${key}`)
-    .row()
-    .switchInline("📤 Share", ""); // Opens inline in another chat to share
+    .text("📈 Longer", `inl_long:${key}`);
 }
 
 // =====================
@@ -2876,7 +2874,7 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("💻 Code", "code: ")
           .switchInlineCurrent("🧠 Explain", "e: ")
           .row()
-          .switchInlineCurrent("🎭 Character", "as pirate: ")
+          .switchInlineCurrent("🎭 Character", "as ")
           .switchInlineCurrent("📝 Summarize", "sum: "),
       },
       {
