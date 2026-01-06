@@ -366,6 +366,9 @@ const rate = new Map(); // userId -> { windowStartMs, count }
 // Active inline message tracking (for editing)
 const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
 
+// Pending shared chat input (user clicked Ask AI, waiting for their message)
+const pendingSharedInput = new Map(); // oderId -> { chatKey, userName, inlineMessageId, timestamp }
+
 // =====================
 // SHARED INLINE CHAT SESSIONS
 // These are keyed by inline_message_id so multiple users can participate
@@ -385,9 +388,17 @@ function createSharedChat(chatKey, creatorId, creatorName, model) {
     createdAt: Date.now(),
     participants: new Set([String(creatorId)]),
     lastActive: Date.now(),
+    inlineMessageId: null, // Will be set when message is sent
   };
   sharedChatSessions.set(chatKey, session);
   return session;
+}
+
+function setSharedChatInlineMessageId(chatKey, inlineMessageId) {
+  const session = sharedChatSessions.get(chatKey);
+  if (session) {
+    session.inlineMessageId = inlineMessageId;
+  }
 }
 
 function addToSharedChat(chatKey, userId, userName, role, content) {
@@ -1014,8 +1025,8 @@ function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
     kb.row();
   }
   
-  // Main action - type message directly in this chat
-  kb.switchInlineCurrent("💬 Ask AI", `yap:${chatKey}:`);
+  // Main action - Ask AI via callback (will DM user for input)
+  kb.text("💬 Ask AI", `schat_ask:${chatKey}`);
   kb.row();
   
   // Secondary actions
@@ -1816,6 +1827,44 @@ bot.callbackQuery(/^schat_noop$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
+// Ask AI - DM user for input, then update the original inline message
+bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
+  const chatKey = ctx.callbackQuery.data.split(":")[1];
+  const session = getSharedChat(chatKey);
+  const userId = ctx.from?.id;
+  const userName = ctx.from?.first_name || "User";
+  
+  if (!session) {
+    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: "Check your DM with the bot!" });
+  
+  // Store pending input state
+  pendingSharedInput.set(String(userId), {
+    chatKey,
+    userName,
+    inlineMessageId: session.inlineMessageId,
+    timestamp: Date.now()
+  });
+  
+  // DM the user
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💬 *Group Chat Input*\n\nType your message for the Yap chat:\n\n_Your message will appear in the group chat and AI will respond!_`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.error("Failed to DM user for schat_ask:", e.message);
+    // User might not have started the bot
+    await ctx.answerCallbackQuery({ 
+      text: "Please start a chat with @starztechbot first!", 
+      show_alert: true 
+    });
+  }
+});
+
 // Refresh shared chat display (shows last page)
 bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -2023,6 +2072,92 @@ bot.on("message:text", async (ctx) => {
 
   // Auto-register
   if (!getUserRecord(u.id)) registerUser(u);
+  
+  // Check if user has pending shared chat input
+  const pendingInput = pendingSharedInput.get(String(u.id));
+  if (pendingInput && chat.type === "private") {
+    // Clear the pending state
+    pendingSharedInput.delete(String(u.id));
+    
+    // Check if not expired (5 min timeout)
+    if (Date.now() - pendingInput.timestamp < 5 * 60 * 1000) {
+      const { chatKey, userName, inlineMessageId } = pendingInput;
+      const session = getSharedChat(chatKey);
+      
+      if (session) {
+        // Check if we have the inline message ID
+        const msgId = inlineMessageId || session.inlineMessageId;
+        
+        if (!msgId) {
+          await ctx.reply(`⚠️ Session found but message ID missing. The Yap message may have been deleted. Start a new Yap session!`);
+          return;
+        }
+        
+        // Add user message to session
+        addToSharedChat(chatKey, u.id, userName, "user", text);
+        
+        // Acknowledge in DM
+        await ctx.reply(`✅ Message sent to group chat! Getting AI response...`);
+        
+        // Get AI response
+        try {
+          const model = session.model || ensureChosenModelValid(u.id);
+          const messages = [
+            { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
+            ...session.history.slice(-8).map(m => ({
+              role: m.role,
+              content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
+            }))
+          ];
+          
+          const aiResponse = await llmText({
+            model,
+            messages,
+            temperature: 0.7,
+            max_tokens: 300,
+            timeout: 20000,
+            retries: 1,
+          });
+          
+          // Add AI response to session
+          addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
+          
+          // Update the inline message
+          const updatedSession = getSharedChat(chatKey);
+          const totalPages = getSharedChatPageCount(updatedSession);
+          
+          await bot.api.editMessageTextInline(
+            msgId,
+            formatSharedChatDisplay(updatedSession, -1),
+            {
+              parse_mode: "Markdown",
+              reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
+            }
+          );
+          
+          await ctx.reply(`✅ AI responded! Check the group chat.`);
+        } catch (e) {
+          console.error("Shared chat AI error:", e.message);
+          await ctx.reply(`⚠️ AI is slow. Your message was added - tap Refresh in the group chat!`);
+          
+          // Still update the message to show user's message
+          try {
+            const updatedSession = getSharedChat(chatKey);
+            const totalPages = getSharedChatPageCount(updatedSession);
+            await bot.api.editMessageTextInline(
+              msgId,
+              formatSharedChatDisplay(updatedSession, -1) + `\n\n⏳ _Getting AI response..._`,
+              {
+                parse_mode: "Markdown",
+                reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
+              }
+            );
+          } catch {}
+        }
+        return;
+      }
+    }
+  }
 
   const model = ensureChosenModelValid(u.id);
   const botInfo = await bot.api.getMe();
@@ -2221,10 +2356,15 @@ bot.on("inline_query", async (ctx) => {
     const chatKey = makeId(8);
     const userName = ctx.from?.first_name || "User";
     
+    // Create inline keyboard for switch_inline buttons
+    const quickKb = new InlineKeyboard().switchInlineCurrent("");
+    const researchKb = new InlineKeyboard().switchInlineCurrent("research: ");
+    const translateKb = new InlineKeyboard().switchInlineCurrent("translate to English: ");
+    
     const results = [
       {
         type: "article",
-        id: `yap_${chatKey}`,
+        id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
         title: "👥 Yap (Group Chat)",
         description: "Anyone in this chat can talk to AI together!",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
@@ -2238,34 +2378,37 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `quick_${sessionKey}`,
         title: "💬 Quick Answer",
-        description: "Type your question for a fast one-shot answer",
+        description: "Tap to type your question",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: {
-          message_text: `⚡ *Quick Answer Mode*\n\nType \`@starztechbot your question\` to get a fast answer!\n\nExample: \`@starztechbot what is photosynthesis\``,
+          message_text: `⚡ *Quick Answer*\n\nTap the button below to type your question:`,
           parse_mode: "Markdown",
         },
+        reply_markup: quickKb,
       },
       {
         type: "article",
         id: `research_${sessionKey}`,
         title: "🔍 Research",
-        description: "Get a detailed, in-depth answer on any topic",
+        description: "Tap to type your research topic",
         thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
         input_message_content: {
-          message_text: `🔍 *Research Mode*\n\nType \`@starztechbot research: your topic\` for an in-depth answer!\n\nExample: \`@starztechbot research: quantum computing\``,
+          message_text: `🔍 *Research Mode*\n\nTap the button below to type your topic:`,
           parse_mode: "Markdown",
         },
+        reply_markup: researchKb,
       },
       {
         type: "article",
         id: `translate_${sessionKey}`,
         title: "🌐 Translate",
-        description: "Translate text to any language",
+        description: "Tap to type text to translate",
         thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
         input_message_content: {
-          message_text: `🌐 *Translate Mode*\n\nType \`@starztechbot translate to [language]: text\`\n\nExample: \`@starztechbot translate to Spanish: Hello, how are you?\``,
+          message_text: `🌐 *Translate Mode*\n\nTap the button below to type text to translate:`,
           parse_mode: "Markdown",
         },
+        reply_markup: translateKb,
       },
       {
         type: "article",
@@ -2293,7 +2436,7 @@ bot.on("inline_query", async (ctx) => {
     return ctx.answerInlineQuery([
       {
         type: "article",
-        id: `yap_${chatKey}`,
+        id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
         title: "👥 Start Yap Session",
         description: "Anyone in this chat can talk to AI together!",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
@@ -2306,63 +2449,8 @@ bot.on("inline_query", async (ctx) => {
     ], { cache_time: 0, is_personal: true });
   }
   
-  // "yap:chatKey:message" - user is sending a message to an existing yap session
-  if (qLower.startsWith("yap:")) {
-    const parts = q.split(":");
-    // Format: yap:chatKey:message
-    if (parts.length >= 2) {
-      const chatKey = parts[1];
-      const userMessage = parts.slice(2).join(":").trim();
-      const userName = ctx.from?.first_name || "User";
-      
-      if (!userMessage) {
-        // No message yet, show typing hint
-        return ctx.answerInlineQuery([
-          {
-            type: "article",
-            id: `yap_hint_${chatKey}`,
-            title: "✍️ Type your message here...",
-            description: "Your message will appear after the colon",
-            input_message_content: {
-              message_text: `💭 _Waiting for your message..._`,
-              parse_mode: "Markdown",
-            },
-          },
-        ], { cache_time: 0, is_personal: true });
-      }
-      
-      // INSTANT: Show send option immediately (no waiting for AI)
-      // Get or create session
-      let session = getSharedChat(chatKey);
-      if (!session) {
-        session = createSharedChat(chatKey, userId, userName, model);
-      }
-      
-      // Add user message immediately
-      addToSharedChat(chatKey, userId, userName, "user", userMessage);
-      
-      // Show instant "Send" option - AI will be fetched when user taps
-      const currentSession = getSharedChat(chatKey);
-      const totalPages = getSharedChatPageCount(currentSession);
-      
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `yap_send_${makeId(6)}`,
-          title: `✉️ Send: "${userMessage.slice(0, 35)}${userMessage.length > 35 ? '...' : ''}"`,
-          description: "Tap to send • AI will respond • Tap Refresh to see",
-          input_message_content: {
-            message_text: formatSharedChatDisplay(currentSession, -1) + `\n\n⏳ _Getting AI response..._`,
-            parse_mode: "Markdown",
-          },
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-  }
-  
-  // Process AI response for yap in background when message is chosen
-  // This is handled by chosen_inline_result event below
+  // NOTE: yap:chatKey:message inline query was removed because it creates duplicate messages
+  // Instead, users tap "💬 Ask AI" button which DMs them for input, then edits the ORIGINAL message
   
   // "research:" prefix - detailed research answer
   if (qLower.startsWith("research:") || qLower.startsWith("research ")) {
@@ -2674,86 +2762,36 @@ bot.on("inline_query", async (ctx) => {
 });
 
 // =====================
-// CHOSEN INLINE RESULT - Process AI after user sends yap message
+// CHOSEN INLINE RESULT - Store inlineMessageId when Yap is first sent
 // =====================
 bot.on("chosen_inline_result", async (ctx) => {
   const resultId = ctx.chosenInlineResult.result_id;
-  const query = ctx.chosenInlineResult.query || "";
   const inlineMessageId = ctx.chosenInlineResult.inline_message_id;
   const userId = ctx.from?.id;
   const userName = ctx.from?.first_name || "User";
   
-  // Only process yap_send results
-  if (!resultId.startsWith("yap_send_")) return;
+  console.log(`chosen_inline_result: resultId=${resultId}, inlineMessageId=${inlineMessageId}`);
   
-  // Parse the query to get chatKey
-  if (!query.startsWith("yap:")) return;
-  
-  const parts = query.split(":");
-  if (parts.length < 3) return;
-  
-  const chatKey = parts[1];
-  const session = getSharedChat(chatKey);
-  
-  if (!session || !inlineMessageId) return;
-  
-  // Get AI response in background
-  try {
-    const model = session.model || ensureChosenModelValid(userId);
-    const messages = [
-      { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
-      ...session.history.slice(-8).map(m => ({
-        role: m.role,
-        content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-      }))
-    ];
+  // Store inlineMessageId for yap_start results AND create session
+  if (resultId.startsWith("yap_start_")) {
+    const chatKey = resultId.replace("yap_start_", "");
     
-    const aiResponse = await llmText({
-      model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 300,
-      timeout: 15000,
-      retries: 1,
-    });
-    
-    // Add AI response to session
-    addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
-    
-    // Update the inline message with AI response
-    const updatedSession = getSharedChat(chatKey);
-    const totalPages = getSharedChatPageCount(updatedSession);
-    
-    await bot.api.editMessageTextInline(
-      inlineMessageId,
-      formatSharedChatDisplay(updatedSession, -1),
-      {
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-      }
-    );
-    
-    console.log(`Yap AI response sent for chatKey=${chatKey}`);
-  } catch (e) {
-    console.error("Yap chosen_inline_result error:", e.message);
-    
-    // Try to update message with error
-    try {
-      const updatedSession = getSharedChat(chatKey);
-      const totalPages = getSharedChatPageCount(updatedSession);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        formatSharedChatDisplay(updatedSession, -1) + `\n\n⚠️ _AI is slow. Tap Refresh to retry._`,
-        {
-          parse_mode: "Markdown",
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-        }
-      );
-    } catch {
-      // Ignore edit errors
+    // Create session if it doesn't exist
+    let session = getSharedChat(chatKey);
+    if (!session) {
+      const model = ensureChosenModelValid(userId);
+      session = createSharedChat(chatKey, userId, userName, model);
+      console.log(`Created new Yap session: chatKey=${chatKey}`);
     }
+    
+    // Store the inline message ID
+    if (inlineMessageId) {
+      setSharedChatInlineMessageId(chatKey, inlineMessageId);
+      console.log(`Stored inlineMessageId for chatKey=${chatKey}: ${inlineMessageId}`);
+    }
+    return;
   }
+  
 });
 
 // =====================
