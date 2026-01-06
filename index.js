@@ -184,18 +184,30 @@ function getUserRecord(userId) {
 
 function ensureUser(userId, from = null) {
   const id = String(userId);
+  const isOwnerUser = OWNER_IDS.has(id);
+  
   if (!usersDb.users[id]) {
+    // New user - auto-grant ultra to owners
+    const defaultTier = isOwnerUser ? "ultra" : "free";
+    const defaultModel = isOwnerUser ? (DEFAULT_ULTRA_MODEL || DEFAULT_PREMIUM_MODEL || DEFAULT_FREE_MODEL) : DEFAULT_FREE_MODEL;
+    
     usersDb.users[id] = {
       registeredAt: new Date().toISOString(),
       username: from?.username || null,
       firstName: from?.first_name || null,
-      role: "free",
-      tier: "free",
-      model: DEFAULT_FREE_MODEL,
+      role: defaultTier,
+      tier: defaultTier,
+      model: defaultModel,
       allowedModels: [],
     };
     saveUsers();
   } else {
+    // Existing user - upgrade owners to ultra if not already
+    if (isOwnerUser && usersDb.users[id].tier !== "ultra") {
+      usersDb.users[id].tier = "ultra";
+      usersDb.users[id].role = "ultra";
+      saveUsers();
+    }
     // migration: if old users exist without tier
     if (!usersDb.users[id].tier) {
       usersDb.users[id].tier = usersDb.users[id].role || "free";
@@ -264,22 +276,41 @@ function withTimeout(promise, ms, errorMsg = "Request timed out") {
   ]);
 }
 
-async function llmText({ model, messages, temperature = 0.7, max_tokens = 350 }) {
-  try {
-    const resp = await withTimeout(
-      openai.chat.completions.create({
-        model,
-        messages,
-        temperature,
-        max_tokens,
-      }),
-      55000, // 55 second timeout (less than webhook timeout)
-      `Model ${model} timed out`
-    );
-    return (resp?.choices?.[0]?.message?.content || "").trim();
-  } catch (err) {
-    console.error("LLM Error:", err.message);
-    throw err;
+async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2 }) {
+  const timeouts = [25000, 35000, 50000]; // Progressive timeouts: 25s, 35s, 50s
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const timeout = timeouts[Math.min(attempt, timeouts.length - 1)];
+    
+    try {
+      console.log(`LLM attempt ${attempt + 1}/${retries + 1} with ${timeout/1000}s timeout`);
+      const resp = await withTimeout(
+        openai.chat.completions.create({
+          model,
+          messages,
+          temperature,
+          max_tokens,
+        }),
+        timeout,
+        `Model ${model} timed out (attempt ${attempt + 1})`
+      );
+      return (resp?.choices?.[0]?.message?.content || "").trim();
+    } catch (err) {
+      console.error(`LLM Error (attempt ${attempt + 1}):`, err.message);
+      
+      // If it's the last attempt, throw the error
+      if (attempt === retries) {
+        throw err;
+      }
+      
+      // If it's not a timeout, don't retry (e.g., auth error, invalid model)
+      if (!err.message?.includes("timed out")) {
+        throw err;
+      }
+      
+      // Wait a bit before retrying
+      await new Promise(r => setTimeout(r, 1000));
+    }
   }
 }
 
