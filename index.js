@@ -1963,53 +1963,218 @@ bot.on("inline_query", async (ctx) => {
   const model = session.model || ensureChosenModelValid(userId);
   const sessionKey = makeId(6);
 
-  // Empty query - show main menu
+  // Empty query - show main menu with all modes
   if (!q) {
-    // Create a unique chat key for shared sessions
     const chatKey = makeId(8);
     const userName = ctx.from?.first_name || "User";
     
     const results = [
       {
         type: "article",
-        id: `group_${chatKey}`,
-        title: "👥 Start Group Chat",
-        description: "Anyone in this chat can talk to AI!",
+        id: `yap_${chatKey}`,
+        title: "👥 Yap (Group Chat)",
+        description: "Anyone in this chat can talk to AI together!",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Group Chat*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
           parse_mode: "Markdown",
         },
         reply_markup: sharedChatKeyboard(chatKey),
       },
       {
         type: "article",
-        id: `chat_${sessionKey}`,
-        title: "💬 My AI Chat",
-        description: session.history.length > 0 
-          ? `Continue chat (${session.history.length} messages)` 
-          : "Personal conversation",
+        id: `quick_${sessionKey}`,
+        title: "💬 Quick Answer",
+        description: "Type your question for a fast one-shot answer",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: {
-          message_text: formatInlineChatDisplay(session, userId),
+          message_text: `⚡ *Quick Answer Mode*\n\nType \`@starztechbot your question\` to get a fast answer!\n\nExample: \`@starztechbot what is photosynthesis\``,
           parse_mode: "Markdown",
         },
-        reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0),
       },
       {
         type: "article",
-        id: `model_${sessionKey}`,
-        title: `⚙️ Model: ${model.split("/").pop()}`,
-        description: "Tap to change model",
+        id: `research_${sessionKey}`,
+        title: "🔍 Research",
+        description: "Get a detailed, in-depth answer on any topic",
+        thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+        input_message_content: {
+          message_text: `🔍 *Research Mode*\n\nType \`@starztechbot research: your topic\` for an in-depth answer!\n\nExample: \`@starztechbot research: quantum computing\``,
+          parse_mode: "Markdown",
+        },
+      },
+      {
+        type: "article",
+        id: `translate_${sessionKey}`,
+        title: "🌐 Translate",
+        description: "Translate text to any language",
+        thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+        input_message_content: {
+          message_text: `🌐 *Translate Mode*\n\nType \`@starztechbot translate to [language]: text\`\n\nExample: \`@starztechbot translate to Spanish: Hello, how are you?\``,
+          parse_mode: "Markdown",
+        },
+      },
+      {
+        type: "article",
+        id: `settings_${sessionKey}`,
+        title: `⚙️ Settings (${model.split("/").pop()})`,
+        description: "View current model and settings",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
         input_message_content: {
-          message_text: `⚙️ *Model Settings*\n\nCurrent: \`${model}\`\n\nUse /model in DM to change.`,
+          message_text: `⚙️ *Settings*\n\nCurrent Model: \`${model}\`\n\nUse /model in DM with @starztechbot to change your model.`,
           parse_mode: "Markdown",
         },
       },
     ];
 
     return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // Filter modes when user types partial text
+  const qLower = q.toLowerCase();
+  
+  // "yap" filter - show only yap option
+  if (qLower === "yap" || qLower.startsWith("yap ")) {
+    const chatKey = makeId(8);
+    return ctx.answerInlineQuery([
+      {
+        type: "article",
+        id: `yap_${chatKey}`,
+        title: "👥 Start Yap Session",
+        description: "Anyone in this chat can talk to AI together!",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          parse_mode: "Markdown",
+        },
+        reply_markup: sharedChatKeyboard(chatKey),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "research:" prefix - detailed research answer
+  if (qLower.startsWith("research:") || qLower.startsWith("research ")) {
+    const topic = q.replace(/^research[:\s]+/i, "").trim();
+    
+    if (!topic) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `research_help_${sessionKey}`,
+          title: "🔍 Research Mode",
+          description: "Type your topic after 'research:'",
+          input_message_content: {
+            message_text: `🔍 *Research Mode*\n\nType your topic after \`research:\`\n\nExample: \`@starztechbot research: artificial intelligence\``,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research assistant. Provide detailed, well-structured, informative answers. Use bullet points and sections where appropriate. Be thorough but clear." },
+          { role: "user", content: `Research and explain in detail: ${topic}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+        timeout: 15000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No results").slice(0, 3500);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `research_${makeId(6)}`,
+          title: `🔍 ${topic.slice(0, 40)}`,
+          description: answer.slice(0, 100),
+          input_message_content: {
+            message_text: `🔍 *Research: ${topic}*\n\n${answer}`,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `research_err_${sessionKey}`,
+          title: "⚠️ Research taking too long",
+          description: "Try a simpler topic or use Quick Answer",
+          input_message_content: {
+            message_text: `⚠️ Research is taking too long. Try a simpler query!`,
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "translate" prefix - translation mode
+  if (qLower.startsWith("translate")) {
+    const match = q.match(/^translate\s+to\s+([\w]+)[:\s]+(.+)$/i);
+    
+    if (!match) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `translate_help_${sessionKey}`,
+          title: "🌐 Translate Mode",
+          description: "Format: translate to [language]: text",
+          input_message_content: {
+            message_text: `🌐 *Translate Mode*\n\nFormat: \`translate to [language]: your text\`\n\nExample: \`@starztechbot translate to French: Hello world\``,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const targetLang = match[1];
+    const textToTranslate = match[2].trim();
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: `You are a translator. Translate the given text to ${targetLang}. Only output the translation, nothing else.` },
+          { role: "user", content: textToTranslate },
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const translation = (out || "Translation failed").trim();
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `translate_${makeId(6)}`,
+          title: `🌐 ${targetLang}: ${translation.slice(0, 40)}`,
+          description: translation.slice(0, 100),
+          input_message_content: {
+            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}`,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `translate_err_${sessionKey}`,
+          title: "⚠️ Translation failed",
+          description: "Try again",
+          input_message_content: {
+            message_text: `⚠️ Translation failed. Try again!`,
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
   }
 
   // "chat:" prefix - interactive chat mode
