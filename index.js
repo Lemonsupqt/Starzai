@@ -780,53 +780,85 @@ bot.command("reset", async (ctx) => {
   await ctx.reply("Done. Memory cleared for this chat.");
 });
 
+// =====================
+// MODEL CATEGORY HELPERS
+// =====================
+
+// Build category selection keyboard (main menu)
+function modelCategoryKeyboard(userTier) {
+  const rows = [];
+  
+  // Always show FREE
+  rows.push([{ text: "🆓 Free Models", callback_data: "model_cat:free" }]);
+  
+  // Show PREMIUM if user has access
+  if (userTier === "premium" || userTier === "ultra") {
+    rows.push([{ text: "⭐ Premium Models", callback_data: "model_cat:premium" }]);
+  }
+  
+  // Show ULTRA if user has access
+  if (userTier === "ultra") {
+    rows.push([{ text: "💎 Ultra Models", callback_data: "model_cat:ultra" }]);
+  }
+  
+  return { inline_keyboard: rows };
+}
+
+// Build model list keyboard for a specific category
+function modelListKeyboard(category, currentModel, userTier) {
+  const rows = [];
+  let models = [];
+  
+  if (category === "free") {
+    models = FREE_MODELS;
+  } else if (category === "premium" && (userTier === "premium" || userTier === "ultra")) {
+    models = PREMIUM_MODELS;
+  } else if (category === "ultra" && userTier === "ultra") {
+    models = ULTRA_MODELS;
+  }
+  
+  // Add model buttons (2 per row for cleaner look)
+  for (let i = 0; i < models.length; i += 2) {
+    const row = [];
+    const m1 = models[i];
+    row.push({
+      text: `${m1 === currentModel ? "✅ " : ""}${m1}`,
+      callback_data: `setmodel:${m1}`,
+    });
+    
+    if (models[i + 1]) {
+      const m2 = models[i + 1];
+      row.push({
+        text: `${m2 === currentModel ? "✅ " : ""}${m2}`,
+        callback_data: `setmodel:${m2}`,
+      });
+    }
+    rows.push(row);
+  }
+  
+  // Add back button
+  rows.push([{ text: "← Back", callback_data: "model_back" }]);
+  
+  return { inline_keyboard: rows };
+}
+
+// Category emoji/title helper
+function categoryTitle(category) {
+  if (category === "free") return "🆓 FREE";
+  if (category === "premium") return "⭐ PREMIUM";
+  if (category === "ultra") return "💎 ULTRA";
+  return category.toUpperCase();
+}
+
 bot.command("model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const u = ensureUser(ctx.from.id, ctx.from);
   const current = ensureChosenModelValid(ctx.from.id);
 
-  // Build buttons grouped by tier
-  const rows = [];
-  
-  // FREE tier models (available to all)
-  if (FREE_MODELS.length) {
-    rows.push([{ text: "── 🆓 FREE ──", callback_data: "noop" }]);
-    for (const m of FREE_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-  
-  // PREMIUM tier models (premium + ultra)
-  if (PREMIUM_MODELS.length && (u.tier === "premium" || u.tier === "ultra")) {
-    rows.push([{ text: "── ⭐ PREMIUM ──", callback_data: "noop" }]);
-    for (const m of PREMIUM_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-  
-  // ULTRA tier models (ultra only)
-  if (ULTRA_MODELS.length && u.tier === "ultra") {
-    rows.push([{ text: "── 💎 ULTRA ──", callback_data: "noop" }]);
-    for (const m of ULTRA_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-
-  if (!rows.length) return ctx.reply("No models configured.");
-
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: *${current}*\n\nChoose a model:`,
-    { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
+    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
+    { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
   );
 });
 
@@ -1085,52 +1117,69 @@ bot.callbackQuery("open_model", async (ctx) => {
   const u = ensureUser(ctx.from.id, ctx.from);
   const current = ensureChosenModelValid(ctx.from.id);
 
-  // Build buttons grouped by tier
-  const rows = [];
-  
-  // FREE tier models (available to all)
-  if (FREE_MODELS.length) {
-    rows.push([{ text: "── 🆓 FREE ──", callback_data: "noop" }]);
-    for (const m of FREE_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-  
-  // PREMIUM tier models (premium + ultra)
-  if (PREMIUM_MODELS.length && (u.tier === "premium" || u.tier === "ultra")) {
-    rows.push([{ text: "── ⭐ PREMIUM ──", callback_data: "noop" }]);
-    for (const m of PREMIUM_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-  
-  // ULTRA tier models (ultra only)
-  if (ULTRA_MODELS.length && u.tier === "ultra") {
-    rows.push([{ text: "── 💎 ULTRA ──", callback_data: "noop" }]);
-    for (const m of ULTRA_MODELS) {
-      rows.push([{
-        text: `${m === current ? "✅ " : ""}${m}`,
-        callback_data: `setmodel:${m}`,
-      }]);
-    }
-  }
-
-  if (!rows.length) {
-    await ctx.answerCallbackQuery({ text: "No models configured.", show_alert: true });
-    return;
-  }
-
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: *${current}*\n\nChoose a model:`,
-    { parse_mode: "Markdown", reply_markup: { inline_keyboard: rows } }
+    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
+    { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
   );
+});
+
+// Category selection callback
+bot.callbackQuery(/^model_cat:(free|premium|ultra)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const match = ctx.callbackQuery.data.match(/^model_cat:(free|premium|ultra)$/);
+  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
+  
+  const category = match[1];
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const current = ensureChosenModelValid(ctx.from.id);
+  
+  // Check access
+  if (category === "premium" && u.tier === "free") {
+    return ctx.answerCallbackQuery({ text: "🔒 Premium tier required", show_alert: true });
+  }
+  if (category === "ultra" && u.tier !== "ultra") {
+    return ctx.answerCallbackQuery({ text: "🔒 Ultra tier required", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `${categoryTitle(category)} Models\n🤖 Current: \`${current}\`\n\nSelect a model:`,
+      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier) }
+    );
+  } catch {
+    // If edit fails, send new message
+    await ctx.reply(
+      `${categoryTitle(category)} Models\n🤖 Current: \`${current}\`\n\nSelect a model:`,
+      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier) }
+    );
+  }
+});
+
+// Back button callback
+bot.callbackQuery("model_back", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const current = ensureChosenModelValid(ctx.from.id);
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
+      { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    );
+  } catch {
+    // If edit fails, send new message
+    await ctx.reply(
+      `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
+      { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    );
+  }
 });
 
 bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
@@ -1153,10 +1202,19 @@ bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
   // Also update inline session model
   updateInlineSession(ctx.from.id, { model: modelId });
 
-  await ctx.answerCallbackQuery({ text: `Switched to ${modelId}` });
+  await ctx.answerCallbackQuery({ text: `✅ Switched to ${modelId}` });
 
   try {
-    await ctx.editMessageText(`Switched to *${modelId}*`, { parse_mode: "Markdown" });
+    // Show success message with back to categories option
+    await ctx.editMessageText(
+      `✅ Switched to *${modelId}*\n\n👤 Plan: *${u.tier.toUpperCase()}*`,
+      { 
+        parse_mode: "Markdown", 
+        reply_markup: { 
+          inline_keyboard: [[{ text: "← Back to Models", callback_data: "model_back" }]] 
+        } 
+      }
+    );
   } catch {
     // ignore if can't edit
   }
