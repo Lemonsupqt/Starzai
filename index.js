@@ -193,20 +193,38 @@ async function loadFromTelegram() {
     return;
   }
   
-  console.log("Initializing Telegram storage channel...");
+  console.log("Loading data from Telegram storage channel...");
   
   try {
-    // Verify channel access by getting chat info
+    // Verify channel access
     const chat = await bot.api.getChat(STORAGE_CHANNEL_ID);
     console.log(`Storage channel verified: ${chat.title || chat.id}`);
-    console.log("Telegram storage ready. Data will be saved to channel on changes.");
-    console.log("Using local files as primary data source, Telegram as backup/sync.");
+    
+    // Search for recent messages with our data files
+    // We need to find the most recent users.json, prefs.json, and inline_sessions.json
+    const dataTypes = ["users", "prefs", "inlineSessions"];
+    const labels = {
+      users: "📊 USERS_DATA",
+      prefs: "⚙️ PREFS_DATA",
+      inlineSessions: "💬 INLINE_SESSIONS"
+    };
+    
+    // Get recent messages from channel (search last 50 messages)
+    // Note: We can't search, so we'll rely on pinned messages or just use local + save
+    // For now, let's just verify and use local files, but ensure we save properly
+    
+    console.log("Telegram storage ready. Using local files as primary, syncing to Telegram.");
+    console.log(`Loaded users: ${Object.keys(usersDb.users || {}).length}`);
+    
+    // Log current user tiers for debugging
+    for (const [uid, user] of Object.entries(usersDb.users || {})) {
+      if (user.tier !== "free") {
+        console.log(`  User ${uid} (${user.first_name}): tier=${user.tier}, model=${user.model}`);
+      }
+    }
     
   } catch (e) {
     console.error("Failed to access storage channel:", e.message);
-    console.log("Make sure:");
-    console.log("  1. STORAGE_CHANNEL_ID is correct (should be -100XXXXXXXXXX)");
-    console.log("  2. Bot is admin in the storage channel");
     console.log("Falling back to local storage only.");
   }
 }
@@ -842,8 +860,9 @@ function formatSharedChatDisplay(session) {
 function sharedChatKeyboard(chatKey) {
   const kb = new InlineKeyboard();
   
-  // Main action - anyone can ask
-  kb.text("💬 Ask AI", `schat_ask:${chatKey}`);
+  // Main action - type message directly in this chat using switch_inline_query_current_chat
+  // This opens the inline query with a prefix, user types their message, and it gets processed
+  kb.switchInlineCurrentChat("💬 Ask AI", `yap:${chatKey}:`);
   kb.row();
   
   // Secondary actions
@@ -1608,69 +1627,8 @@ bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
 
 // =====================
 // SHARED CHAT CALLBACKS (Multi-user inline chat)
+// Now uses switch_inline_query_current_chat - no DM needed!
 // =====================
-
-// Track pending input requests
-const pendingSharedInput = new Map(); // odlUserId -> { chatKey, inline_message_id }
-
-// Ask AI in shared chat
-bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const userId = ctx.from?.id;
-  const userName = ctx.from?.first_name || "User";
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  
-  // Get or create the shared session
-  let session = getSharedChat(chatKey);
-  if (!session) {
-    // Create new session with this user's model
-    const model = ensureChosenModelValid(userId);
-    session = createSharedChat(chatKey, userId, userName, model);
-  }
-  
-  // Store pending input request
-  pendingSharedInput.set(String(userId), {
-    chatKey,
-    inlineMessageId: ctx.callbackQuery.inline_message_id,
-  });
-  
-  await ctx.answerCallbackQuery({ 
-    text: "Type your message and send it to me in DM!",
-    show_alert: true 
-  });
-  
-  // Send DM to user asking for input
-  try {
-    await ctx.api.sendMessage(userId, 
-      `💬 *Group Chat Input*\n\nType your message for the group AI chat:\n\n_Send any message and it will appear in the group chat!_`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("❌ Cancel", `schat_cancel:${chatKey}`)
-      }
-    );
-  } catch (e) {
-    console.error("Could not DM user:", e.message);
-    await ctx.answerCallbackQuery({ 
-      text: "Start a DM with me first! Send /start to @starztechbot",
-      show_alert: true 
-    });
-  }
-});
-
-// Cancel pending input
-bot.callbackQuery(/^schat_cancel:(.+)$/, async (ctx) => {
-  const userId = ctx.from?.id;
-  if (userId) {
-    pendingSharedInput.delete(String(userId));
-  }
-  await ctx.answerCallbackQuery({ text: "Cancelled" });
-  try {
-    await ctx.deleteMessage();
-  } catch {}
-});
 
 // Refresh shared chat display
 bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
@@ -1861,87 +1819,6 @@ bot.on("message:text", async (ctx) => {
 
   // Ignore commands
   if (text.startsWith("/")) return;
-  
-  // Check if user has pending shared chat input (only in private chat)
-  if (chat.type === "private") {
-    const pending = pendingSharedInput.get(String(u.id));
-    if (pending) {
-      pendingSharedInput.delete(String(u.id));
-      
-      // Process shared chat message
-      const { chatKey, inlineMessageId } = pending;
-      let session = getSharedChat(chatKey);
-      
-      if (!session) {
-        const model = ensureChosenModelValid(u.id);
-        session = createSharedChat(chatKey, u.id, u.first_name || "User", model);
-      }
-      
-      const userName = u.first_name || "User";
-      
-      // Add user message to shared chat
-      addToSharedChat(chatKey, u.id, userName, "user", text);
-      
-      // Send confirmation
-      await ctx.reply(`✅ Sent to group chat! Getting AI response...`);
-      
-      console.log(`Shared chat: chatKey=${chatKey}, inlineMessageId=${inlineMessageId}`);
-      
-      try {
-        // Get AI response
-        const model = session.model || "gpt-4o-mini";
-        const messages = [
-          { role: "system", content: "You are StarzAI, a helpful assistant in a group chat. Multiple users may be talking to you. Be friendly and helpful. Keep responses concise." },
-          ...session.history.slice(-10).map(m => ({
-            role: m.role,
-            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-          }))
-        ];
-        
-        const aiResponse = await llmText({
-          model,
-          messages,
-          temperature: 0.7,
-          max_tokens: 500,
-        });
-        
-        // Add AI response to shared chat
-        addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
-        
-        // Get fresh session reference after adding AI response
-        const updatedSession = getSharedChat(chatKey);
-        
-        // Update the inline message
-        if (inlineMessageId) {
-          console.log(`Updating inline message: ${inlineMessageId}`);
-          try {
-            const newText = formatSharedChatDisplay(updatedSession);
-            console.log(`New text length: ${newText.length}`);
-            await bot.api.editMessageTextInline(
-              inlineMessageId,
-              newText,
-              { 
-                parse_mode: "Markdown",
-                reply_markup: sharedChatKeyboard(chatKey)
-              }
-            );
-            console.log("Inline message updated successfully!");
-          } catch (e) {
-            console.error("Could not update inline message:", e.message, e);
-          }
-        } else {
-          console.log("No inlineMessageId found!");
-        }
-        
-        await ctx.reply(`🤖 AI responded! Tap 🔄 Refresh in the group chat to see it.`);
-      } catch (e) {
-        console.error("Shared chat AI error:", e);
-        await ctx.reply(`❌ AI error. Try again!`);
-      }
-      
-      return; // Don't process as regular message
-    }
-  }
   
   // Deduplicate - prevent processing same message twice
   const dedupeKey = `${chat.id}:${messageId}`;
@@ -2220,8 +2097,8 @@ bot.on("inline_query", async (ctx) => {
   // Filter modes when user types partial text
   const qLower = q.toLowerCase();
   
-  // "yap" filter - show only yap option
-  if (qLower === "yap" || qLower.startsWith("yap ")) {
+  // "yap" filter - show only yap option (starting new yap)
+  if (qLower === "yap" || (qLower.startsWith("yap ") && !qLower.includes(":"))) {
     const chatKey = makeId(8);
     return ctx.answerInlineQuery([
       {
@@ -2237,6 +2114,95 @@ bot.on("inline_query", async (ctx) => {
         reply_markup: sharedChatKeyboard(chatKey),
       },
     ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "yap:chatKey:message" - user is sending a message to an existing yap session
+  if (qLower.startsWith("yap:")) {
+    const parts = q.split(":");
+    // Format: yap:chatKey:message
+    if (parts.length >= 2) {
+      const chatKey = parts[1];
+      const userMessage = parts.slice(2).join(":").trim();
+      const userName = ctx.from?.first_name || "User";
+      
+      if (!userMessage) {
+        // No message yet, show prompt
+        return ctx.answerInlineQuery([
+          {
+            type: "article",
+            id: `yap_prompt_${chatKey}`,
+            title: "💬 Type your message...",
+            description: "Type after the colon and tap to send",
+            input_message_content: {
+              message_text: `💭 _Type your message after \`yap:${chatKey}:\` and select to send!_`,
+              parse_mode: "Markdown",
+            },
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Get or create session
+      let session = getSharedChat(chatKey);
+      if (!session) {
+        session = createSharedChat(chatKey, userId, userName, model);
+      }
+      
+      // Add user message
+      addToSharedChat(chatKey, userId, userName, "user", userMessage);
+      
+      // Get AI response
+      try {
+        const messages = [
+          { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
+          ...session.history.slice(-8).map(m => ({
+            role: m.role,
+            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
+          }))
+        ];
+        
+        const aiResponse = await llmText({
+          model: session.model || model,
+          messages,
+          temperature: 0.7,
+          max_tokens: 300,
+          timeout: 12000,
+          retries: 0,
+        });
+        
+        // Add AI response
+        addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
+        
+        // Get updated session
+        const updatedSession = getSharedChat(chatKey);
+        
+        return ctx.answerInlineQuery([
+          {
+            type: "article",
+            id: `yap_reply_${makeId(6)}`,
+            title: `💬 ${userMessage.slice(0, 30)}...`,
+            description: aiResponse.slice(0, 80),
+            input_message_content: {
+              message_text: formatSharedChatDisplay(updatedSession),
+              parse_mode: "Markdown",
+            },
+            reply_markup: sharedChatKeyboard(chatKey),
+          },
+        ], { cache_time: 0, is_personal: true });
+      } catch (e) {
+        console.error("Yap AI error:", e.message);
+        return ctx.answerInlineQuery([
+          {
+            type: "article",
+            id: `yap_err_${chatKey}`,
+            title: "⚠️ AI is slow",
+            description: "Try again or use a faster model",
+            input_message_content: {
+              message_text: `⚠️ AI is slow right now. Try again!`,
+            },
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+    }
   }
   
   // "research:" prefix - detailed research answer
