@@ -231,6 +231,69 @@ const rate = new Map(); // userId -> { windowStartMs, count }
 // Active inline message tracking (for editing)
 const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
 
+// =====================
+// SHARED INLINE CHAT SESSIONS
+// These are keyed by inline_message_id so multiple users can participate
+// =====================
+const sharedChatSessions = new Map(); // chatKey -> { history: [], model, createdBy, createdAt, participants: Set }
+
+function getSharedChat(chatKey) {
+  return sharedChatSessions.get(chatKey) || null;
+}
+
+function createSharedChat(chatKey, creatorId, creatorName, model) {
+  const session = {
+    history: [],
+    model: model,
+    createdBy: creatorId,
+    createdByName: creatorName,
+    createdAt: Date.now(),
+    participants: new Set([String(creatorId)]),
+    lastActive: Date.now(),
+  };
+  sharedChatSessions.set(chatKey, session);
+  return session;
+}
+
+function addToSharedChat(chatKey, userId, userName, role, content) {
+  const session = sharedChatSessions.get(chatKey);
+  if (!session) return null;
+  
+  session.participants.add(String(userId));
+  session.history.push({ 
+    role, 
+    content, 
+    userId: String(userId),
+    userName: userName || "User",
+    timestamp: Date.now()
+  });
+  
+  // Keep last 30 messages
+  while (session.history.length > 30) session.history.shift();
+  session.lastActive = Date.now();
+  
+  return session;
+}
+
+function clearSharedChat(chatKey) {
+  const session = sharedChatSessions.get(chatKey);
+  if (session) {
+    session.history = [];
+    session.lastActive = Date.now();
+  }
+  return session;
+}
+
+// Clean up old shared sessions (older than 1 hour)
+setInterval(() => {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  for (const [key, session] of sharedChatSessions) {
+    if (session.lastActive < oneHourAgo) {
+      sharedChatSessions.delete(key);
+    }
+  }
+}, 10 * 60 * 1000); // Check every 10 minutes
+
 function nowMs() {
   return Date.now();
 }
@@ -741,6 +804,51 @@ function inlineModelSelectKeyboard(sessionKey, userId) {
   if (models.length % 2 === 1) kb.row();
   
   kb.text("« Back", `ichat_back:${sessionKey}`);
+  
+  return kb;
+}
+
+// =====================
+// SHARED CHAT UI (Multi-user inline chat)
+// =====================
+function formatSharedChatDisplay(session) {
+  const history = session.history || [];
+  const model = session.model || "gpt-4o-mini";
+  const participantCount = session.participants?.size || 1;
+  
+  let display = `🤖 *StarzAI Group Chat*\n`;
+  display += `👥 ${participantCount} participant${participantCount > 1 ? "s" : ""} • 📊 \`${model.split("/").pop()}\`\n`;
+  display += `━━━━━━━━━━━━━━━\n\n`;
+  
+  if (history.length === 0) {
+    display += `_No messages yet._\n_Anyone can tap 💬 Ask to start!_`;
+  } else {
+    // Show last 6 messages
+    const recentHistory = history.slice(-6);
+    for (const msg of recentHistory) {
+      if (msg.role === "user") {
+        const name = msg.userName || "User";
+        display += `👤 *${name}:* ${msg.content.slice(0, 150)}${msg.content.length > 150 ? "..." : ""}\n\n`;
+      } else {
+        display += `🤖 *AI:* ${msg.content.slice(0, 300)}${msg.content.length > 300 ? "..." : ""}\n\n`;
+      }
+    }
+  }
+  
+  display += `━━━━━━━━━━━━━━━`;
+  return display.slice(0, 3800);
+}
+
+function sharedChatKeyboard(chatKey) {
+  const kb = new InlineKeyboard();
+  
+  // Main action - anyone can ask
+  kb.text("💬 Ask AI", `schat_ask:${chatKey}`);
+  kb.row();
+  
+  // Secondary actions
+  kb.text("🔄 Refresh", `schat_refresh:${chatKey}`)
+    .text("🗑️ Clear", `schat_clear:${chatKey}`);
   
   return kb;
 }
@@ -1442,6 +1550,124 @@ bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
 });
 
 // =====================
+// SHARED CHAT CALLBACKS (Multi-user inline chat)
+// =====================
+
+// Track pending input requests
+const pendingSharedInput = new Map(); // odlUserId -> { chatKey, inline_message_id }
+
+// Ask AI in shared chat
+bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  const userName = ctx.from?.first_name || "User";
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const chatKey = ctx.callbackQuery.data.split(":")[1];
+  
+  // Get or create the shared session
+  let session = getSharedChat(chatKey);
+  if (!session) {
+    // Create new session with this user's model
+    const model = ensureChosenModelValid(userId);
+    session = createSharedChat(chatKey, userId, userName, model);
+  }
+  
+  // Store pending input request
+  pendingSharedInput.set(String(userId), {
+    chatKey,
+    inlineMessageId: ctx.callbackQuery.inline_message_id,
+  });
+  
+  await ctx.answerCallbackQuery({ 
+    text: "Type your message and send it to me in DM!",
+    show_alert: true 
+  });
+  
+  // Send DM to user asking for input
+  try {
+    await ctx.api.sendMessage(userId, 
+      `💬 *Group Chat Input*\n\nType your message for the group AI chat:\n\n_Send any message and it will appear in the group chat!_`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", `schat_cancel:${chatKey}`)
+      }
+    );
+  } catch (e) {
+    console.error("Could not DM user:", e.message);
+    await ctx.answerCallbackQuery({ 
+      text: "Start a DM with me first! Send /start to @starztechbot",
+      show_alert: true 
+    });
+  }
+});
+
+// Cancel pending input
+bot.callbackQuery(/^schat_cancel:(.+)$/, async (ctx) => {
+  const userId = ctx.from?.id;
+  if (userId) {
+    pendingSharedInput.delete(String(userId));
+  }
+  await ctx.answerCallbackQuery({ text: "Cancelled" });
+  try {
+    await ctx.deleteMessage();
+  } catch {}
+});
+
+// Refresh shared chat display
+bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const chatKey = ctx.callbackQuery.data.split(":")[1];
+  const session = getSharedChat(chatKey);
+  
+  if (!session) {
+    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: "Refreshed! 🔄" });
+  
+  try {
+    await ctx.editMessageText(
+      formatSharedChatDisplay(session),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: sharedChatKeyboard(chatKey)
+      }
+    );
+  } catch {
+    // Message unchanged
+  }
+});
+
+// Clear shared chat
+bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const chatKey = ctx.callbackQuery.data.split(":")[1];
+  const session = clearSharedChat(chatKey);
+  
+  if (!session) {
+    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: "Chat cleared! 🗑️" });
+  
+  try {
+    await ctx.editMessageText(
+      formatSharedChatDisplay(session),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: sharedChatKeyboard(chatKey)
+      }
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// =====================
 // DM / GROUP TEXT
 // =====================
 
@@ -1460,6 +1686,76 @@ bot.on("message:text", async (ctx) => {
 
   // Ignore commands
   if (text.startsWith("/")) return;
+  
+  // Check if user has pending shared chat input (only in private chat)
+  if (chat.type === "private") {
+    const pending = pendingSharedInput.get(String(u.id));
+    if (pending) {
+      pendingSharedInput.delete(String(u.id));
+      
+      // Process shared chat message
+      const { chatKey, inlineMessageId } = pending;
+      let session = getSharedChat(chatKey);
+      
+      if (!session) {
+        const model = ensureChosenModelValid(u.id);
+        session = createSharedChat(chatKey, u.id, u.first_name || "User", model);
+      }
+      
+      const userName = u.first_name || "User";
+      
+      // Add user message to shared chat
+      addToSharedChat(chatKey, u.id, userName, "user", text);
+      
+      // Send confirmation
+      await ctx.reply(`✅ Sent to group chat! Getting AI response...`);
+      
+      try {
+        // Get AI response
+        const model = session.model || "gpt-4o-mini";
+        const messages = [
+          { role: "system", content: "You are StarzAI, a helpful assistant in a group chat. Multiple users may be talking to you. Be friendly and helpful. Keep responses concise." },
+          ...session.history.slice(-10).map(m => ({
+            role: m.role,
+            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
+          }))
+        ];
+        
+        const aiResponse = await llmText({
+          model,
+          messages,
+          temperature: 0.7,
+          max_tokens: 500,
+        });
+        
+        // Add AI response to shared chat
+        addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
+        
+        // Update the inline message
+        if (inlineMessageId) {
+          try {
+            await bot.api.editMessageTextInline(
+              inlineMessageId,
+              formatSharedChatDisplay(session),
+              { 
+                parse_mode: "Markdown",
+                reply_markup: sharedChatKeyboard(chatKey)
+              }
+            );
+          } catch (e) {
+            console.error("Could not update inline message:", e.message);
+          }
+        }
+        
+        await ctx.reply(`🤖 AI responded! Check the group chat.`);
+      } catch (e) {
+        console.error("Shared chat AI error:", e);
+        await ctx.reply(`❌ AI error. Try again!`);
+      }
+      
+      return; // Don't process as regular message
+    }
+  }
   
   // Deduplicate - prevent processing same message twice
   const dedupeKey = `${chat.id}:${messageId}`;
@@ -1669,14 +1965,30 @@ bot.on("inline_query", async (ctx) => {
 
   // Empty query - show main menu
   if (!q) {
+    // Create a unique chat key for shared sessions
+    const chatKey = makeId(8);
+    const userName = ctx.from?.first_name || "User";
+    
     const results = [
       {
         type: "article",
+        id: `group_${chatKey}`,
+        title: "👥 Start Group Chat",
+        description: "Anyone in this chat can talk to AI!",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: `🤖 *StarzAI Group Chat*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          parse_mode: "Markdown",
+        },
+        reply_markup: sharedChatKeyboard(chatKey),
+      },
+      {
+        type: "article",
         id: `chat_${sessionKey}`,
-        title: "💬 Open AI Chat",
+        title: "💬 My AI Chat",
         description: session.history.length > 0 
           ? `Continue chat (${session.history.length} messages)` 
-          : "Start a new conversation",
+          : "Personal conversation",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: {
           message_text: formatInlineChatDisplay(session, userId),
@@ -1686,21 +1998,8 @@ bot.on("inline_query", async (ctx) => {
       },
       {
         type: "article",
-        id: `new_${sessionKey}`,
-        title: "🆕 New Chat",
-        description: "Clear history and start fresh",
-        thumbnail_url: "https://img.icons8.com/fluency/96/new.png",
-        input_message_content: {
-          message_text: "🆕 *New Chat Started*\n\nType your message to begin!",
-          parse_mode: "Markdown",
-        },
-        reply_markup: new InlineKeyboard()
-          .switchInlineCurrentChat("✏️ Type message...", "chat:"),
-      },
-      {
-        type: "article",
         id: `model_${sessionKey}`,
-        title: `⚙️ Current: ${model.split("/").pop()}`,
+        title: `⚙️ Model: ${model.split("/").pop()}`,
         description: "Tap to change model",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
         input_message_content: {
