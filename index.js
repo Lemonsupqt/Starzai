@@ -1049,14 +1049,80 @@ function helpText() {
 
 function helpKeyboard() {
   return new InlineKeyboard()
-    .text("Features", "help_features")
+    .text("🌟 Features", "help_features")
+    .text("⚙️ Model", "open_model")
     .row()
-    .text("Register", "do_register")
-    .text("Model", "open_model")
+    .text("🤝🏻 Partner", "open_partner")
+    .text("📊 Stats", "do_stats")
     .row()
-    .text("Who am I", "do_whoami")
+    .text("👤 Who am I", "do_whoami")
+    .text("📝 Register", "do_register")
     .row()
-    .switchInline("Try inline", "");
+    .switchInline("⚡ Try Inline", "");
+}
+
+// Partner setup helpers
+function buildPartnerSetupMessage(partner) {
+  if (!partner) {
+    return [
+      "🤝🏻 *Create Your AI Partner*",
+      "",
+      "Set up a personalized AI companion!",
+      "Tap the buttons below to configure:",
+      "",
+      "⬜ *Name* - Not set",
+      "⬜ *Personality* - Not set",
+      "⬜ *Background* - Not set",
+      "⬜ *Style* - Not set",
+      "",
+      "_Tap a button to set each field_",
+    ].join("\n");
+  }
+  
+  const status = partner.active ? "🟢 Active" : "⚪ Inactive";
+  const chatCount = getPartnerChatHistory(partner.userId || 0)?.length || 0;
+  
+  const nameStatus = partner.name ? `✅ *Name:* ${partner.name}` : "⬜ *Name* - Not set";
+  const persStatus = partner.personality ? `✅ *Personality:* ${partner.personality.slice(0, 40)}${partner.personality.length > 40 ? "..." : ""}` : "⬜ *Personality* - Not set";
+  const bgStatus = partner.background ? `✅ *Background:* ${partner.background.slice(0, 40)}${partner.background.length > 40 ? "..." : ""}` : "⬜ *Background* - Not set";
+  const styleStatus = partner.style ? `✅ *Style:* ${partner.style.slice(0, 40)}${partner.style.length > 40 ? "..." : ""}` : "⬜ *Style* - Not set";
+  
+  return [
+    `🤝🏻 *Your AI Partner* ${status}`,
+    "",
+    nameStatus,
+    persStatus,
+    bgStatus,
+    styleStatus,
+    "",
+    `💬 *Chat history:* ${chatCount} messages`,
+    "",
+    "_Tap buttons to edit or start chatting_",
+  ].join("\n");
+}
+
+function buildPartnerKeyboard(partner) {
+  const kb = new InlineKeyboard();
+  
+  // Setup buttons row 1
+  kb.text(partner?.name ? `✏️ Name` : `➕ Name`, "partner_set_name")
+    .text(partner?.personality ? `✏️ Personality` : `➕ Personality`, "partner_set_personality");
+  kb.row();
+  
+  // Setup buttons row 2
+  kb.text(partner?.background ? `✏️ Background` : `➕ Background`, "partner_set_background")
+    .text(partner?.style ? `✏️ Style` : `➕ Style`, "partner_set_style");
+  kb.row();
+  
+  // Action buttons
+  if (partner?.name) {
+    kb.text(partner?.active ? "⏹ Stop Chat" : "💬 Start Chat", partner?.active ? "partner_stop" : "partner_chat");
+    kb.text("🗑 Clear Chat", "partner_clearchat");
+    kb.row();
+    kb.text("❌ Delete Partner", "partner_delete");
+  }
+  
+  return kb;
 }
 
 function inlineAnswerKeyboard(key) {
@@ -1495,34 +1561,12 @@ bot.command("partner", async (ctx) => {
   
   const partner = getPartner(u.id);
   
-  // No subcommand - show current partner or help
+  // No subcommand - show partner setup with checklist buttons
   if (!subcommand) {
-    if (!partner) {
-      return ctx.reply(
-        `🤝🏻 *Create Your AI Partner*\n\nSet up a personalized AI companion!\n\n*Commands:*\n• \`/partner name [name]\` - Set name\n• \`/partner personality [traits]\` - Set personality\n• \`/partner background [story]\` - Set backstory\n• \`/partner style [how they talk]\` - Set speaking style\n• \`/partner chat\` - Start chatting\n• \`/partner stop\` - Stop partner mode\n• \`/partner clear\` - Delete partner\n\n_Example: \`/partner name Luna\`_`,
-        { parse_mode: "Markdown" }
-      );
-    }
-    
-    // Show current partner info
-    const status = partner.active ? "🟢 Active" : "⚪ Inactive";
-    const chatCount = partner.chatHistory?.length || 0;
-    
-    let info = `🤝🏻 *Your Partner: ${partner.name || "Unnamed"}*\n\n`;
-    info += `${status}\n\n`;
-    if (partner.personality) info += `🎭 *Personality:* ${partner.personality}\n`;
-    if (partner.background) info += `📖 *Background:* ${partner.background}\n`;
-    if (partner.style) info += `💬 *Style:* ${partner.style}\n`;
-    info += `\n📝 *Chat messages:* ${chatCount}\n`;
-    info += `\n_Use \`/partner [field] [value]\` to edit_`;
-    
-    const keyboard = new InlineKeyboard()
-      .text(partner.active ? "⏹ Stop Chat" : "💬 Start Chat", partner.active ? "partner_stop" : "partner_chat")
-      .text("🗑 Clear Chat", "partner_clearchat")
-      .row()
-      .text("❌ Delete Partner", "partner_delete");
-    
-    return ctx.reply(info, { parse_mode: "Markdown", reply_markup: keyboard });
+    return ctx.reply(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
   }
   
   // Subcommands
@@ -1577,44 +1621,118 @@ bot.command("partner", async (ctx) => {
   }
 });
 
-// Partner callback handlers
+// Partner callback handlers - Setup field buttons
+const pendingPartnerInput = new Map(); // userId -> { field, messageId }
+
+bot.callbackQuery("partner_set_name", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "name", timestamp: Date.now() });
+  await ctx.reply("📝 *Enter partner name:*\n\n_Example: Luna, Alex, Shadow_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_set_personality", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "personality", timestamp: Date.now() });
+  await ctx.reply("🎭 *Enter personality traits:*\n\n_Example: cheerful, witty, caring, playful_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_set_background", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "background", timestamp: Date.now() });
+  await ctx.reply("📖 *Enter background/backstory:*\n\n_Example: A mysterious traveler from another dimension who loves stargazing_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_set_style", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "style", timestamp: Date.now() });
+  await ctx.reply("💬 *Enter speaking style:*\n\n_Example: speaks softly with poetic phrases, uses lots of emojis_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("open_partner", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const partner = getPartner(ctx.from.id);
+  await ctx.reply(
+    buildPartnerSetupMessage(partner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+  );
+});
+
+bot.callbackQuery("do_stats", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  const userRecord = getUserRecord(u.id);
+  
+  if (!userRecord) {
+    return ctx.reply("❌ Not registered yet. Use /register first.");
+  }
+  
+  const model = ensureChosenModelValid(u.id);
+  const memberSince = userRecord.createdAt ? new Date(userRecord.createdAt).toLocaleDateString() : "Unknown";
+  const messages = userRecord.messageCount || 0;
+  const queries = userRecord.inlineQueryCount || 0;
+  
+  const stats = [
+    `📊 *Your Stats*`,
+    ``,
+    `👤 *User ID:* \`${u.id}\``,
+    `🌟 *Tier:* ${userRecord.tier?.toUpperCase() || "FREE"}`,
+    `🤖 *Model:* ${model.split("/").pop()}`,
+    ``,
+    `💬 *Messages:* ${messages}`,
+    `⌨️ *Inline queries:* ${queries}`,
+    `📅 *Member since:* ${memberSince}`,
+  ].join("\n");
+  
+  await ctx.reply(stats, { parse_mode: "Markdown" });
+});
+
 bot.callbackQuery("partner_chat", async (ctx) => {
   await ctx.answerCallbackQuery();
   const u = ctx.from;
   const partner = getPartner(u.id);
   
   if (!partner?.name) {
-    return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]`", { parse_mode: "Markdown" });
+    return ctx.reply("❌ Please set a name first!", { parse_mode: "Markdown" });
   }
   
   setPartner(u.id, { active: true });
+  const updatedPartner = getPartner(u.id);
   await ctx.editMessageText(
-    `🤝🏻 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages!\n\n_Use \`/partner stop\` to end._`,
-    { parse_mode: "Markdown" }
+    buildPartnerSetupMessage(updatedPartner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(updatedPartner) }
   );
+  await ctx.reply(`🤝🏻 *${partner.name} is ready!*\n\nJust send messages and they'll respond in character.`, { parse_mode: "Markdown" });
 });
 
 bot.callbackQuery("partner_stop", async (ctx) => {
   await ctx.answerCallbackQuery();
   const u = ctx.from;
+  setPartner(u.id, { active: false });
   const partner = getPartner(u.id);
   
-  if (partner) {
-    setPartner(u.id, { active: false });
-  }
-  
-  await ctx.editMessageText("⏹ Partner mode deactivated. Normal AI responses resumed.");
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(partner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+  );
 });
 
 bot.callbackQuery("partner_clearchat", async (ctx) => {
   await ctx.answerCallbackQuery({ text: "Chat history cleared!" });
   clearPartnerChat(ctx.from.id);
+  const partner = getPartner(ctx.from.id);
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(partner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+  );
 });
 
 bot.callbackQuery("partner_delete", async (ctx) => {
   await ctx.answerCallbackQuery({ text: "Partner deleted" });
   clearPartner(ctx.from.id);
-  await ctx.editMessageText("❌ Partner deleted. Use `/partner` to create a new one.", { parse_mode: "Markdown" });
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(null),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(null) }
+  );
 });
 
 // Helper for time ago
@@ -2921,6 +3039,30 @@ bot.on("message:text", async (ctx) => {
             );
           } catch {}
         }
+        return;
+      }
+    }
+  }
+
+  // Check if user has pending partner field input
+  const pendingPartner = pendingPartnerInput.get(String(u.id));
+  if (pendingPartner && chat.type === "private") {
+    pendingPartnerInput.delete(String(u.id));
+    
+    // Check if not expired (5 min timeout)
+    if (Date.now() - pendingPartner.timestamp < 5 * 60 * 1000) {
+      const { field } = pendingPartner;
+      const value = text.trim();
+      
+      if (value) {
+        const maxLengths = { name: 50, personality: 200, background: 300, style: 200 };
+        setPartner(u.id, { [field]: value.slice(0, maxLengths[field] || 200) });
+        
+        const partner = getPartner(u.id);
+        await ctx.reply(
+          `✅ *${field.charAt(0).toUpperCase() + field.slice(1)}* updated!\n\n` + buildPartnerSetupMessage(partner),
+          { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+        );
         return;
       }
     }
