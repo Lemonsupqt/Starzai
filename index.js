@@ -2998,73 +2998,36 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Get AI response for follow-up
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally." },
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-        ],
-        temperature: 0.7,
-        max_tokens: 500,
-        timeout: 8000,
-        retries: 0,
-      });
-      
-      const answer = (out || "I couldn't generate a response.").slice(0, 2000);
-      const newKey = makeId(6);
-      const shortModel = model.split("/").pop();
-      
-      // Store new conversation state
-      inlineCache.set(newKey, {
-        prompt: userMessage,
-        answer,
-        userId: String(userId),
-        model,
-        history: [
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-          { role: "assistant", content: answer },
-        ],
-        timestamp: Date.now(),
-      });
-      
-      // Schedule cleanup
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `c_send_${newKey}`,
-          title: `✉️ Send reply`,
-          description: `${answer.slice(0, 80)}...`,
-          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-          input_message_content: {
-            message_text: `❓ *${userMessage}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
-            parse_mode: "Markdown",
-          },
-          reply_markup: inlineAnswerKeyboard(newKey),
+    // Send immediately with "Thinking..." - AI response will update via chosen_inline_result
+    const replyKey = makeId(6);
+    const shortModel = model.split("/").pop();
+    
+    // Store the pending reply info so chosen_inline_result can process it
+    inlineCache.set(`pending_${replyKey}`, {
+      cacheKey,  // Original conversation key
+      userMessage,
+      userId: String(userId),
+      model,
+      cached,  // Previous conversation context
+      timestamp: Date.now(),
+    });
+    
+    // Schedule cleanup
+    setTimeout(() => inlineCache.delete(`pending_${replyKey}`), 5 * 60 * 1000);
+    
+    return ctx.answerInlineQuery([
+      {
+        type: "article",
+        id: `c_reply_${replyKey}`,
+        title: `✉️ Send: ${userMessage.slice(0, 40)}`,
+        description: "Tap to send - AI will respond!",
+        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+        input_message_content: {
+          message_text: `❓ *${userMessage}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${shortModel}_`,
+          parse_mode: "Markdown",
         },
-      ], { cache_time: 0, is_personal: true });
-      
-    } catch (e) {
-      console.error("Reply error:", e.message);
-      return ctx.answerInlineQuery([
-        {
-          type: "article",
-          id: `c_error_${sessionKey}`,
-          title: "⚠️ Error getting response",
-          description: "Try again or start a new conversation",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // yap:chatKey: message - User is typing a message for the Yap
@@ -3822,6 +3785,89 @@ bot.on("chosen_inline_result", async (ctx) => {
       } catch {}
     }
     
+    return;
+  }
+  
+  // Handle c_reply - user sent a reply to continue conversation
+  if (resultId.startsWith("c_reply_")) {
+    const replyKey = resultId.replace("c_reply_", "");
+    const pending = inlineCache.get(`pending_${replyKey}`);
+    
+    if (!pending) {
+      console.log(`Pending reply not found for key=${replyKey}`);
+      return;
+    }
+    
+    const { cacheKey, userMessage, model, cached } = pending;
+    
+    console.log(`Processing reply: ${userMessage}`);
+    
+    // Get AI response
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally." },
+          { role: "user", content: cached.prompt },
+          { role: "assistant", content: cached.answer },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.7,
+        max_tokens: 500,
+      });
+      
+      const answer = (out || "I couldn't generate a response.").slice(0, 2000);
+      const newKey = makeId(6);
+      const shortModel = model.split("/").pop();
+      
+      // Store new conversation state for future replies
+      inlineCache.set(newKey, {
+        prompt: userMessage,
+        answer,
+        userId: pending.userId,
+        model,
+        history: [
+          { role: "user", content: cached.prompt },
+          { role: "assistant", content: cached.answer },
+          { role: "user", content: userMessage },
+          { role: "assistant", content: answer },
+        ],
+        timestamp: Date.now(),
+      });
+      
+      // Schedule cleanup
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      // Update the inline message with the AI response
+      if (inlineMessageId) {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `❓ *${userMessage}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
+          { 
+            parse_mode: "Markdown",
+            reply_markup: inlineAnswerKeyboard(newKey)
+          }
+        );
+        console.log(`Reply updated with AI response`);
+      }
+      
+    } catch (e) {
+      console.error("Failed to get AI response for reply:", e.message);
+      
+      // Update message to show error
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `❓ *${userMessage}*\n\n⚠️ _Error getting response. Try again!_\n\n_via StarzAI_`,
+            { parse_mode: "Markdown" }
+          );
+        } catch {}
+      }
+    }
+    
+    // Clean up pending
+    inlineCache.delete(`pending_${replyKey}`);
     return;
   }
   
