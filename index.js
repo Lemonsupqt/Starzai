@@ -71,6 +71,7 @@ const openai = new OpenAI({
 const DATA_DIR = process.env.DATA_DIR || ".data";
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
+const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -95,11 +96,18 @@ const usersDb = readJson(USERS_FILE, { users: {} });
 const prefsDb = readJson(PREFS_FILE, { userModel: {} });
 // prefsDb.userModel[userId] = "modelId"
 
+// Inline chat sessions - persistent per user
+const inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
+// inlineSessionsDb.sessions[oderId] = { history: [{role, content}], model, lastActive, inlineMessageId }
+
 function saveUsers() {
   writeJson(USERS_FILE, usersDb);
 }
 function savePrefs() {
   writeJson(PREFS_FILE, prefsDb);
+}
+function saveInlineSessions() {
+  writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
 }
 
 // =====================
@@ -108,6 +116,9 @@ function savePrefs() {
 const chatHistory = new Map(); // chatId -> [{role, content}...]
 const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, userId }
 const rate = new Map(); // userId -> { windowStartMs, count }
+
+// Active inline message tracking (for editing)
+const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
 
 function nowMs() {
   return Date.now();
@@ -250,7 +261,55 @@ function ensureChosenModelValid(userId) {
 }
 
 // =====================
-// HISTORY
+// INLINE SESSION MANAGEMENT
+// =====================
+function getInlineSession(userId) {
+  const id = String(userId);
+  if (!inlineSessionsDb.sessions[id]) {
+    inlineSessionsDb.sessions[id] = {
+      history: [],
+      model: ensureChosenModelValid(userId),
+      lastActive: nowMs(),
+      state: "idle", // idle, chatting
+    };
+    saveInlineSessions();
+  }
+  return inlineSessionsDb.sessions[id];
+}
+
+function updateInlineSession(userId, updates) {
+  const id = String(userId);
+  const session = getInlineSession(userId);
+  Object.assign(session, updates, { lastActive: nowMs() });
+  inlineSessionsDb.sessions[id] = session;
+  saveInlineSessions();
+  return session;
+}
+
+function clearInlineSession(userId) {
+  const id = String(userId);
+  inlineSessionsDb.sessions[id] = {
+    history: [],
+    model: ensureChosenModelValid(userId),
+    lastActive: nowMs(),
+    state: "idle",
+  };
+  saveInlineSessions();
+  return inlineSessionsDb.sessions[id];
+}
+
+function addToInlineHistory(userId, role, content) {
+  const session = getInlineSession(userId);
+  session.history.push({ role, content });
+  // Keep last 20 messages
+  while (session.history.length > 20) session.history.shift();
+  session.lastActive = nowMs();
+  saveInlineSessions();
+  return session;
+}
+
+// =====================
+// HISTORY (DM/Group)
 // =====================
 function getHistory(chatId) {
   if (!chatHistory.has(chatId)) chatHistory.set(chatId, []);
@@ -328,54 +387,72 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
   return out || "(no output)";
 }
 
-async function telegramFileToBase64(fileUrl) {
-  const r = await fetch(fileUrl);
-  if (!r.ok) throw new Error("Failed to download image");
-  const buf = Buffer.from(await r.arrayBuffer());
-  return buf.toString("base64");
+// Inline chat LLM - uses inline session history
+async function llmInlineChatReply({ userId, userText, model }) {
+  const session = getInlineSession(userId);
+  const systemPrompt = "You are StarzAI, a helpful and friendly AI assistant. Be concise but thorough. Use emojis occasionally to be engaging. Keep responses under 800 characters for inline display.";
+  
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...session.history,
+    { role: "user", content: userText },
+  ];
+
+  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 300 });
+  
+  // Add to history
+  addToInlineHistory(userId, "user", userText);
+  addToInlineHistory(userId, "assistant", out);
+  
+  return out || "(no output)";
 }
 
-async function llmVisionReply({ chatId, userText, imageBase64, mime = "image/jpeg", model }) {
-  if (!MODEL_VISION) {
-    return "Vision is not enabled. Set MODEL_VISION on Railway to a vision-capable model id.";
-  }
-
+async function llmVisionReply({ chatId, userText, imageBase64, mime, model }) {
   const history = getHistory(chatId);
   const messages = [
-    { role: "system", content: "You are a helpful multimodal assistant. Be concise." },
+    { role: "system", content: "You are a helpful assistant. Describe and analyze images clearly." },
     ...history,
     {
       role: "user",
       content: [
-        { type: "text", text: userText || "Describe this image." },
+        { type: "text", text: userText },
         { type: "image_url", image_url: { url: `data:${mime};base64,${imageBase64}` } },
       ],
     },
   ];
 
-  const out = await llmText({ model, messages, temperature: 0.5, max_tokens: 350 });
-  pushHistory(chatId, "user", userText || "[image]");
+  const out = await llmText({ model, messages, temperature: 0.6, max_tokens: 400 });
+  pushHistory(chatId, "user", userText);
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
 }
 
+async function telegramFileToBase64(fileUrl) {
+  const resp = await fetch(fileUrl);
+  const buf = await resp.arrayBuffer();
+  return Buffer.from(buf).toString("base64");
+}
+
 // =====================
-// UI TEXT
+// UI HELPERS
 // =====================
 function helpText() {
   return [
-    "✨ *StarzTechBot*",
+    "*StarzTechBot* — AI assistant",
     "",
-    "• DM: just message me.",
-    "• Groups: mention me (`@starztechbot`) or reply to my message.",
-    "• Inline: type `@starztechbot <question>` in any chat.",
-    "• Inline buttons: Regenerate / Shorter / Longer.",
-    "• /register: create your account.",
-    "• /model: choose models available to your plan.",
-    "• /reset: clear memory for this chat.",
+    "📌 *Commands*",
+    "• /start — Welcome",
+    "• /help — This message",
+    "• /register — Register account",
+    "• /model — Choose AI model",
+    "• /whoami — Your info",
+    "• /reset — Clear chat memory",
     "",
-    "Owner-only:",
-    "• /grant <userId> premium",
+    "💬 *Inline Mode*",
+    "Type @starztechbot in any chat for interactive AI!",
+    "",
+    "🔧 *Owner commands*",
+    "• /grant <userId> <free|premium|ultra>",
     "• /revoke <userId>",
     "• /allow <userId> <modelId>",
     "• /deny <userId> <modelId>",
@@ -391,7 +468,7 @@ function helpKeyboard() {
     .row()
     .text("Who am I", "do_whoami")
     .row()
-    .switchInline("Try inline", "yap explain black holes like I'm 12");
+    .switchInline("Try inline", "");
 }
 
 function inlineAnswerKeyboard(key) {
@@ -400,6 +477,78 @@ function inlineAnswerKeyboard(key) {
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
     .text("📈 Longer", `inl_long:${key}`);
+}
+
+// =====================
+// INLINE CHAT UI
+// =====================
+function formatInlineChatDisplay(session, userId) {
+  const u = ensureUser(userId);
+  const history = session.history || [];
+  const model = session.model || ensureChosenModelValid(userId);
+  
+  let display = `🤖 *StarzAI Chat*\n`;
+  display += `📊 Model: \`${model}\`\n`;
+  display += `━━━━━━━━━━━━━━━\n\n`;
+  
+  if (history.length === 0) {
+    display += `_No messages yet._\n_Type your message to start chatting!_`;
+  } else {
+    // Show last 4 exchanges (8 messages)
+    const recentHistory = history.slice(-8);
+    for (const msg of recentHistory) {
+      if (msg.role === "user") {
+        display += `👤 *You:* ${msg.content.slice(0, 200)}${msg.content.length > 200 ? "..." : ""}\n\n`;
+      } else {
+        display += `🤖 *AI:* ${msg.content.slice(0, 400)}${msg.content.length > 400 ? "..." : ""}\n\n`;
+      }
+    }
+  }
+  
+  display += `\n━━━━━━━━━━━━━━━`;
+  return display.slice(0, 3800);
+}
+
+function inlineChatKeyboard(sessionKey, hasHistory = false) {
+  const kb = new InlineKeyboard();
+  
+  // Main action row
+  kb.text("💬 Reply", `ichat_reply:${sessionKey}`)
+    .text("🔄 Regen", `ichat_regen:${sessionKey}`);
+  kb.row();
+  
+  // Secondary actions
+  kb.text("🗑️ Clear", `ichat_clear:${sessionKey}`)
+    .text("⚙️ Model", `ichat_model:${sessionKey}`);
+  kb.row();
+  
+  // Switch inline to continue conversation
+  kb.switchInlineCurrentChat("✏️ Type message...", "chat:");
+  
+  return kb;
+}
+
+function inlineModelSelectKeyboard(sessionKey, userId) {
+  const u = ensureUser(userId);
+  const session = getInlineSession(userId);
+  const currentModel = session.model;
+  const allowed = allModelsForTier(u.tier);
+  
+  const kb = new InlineKeyboard();
+  
+  // Show up to 6 models
+  const models = allowed.slice(0, 6);
+  for (let i = 0; i < models.length; i++) {
+    const m = models[i];
+    const isSelected = m === currentModel;
+    kb.text(`${isSelected ? "✅ " : ""}${m.split("/").pop()}`, `ichat_setmodel:${sessionKey}:${m}`);
+    if (i % 2 === 1) kb.row();
+  }
+  if (models.length % 2 === 1) kb.row();
+  
+  kb.text("« Back", `ichat_back:${sessionKey}`);
+  
+  return kb;
 }
 
 // =====================
@@ -423,17 +572,14 @@ bot.command("register", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const u = ctx.from;
-  if (!u?.id) return ctx.reply("Couldn’t read your user id.");
+  if (!u?.id) return ctx.reply("Could not get your user info.");
 
-  const existing = getUserRecord(u.id);
-  if (existing) {
-    return ctx.reply("✅ You’re already registered.", { reply_markup: helpKeyboard() });
+  if (getUserRecord(u.id)) {
+    return ctx.reply("✅ You're already registered.", { reply_markup: helpKeyboard() });
   }
 
   registerUser(u);
-  await ctx.reply("✅ Registered! Use /model to select models available to you.", {
-    reply_markup: helpKeyboard(),
-  });
+  await ctx.reply("✅ Registered! Use /model to choose models.", { reply_markup: helpKeyboard() });
 });
 
 bot.command("reset", async (ctx) => {
@@ -502,88 +648,66 @@ bot.command("whoami", async (ctx) => {
 // OWNER COMMANDS
 // =====================
 bot.command("grant", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   if (!isOwner(ctx)) return ctx.reply("Owner only.");
 
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const userId = parts[1];
-  const tier = (parts[2] || "").toLowerCase();
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) return ctx.reply("Usage: /grant <userId> <free|premium|ultra>");
 
-  if (!userId || !["free", "premium", "ultra"].includes(tier)) {
-    return ctx.reply("Usage: /grant <userId> <free|premium|ultra>");
+  const [targetId, tierArg] = args;
+  const tier = tierArg.toLowerCase();
+  if (!["free", "premium", "ultra"].includes(tier)) {
+    return ctx.reply("Tier must be free, premium, or ultra.");
   }
 
-  const u = ensureUser(userId);
-  u.tier = tier;
-  u.role = tier; // keep role in sync for backwards compatibility
-  // set default model for tier
-  ensureChosenModelValid(userId);
+  const rec = ensureUser(targetId);
+  rec.tier = tier;
+  rec.role = tier;
   saveUsers();
 
-  await ctx.reply(`Granted ${tier} to ${userId}.`);
+  await ctx.reply(`User ${targetId} is now ${tier}.`);
 });
 
 bot.command("revoke", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   if (!isOwner(ctx)) return ctx.reply("Owner only.");
 
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const userId = parts[1];
-  if (!userId) return ctx.reply("Usage: /revoke <userId>");
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /revoke <userId>");
 
-  const u = ensureUser(userId);
-  u.tier = "free";
-  u.role = "free";
-  ensureChosenModelValid(userId);
+  const [targetId] = args;
+  const rec = ensureUser(targetId);
+  rec.tier = "free";
+  rec.role = "free";
   saveUsers();
 
-  await ctx.reply(`Reverted ${userId} to free.`);
+  await ctx.reply(`User ${targetId} reverted to free.`);
 });
 
 bot.command("allow", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   if (!isOwner(ctx)) return ctx.reply("Owner only.");
 
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const userId = parts[1];
-  const modelId = parts.slice(2).join(" ");
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) return ctx.reply("Usage: /allow <userId> <modelId>");
 
-  if (!userId || !modelId) return ctx.reply("Usage: /allow <userId> <modelId>");
+  const [targetId, modelId] = args;
+  const rec = ensureUser(targetId);
+  if (!rec.allowedModels.includes(modelId)) rec.allowedModels.push(modelId);
+  saveUsers();
 
-  usersDb.users[userId] ||= {
-    registeredAt: new Date().toISOString(),
-    role: "free",
-    allowedModels: [],
-    username: null,
-    firstName: null,
-  };
-
-  usersDb.users[userId].allowedModels ||= [];
-  if (!usersDb.users[userId].allowedModels.includes(modelId)) {
-    usersDb.users[userId].allowedModels.push(modelId);
-    saveUsers();
-  }
-
-  await ctx.reply(`✅ Allowed ${modelId} for ${userId}`);
+  await ctx.reply(`Allowed model ${modelId} for user ${targetId}.`);
 });
 
 bot.command("deny", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   if (!isOwner(ctx)) return ctx.reply("Owner only.");
 
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const userId = parts[1];
-  const modelId = parts.slice(2).join(" ");
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) return ctx.reply("Usage: /deny <userId> <modelId>");
 
-  if (!userId || !modelId) return ctx.reply("Usage: /deny <userId> <modelId>");
-
-  const rec = usersDb.users[userId];
-  if (!rec?.allowedModels?.length) return ctx.reply("No custom models set for that user.");
-
+  const [targetId, modelId] = args;
+  const rec = ensureUser(targetId);
   rec.allowedModels = rec.allowedModels.filter((m) => m !== modelId);
   saveUsers();
 
-  await ctx.reply(`✅ Removed ${modelId} from ${userId}`);
+  await ctx.reply(`Denied model ${modelId} for user ${targetId}.`);
 });
 
 // =====================
@@ -680,72 +804,261 @@ bot.callbackQuery("open_model", async (ctx) => {
 bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
-  const model = ctx.match[2];
+  const match = ctx.callbackQuery.data.match(/^(?:set_model|setmodel):(.+)$/i);
+  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
+
+  const modelId = match[1];
   const u = ensureUser(ctx.from.id, ctx.from);
   const allowed = allModelsForTier(u.tier);
 
-  if (!allowed.includes(model)) {
-    await ctx.answerCallbackQuery({ text: "Not allowed for your plan.", show_alert: true });
-    return;
+  if (!allowed.includes(modelId)) {
+    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
   }
 
-  u.model = model;
+  u.model = modelId;
   saveUsers();
-  await ctx.answerCallbackQuery({ text: `Switched to ${model}` });
-  
-  // Optional: refresh message
+
+  // Also update inline session model
+  updateInlineSession(ctx.from.id, { model: modelId });
+
+  await ctx.answerCallbackQuery({ text: `Switched to ${modelId}` });
+
   try {
-    await ctx.editMessageText(`Plan: ${u.tier}\nCurrent model: ${model}\nChoose:`, {
-      reply_markup: {
-        inline_keyboard: allowed.map((m) => [
-          { text: `${m === model ? "✅ " : ""}${m}`, callback_data: `setmodel:${m}` },
-        ]),
-      },
-    });
+    await ctx.editMessageText(`Switched to *${modelId}*`, { parse_mode: "Markdown" });
   } catch {
-    // Message unchanged or too old
+    // ignore if can't edit
   }
 });
 
 // =====================
-// DM + GROUP TEXT
+// INLINE CHAT CALLBACKS
+// =====================
+
+// Reply button - prompts user to type
+bot.callbackQuery(/^ichat_reply:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Type your message below! 💬" });
+});
+
+// Regenerate last response
+bot.callbackQuery(/^ichat_regen:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const session = getInlineSession(userId);
+  
+  if (session.history.length < 2) {
+    return ctx.answerCallbackQuery({ text: "No message to regenerate!", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: "Regenerating... ⏳" });
+  
+  try {
+    // Get last user message
+    const lastUserMsg = [...session.history].reverse().find(m => m.role === "user");
+    if (!lastUserMsg) {
+      return ctx.answerCallbackQuery({ text: "No user message found!", show_alert: true });
+    }
+    
+    // Remove last assistant message
+    if (session.history[session.history.length - 1].role === "assistant") {
+      session.history.pop();
+    }
+    // Remove last user message too (will be re-added)
+    if (session.history[session.history.length - 1]?.role === "user") {
+      session.history.pop();
+    }
+    saveInlineSessions();
+    
+    // Regenerate
+    const model = session.model || ensureChosenModelValid(userId);
+    await llmInlineChatReply({ userId, userText: lastUserMsg.content, model });
+    
+    // Update the message
+    const updatedSession = getInlineSession(userId);
+    const sessionKey = makeId(6);
+    
+    await ctx.editMessageText(
+      formatInlineChatDisplay(updatedSession, userId),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineChatKeyboard(sessionKey, updatedSession.history.length > 0)
+      }
+    );
+  } catch (e) {
+    console.error("Regen error:", e);
+    await ctx.answerCallbackQuery({ text: "Failed to regenerate. Try again.", show_alert: true });
+  }
+});
+
+// Clear conversation
+bot.callbackQuery(/^ichat_clear:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  clearInlineSession(userId);
+  
+  await ctx.answerCallbackQuery({ text: "Chat cleared! 🗑️" });
+  
+  const session = getInlineSession(userId);
+  const sessionKey = makeId(6);
+  
+  try {
+    await ctx.editMessageText(
+      formatInlineChatDisplay(session, userId),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineChatKeyboard(sessionKey, false)
+      }
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Show model selection
+bot.callbackQuery(/^ichat_model:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  await ctx.answerCallbackQuery();
+  
+  const sessionKey = ctx.callbackQuery.data.split(":")[1];
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Select Model*\n\nChoose a model for inline chat:",
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineModelSelectKeyboard(sessionKey, userId)
+      }
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Set model from inline
+bot.callbackQuery(/^ichat_setmodel:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const parts = ctx.callbackQuery.data.split(":");
+  const sessionKey = parts[1];
+  const modelId = parts.slice(2).join(":"); // Handle model IDs with colons
+  
+  const u = ensureUser(userId);
+  const allowed = allModelsForTier(u.tier);
+  
+  if (!allowed.includes(modelId)) {
+    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
+  }
+  
+  // Update both user model and session model
+  u.model = modelId;
+  saveUsers();
+  updateInlineSession(userId, { model: modelId });
+  
+  await ctx.answerCallbackQuery({ text: `Model: ${modelId} ✅` });
+  
+  // Go back to chat view
+  const session = getInlineSession(userId);
+  const newSessionKey = makeId(6);
+  
+  try {
+    await ctx.editMessageText(
+      formatInlineChatDisplay(session, userId),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineChatKeyboard(newSessionKey, session.history.length > 0)
+      }
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// Back to chat from model selection
+bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  await ctx.answerCallbackQuery();
+  
+  const session = getInlineSession(userId);
+  const sessionKey = makeId(6);
+  
+  try {
+    await ctx.editMessageText(
+      formatInlineChatDisplay(session, userId),
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0)
+      }
+    );
+  } catch {
+    // ignore
+  }
+});
+
+// =====================
+// DM / GROUP TEXT
 // =====================
 bot.on("message:text", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
-  const text = ctx.message.text?.trim() || "";
   const chat = ctx.chat;
   const u = ctx.from;
+  const text = (ctx.message?.text || "").trim();
 
-  const isGroup = chat.type === "group" || chat.type === "supergroup";
-  const mentioned = text.includes(`@${ctx.me.username}`);
-  const isReplyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+  if (!text || !u?.id) return;
 
-  if (isGroup && !(mentioned || isReplyToBot)) return;
+  // Ignore commands
+  if (text.startsWith("/")) return;
 
-  if (!u?.id) return;
-
-  // auto-register (public-friendly)
+  // Auto-register
   if (!getUserRecord(u.id)) registerUser(u);
 
-  const cleaned = text.replaceAll(`@${ctx.me.username}`, "").trim() || "Hey!";
   const model = ensureChosenModelValid(u.id);
+  const botInfo = await bot.api.getMe();
+  const botUsername = botInfo.username?.toLowerCase() || "";
 
-  const systemPrompt =
-    "You are StarzTechBot. Be helpful, practical, and concise. If the user asks for code, provide runnable code. If unclear, ask one short question.";
+  // Group: only respond if mentioned
+  if (chat.type !== "private") {
+    const mentioned =
+      text.toLowerCase().includes(`@${botUsername}`) ||
+      ctx.message?.reply_to_message?.from?.id === botInfo.id;
+
+    if (!mentioned) return;
+  }
 
   try {
     await ctx.replyWithChatAction("typing");
+
+    const systemPrompt =
+      "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+
     const out = await llmChatReply({
       chatId: chat.id,
-      userText: cleaned,
+      userText: text,
       systemPrompt,
       model,
     });
+
     await ctx.reply(out.slice(0, 3800));
   } catch (e) {
-    console.error("Chat error:", e.message);
-    const errMsg = e.message?.includes("timed out")
+    console.error(e);
+    const isTimeout = e.message?.includes("timed out");
+    const errMsg = isTimeout 
       ? `Model ${model} is slow right now. Try /model to switch, or try again.`
       : "Error talking to the model. Try again in a moment.";
     await ctx.reply(errMsg);
@@ -779,7 +1092,7 @@ bot.on("message:photo", async (ctx) => {
 
     const out = await llmVisionReply({
       chatId: chat.id,
-      userText: caption || "What’s in this image? Answer clearly.",
+      userText: caption || "What's in this image? Answer clearly.",
       imageBase64: b64,
       mime: "image/jpeg",
       model,
@@ -788,12 +1101,12 @@ bot.on("message:photo", async (ctx) => {
     await ctx.reply(out.slice(0, 3800));
   } catch (e) {
     console.error(e);
-    await ctx.reply("I couldn’t process that image. If this keeps happening, set MODEL_VISION.");
+    await ctx.reply("I couldn't process that image. If this keeps happening, set MODEL_VISION.");
   }
 });
 
 // =====================
-// INLINE MODE (AI + BUTTONS)
+// INLINE MODE - INTERACTIVE CHAT
 // =====================
 bot.on("inline_query", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -801,32 +1114,174 @@ bot.on("inline_query", async (ctx) => {
   const q = (ctx.inlineQuery.query || "").trim();
   const userId = ctx.from?.id;
 
-  if (!q) {
-    return ctx.answerInlineQuery(
-      [
-        {
-          type: "article",
-          id: "help_inline",
-          title: "Ask StarzTechBot (AI)",
-          input_message_content: {
-            message_text: "Type: @starztechbot <question> to get an AI reply here.",
-          },
-          description: "Example: @starztechbot yap write a 2-day gym plan",
-        },
-      ],
-      { cache_time: 1, is_personal: true }
-    );
-  }
-
   if (!userId) return;
 
-  // auto-register
+  // Auto-register
   if (!getUserRecord(userId)) registerUser(ctx.from);
 
-  const model = ensureChosenModelValid(userId);
+  const session = getInlineSession(userId);
+  const model = session.model || ensureChosenModelValid(userId);
+  const sessionKey = makeId(6);
 
+  // Empty query - show main menu
+  if (!q) {
+    const results = [
+      {
+        type: "article",
+        id: `chat_${sessionKey}`,
+        title: "💬 Open AI Chat",
+        description: session.history.length > 0 
+          ? `Continue chat (${session.history.length} messages)` 
+          : "Start a new conversation",
+        thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
+        input_message_content: {
+          message_text: formatInlineChatDisplay(session, userId),
+          parse_mode: "Markdown",
+        },
+        reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0),
+      },
+      {
+        type: "article",
+        id: `new_${sessionKey}`,
+        title: "🆕 New Chat",
+        description: "Clear history and start fresh",
+        thumbnail_url: "https://img.icons8.com/fluency/96/new.png",
+        input_message_content: {
+          message_text: "🆕 *New Chat Started*\n\nType your message to begin!",
+          parse_mode: "Markdown",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrentChat("✏️ Type message...", "chat:"),
+      },
+      {
+        type: "article",
+        id: `model_${sessionKey}`,
+        title: `⚙️ Current: ${model.split("/").pop()}`,
+        description: "Tap to change model",
+        thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
+        input_message_content: {
+          message_text: `⚙️ *Model Settings*\n\nCurrent: \`${model}\`\n\nUse /model in DM to change.`,
+          parse_mode: "Markdown",
+        },
+      },
+    ];
+
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+
+  // "chat:" prefix - interactive chat mode
+  if (q.startsWith("chat:")) {
+    const userMessage = q.slice(5).trim();
+    
+    if (!userMessage) {
+      // Just show current chat state
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `chatview_${sessionKey}`,
+          title: "💬 View Chat",
+          description: "See your conversation",
+          input_message_content: {
+            message_text: formatInlineChatDisplay(session, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    // User typed a message - process it
+    try {
+      const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
+      const updatedSession = getInlineSession(userId);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `chatreply_${sessionKey}`,
+          title: "💬 Send & View Chat",
+          description: answer.slice(0, 80),
+          input_message_content: {
+            message_text: formatInlineChatDisplay(updatedSession, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, true),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      console.error("Inline chat error:", e);
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `chaterr_${sessionKey}`,
+          title: "⚠️ Error",
+          description: "Model is slow. Try again.",
+          input_message_content: {
+            message_text: "⚠️ Model is slow right now. Please try again.",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
+  // "new:" prefix - clear and start new chat
+  if (q.startsWith("new:")) {
+    clearInlineSession(userId);
+    const userMessage = q.slice(4).trim();
+    
+    if (!userMessage) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `newchat_${sessionKey}`,
+          title: "🆕 New Chat Ready",
+          description: "Type your first message",
+          input_message_content: {
+            message_text: formatInlineChatDisplay(getInlineSession(userId), userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, false),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    // Process first message
+    try {
+      const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
+      const updatedSession = getInlineSession(userId);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `newreply_${sessionKey}`,
+          title: "💬 New Chat",
+          description: answer.slice(0, 80),
+          input_message_content: {
+            message_text: formatInlineChatDisplay(updatedSession, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, true),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      console.error("New chat error:", e);
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `newerr_${sessionKey}`,
+          title: "⚠️ Error",
+          description: "Model is slow. Try again.",
+          input_message_content: {
+            message_text: "⚠️ Model is slow right now. Please try again.",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
+  // Regular query - quick one-shot answer (legacy behavior) + chat option
   try {
-    // Inline must be fast: compact answer
+    // Quick answer
     const out = await llmText({
       model,
       messages: [
@@ -852,10 +1307,22 @@ bot.on("inline_query", async (ctx) => {
       {
         type: "article",
         id: key,
-        title: "AI answer",
+        title: "⚡ Quick Answer",
         description: answer.slice(0, 90),
         input_message_content: { message_text: answer },
         reply_markup: inlineAnswerKeyboard(key),
+      },
+      {
+        type: "article",
+        id: `addtochat_${sessionKey}`,
+        title: "💬 Add to Chat",
+        description: "Add this Q&A to your chat history",
+        input_message_content: {
+          message_text: `❓ *Question:* ${q}\n\n💡 *Answer:* ${answer}`,
+          parse_mode: "Markdown",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrentChat("💬 Continue chat...", "chat:"),
       },
     ];
 
@@ -883,7 +1350,7 @@ bot.on("inline_query", async (ctx) => {
 });
 
 // =====================
-// INLINE BUTTON ACTIONS
+// INLINE BUTTON ACTIONS (Legacy)
 // =====================
 async function editInlineMessage(ctx, newText, key) {
   await ctx.editMessageText(newText.slice(0, 3500), {
@@ -979,6 +1446,18 @@ setInterval(() => {
     if (t - v.createdAt > ttl) inlineCache.delete(k);
   }
 }, 5 * 60_000);
+
+// Cleanup old inline sessions (older than 7 days)
+setInterval(() => {
+  const t = nowMs();
+  const ttl = 7 * 24 * 60 * 60_000; // 7 days
+  for (const [userId, session] of Object.entries(inlineSessionsDb.sessions)) {
+    if (t - session.lastActive > ttl) {
+      delete inlineSessionsDb.sessions[userId];
+    }
+  }
+  saveInlineSessions();
+}, 60 * 60_000); // Check every hour
 
 // =====================
 // WEBHOOK SERVER (Railway)
