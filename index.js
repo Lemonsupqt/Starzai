@@ -2438,33 +2438,36 @@ bot.on("inline_query", async (ctx) => {
       },
       {
         type: "article",
-        id: `hint_research_${sessionKey}`,
-        title: "🔍 Research → Type 'r' to start",
-        description: "In-depth answers on any topic",
+        id: `nav_research_${sessionKey}`,
+        title: "🔍 Research",
+        description: "➡️ Tap the button below to start",
         thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
-        input_message_content: { message_text: `🔍 *Research Mode*\n\nType \`r\` then your topic to research anything!\n\nExample: \`r quantum computing\``, parse_mode: "Markdown" },
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Start Research", "r "),
       },
       {
         type: "article",
-        id: `hint_translate_${sessionKey}`,
-        title: "🌐 Translate → Type 't' to start",
-        description: "Translate text to any language",
+        id: `nav_translate_${sessionKey}`,
+        title: "🌐 Translate",
+        description: "➡️ Tap the button below to start",
         thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
-        input_message_content: { message_text: `🌐 *Translate Mode*\n\nType \`t [lang] [text]\` to translate!\n\nExample: \`t spanish hello world\``, parse_mode: "Markdown" },
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🌐 Start Translate", "t "),
       },
       {
         type: "article",
-        id: `hint_settings_${sessionKey}`,
-        title: `⚙️ Settings (${shortModel}) → Type 's'`,
-        description: "Change your AI model",
+        id: `nav_settings_${sessionKey}`,
+        title: `⚙️ Settings (${shortModel})`,
+        description: "➡️ Tap the button below to change model",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
-        input_message_content: { message_text: `⚙️ *Settings*\n\nType \`s\` to open model settings!\n\nCurrent model: \`${shortModel}\``, parse_mode: "Markdown" },
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⚙️ Open Settings", "s "),
       },
       {
         type: "article",
         id: `hint_quick_${sessionKey}`,
-        title: "⚡ Quick Answer → Just type your question!",
-        description: "Fast answers to any question",
+        title: "⚡ Quick Answer",
+        description: "Just type your question directly!",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { message_text: `⚡ *Quick Answer*\n\nJust type any question to get a fast answer!\n\nExample: \`what is photosynthesis\``, parse_mode: "Markdown" },
       },
@@ -2617,8 +2620,8 @@ bot.on("inline_query", async (ctx) => {
     }
   }
   
-  // "s" or "s " - Settings shortcut
-  if (qLower === "s" || qLower === "s " || qLower.startsWith("s:")) {
+  // "s" or "s " - Settings shortcut - show model categories with navigation buttons
+  if (qLower === "s" || qLower === "s ") {
     const user = getUserRecord(userId);
     const tier = user?.tier || "free";
     
@@ -2627,9 +2630,10 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `s_free_${sessionKey}`,
         title: `🆓 Free Models (${FREE_MODELS.length})`,
-        description: "Tap to see free models",
+        description: "➡️ Tap button to view",
         thumbnail_url: "https://img.icons8.com/fluency/96/free.png",
         input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🆓 View Free Models", "s:free "),
       },
     ];
     
@@ -2638,9 +2642,10 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `s_premium_${sessionKey}`,
         title: `⭐ Premium Models (${PREMIUM_MODELS.length})`,
-        description: "Tap to see premium models",
+        description: "➡️ Tap button to view",
         thumbnail_url: "https://img.icons8.com/fluency/96/star.png",
         input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⭐ View Premium Models", "s:premium "),
       });
     }
     
@@ -2649,9 +2654,10 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `s_ultra_${sessionKey}`,
         title: `💎 Ultra Models (${ULTRA_MODELS.length})`,
-        description: "Tap to see ultra models",
+        description: "➡️ Tap button to view",
         thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
         input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("💎 View Ultra Models", "s:ultra "),
       });
     }
     
@@ -2698,15 +2704,70 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `s_model_${i}_${sessionKey}`,
         title: `${isSelected ? "✅ " : ""}${mShort}`,
-        description: isSelected ? "Currently selected" : "Tap to select",
+        description: isSelected ? "Currently selected" : "➡️ Tap button to select",
         thumbnail_url: isSelected 
           ? "https://img.icons8.com/fluency/96/checkmark.png"
           : "https://img.icons8.com/fluency/96/robot.png",
         input_message_content: { message_text: "_" },
+        reply_markup: isSelected 
+          ? new InlineKeyboard().switchInlineCurrent("← Back to Settings", "s ")
+          : new InlineKeyboard().switchInlineCurrent(`Select ${mShort}`, `set:${m} `),
       };
     });
     
+    // Add back button
+    results.push({
+      type: "article",
+      id: `s_back_${sessionKey}`,
+      title: "← Back to Categories",
+      description: "Return to settings",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "s "),
+    });
+    
     return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "set:modelname" - Actually set the model
+  if (qLower.startsWith("set:")) {
+    const newModel = q.slice(4).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const allowedModels = allModelsForTier(tier);
+    
+    if (allowedModels.includes(newModel)) {
+      // Set the model
+      setUserModel(userId, newModel);
+      const inlineSess = getInlineSession(userId);
+      inlineSess.model = newModel;
+      
+      const newShortModel = newModel.split("/").pop();
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `set_done_${sessionKey}`,
+          title: `✅ Model set to ${newShortModel}`,
+          description: "➡️ Tap button to go back",
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } else {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `set_err_${sessionKey}`,
+          title: "❌ Model not available",
+          description: "You don't have access to this model",
+          thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "s "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
   }
   
   // =====================
