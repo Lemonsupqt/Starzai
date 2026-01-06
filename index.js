@@ -80,6 +80,7 @@ const DATA_DIR = process.env.DATA_DIR || ".data";
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
 const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
+const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -102,6 +103,7 @@ function writeJson(file, obj) {
 let usersDb = readJson(USERS_FILE, { users: {} });
 let prefsDb = readJson(PREFS_FILE, { userModel: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
+let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
 
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
@@ -190,6 +192,7 @@ async function saveToSupabase(dataType) {
   if (dataType === "users") data = usersDb;
   else if (dataType === "prefs") data = prefsDb;
   else if (dataType === "inlineSessions") data = inlineSessionsDb;
+  else if (dataType === "partners") data = partnersDb;
   else return false;
   
   const success = await supabaseSet(dataType, data);
@@ -240,6 +243,7 @@ async function flushSaves() {
       if (dataType === "users") writeJson(USERS_FILE, usersDb);
       if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
       if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+      if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     }
   }
 }
@@ -250,6 +254,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "users") writeJson(USERS_FILE, usersDb);
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     return;
   }
   
@@ -264,6 +269,9 @@ async function saveToTelegram(dataType) {
     } else if (dataType === "inlineSessions") {
       data = inlineSessionsDb;
       label = "💬 INLINE_SESSIONS";
+    } else if (dataType === "partners") {
+      data = partnersDb;
+      label = "💕 PARTNERS_DATA";
     } else {
       return;
     }
@@ -294,6 +302,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "users") writeJson(USERS_FILE, usersDb);
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     
   } catch (e) {
     console.error(`Failed to save ${dataType} to Telegram:`, e.message);
@@ -301,6 +310,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "users") writeJson(USERS_FILE, usersDb);
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
   }
 }
 
@@ -355,11 +365,15 @@ function savePrefs() {
 function saveInlineSessions() {
   scheduleSave("inlineSessions");
 }
+function savePartners() {
+  scheduleSave("partners");
+}
 
 // =====================
 // IN-MEMORY STATE
 // =====================
 const chatHistory = new Map(); // chatId -> [{role, content}...]
+const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separate history for partner mode
 const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, userId }
 const rate = new Map(); // userId -> { windowStartMs, count }
 
@@ -614,6 +628,106 @@ function addToHistory(userId, prompt, mode = "default") {
 
 function registerUser(from) {
   return ensureUser(from.id, from);
+}
+
+// =====================
+// PARTNER MANAGEMENT
+// =====================
+function getPartner(userId) {
+  const id = String(userId);
+  return partnersDb.partners[id] || null;
+}
+
+function setPartner(userId, partnerData) {
+  const id = String(userId);
+  if (!partnersDb.partners[id]) {
+    partnersDb.partners[id] = {
+      name: null,
+      personality: null,
+      background: null,
+      style: null,
+      createdAt: Date.now(),
+      chatHistory: [],
+      active: false, // Whether partner mode is active
+    };
+  }
+  Object.assign(partnersDb.partners[id], partnerData, { updatedAt: Date.now() });
+  savePartners();
+  return partnersDb.partners[id];
+}
+
+function clearPartner(userId) {
+  const id = String(userId);
+  delete partnersDb.partners[id];
+  partnerChatHistory.delete(id);
+  savePartners();
+}
+
+function getPartnerChatHistory(userId) {
+  const id = String(userId);
+  const partner = getPartner(userId);
+  
+  // Try in-memory first, then fall back to stored
+  if (partnerChatHistory.has(id)) {
+    return partnerChatHistory.get(id);
+  }
+  
+  // Load from partner data if exists
+  if (partner?.chatHistory) {
+    partnerChatHistory.set(id, partner.chatHistory);
+    return partner.chatHistory;
+  }
+  
+  return [];
+}
+
+function addPartnerMessage(userId, role, content) {
+  const id = String(userId);
+  let history = getPartnerChatHistory(userId);
+  
+  history.push({ role, content });
+  
+  // Keep last 20 messages for context
+  if (history.length > 20) history = history.slice(-20);
+  
+  partnerChatHistory.set(id, history);
+  
+  // Also save to persistent storage
+  const partner = getPartner(userId);
+  if (partner) {
+    partner.chatHistory = history;
+    savePartners();
+  }
+  
+  return history;
+}
+
+function clearPartnerChat(userId) {
+  const id = String(userId);
+  partnerChatHistory.delete(id);
+  const partner = getPartner(userId);
+  if (partner) {
+    partner.chatHistory = [];
+    savePartners();
+  }
+}
+
+function buildPartnerSystemPrompt(partner) {
+  let prompt = `You are ${partner.name || "a companion"}, a personalized AI partner.`;
+  
+  if (partner.personality) {
+    prompt += ` Your personality: ${partner.personality}.`;
+  }
+  if (partner.background) {
+    prompt += ` Your background: ${partner.background}.`;
+  }
+  if (partner.style) {
+    prompt += ` Your speaking style: ${partner.style}.`;
+  }
+  
+  prompt += " Stay in character throughout the conversation. Be engaging, warm, and remember previous messages in our chat. Respond naturally as this character would.";
+  
+  return prompt;
 }
 
 function ensureChosenModelValid(userId) {
@@ -905,26 +1019,31 @@ async function telegramFileToBase64(fileUrl) {
 // =====================
 function helpText() {
   return [
-    "*StarzTechBot* — AI assistant",
+    "⚡ *StarzAI* — Your AI Assistant",
     "",
-    "📌 *Commands*",
-    "• /start — Welcome",
-    "• /help — This message",
-    "• /register — Register account",
+    "📌 *Basic Commands*",
+    "• /start — Welcome message",
+    "• /help — This help menu",
     "• /model — Choose AI model",
-    "• /whoami — Your info",
     "• /reset — Clear chat memory",
     "",
-    "💬 *Inline Mode*",
-    "Type @starztechbot in any chat for interactive AI!",
+    "🌟 *Feature Commands*",
+    "• /partner — Create your AI companion",
+    "• /persona — Set AI personality",
+    "• /stats — Your usage statistics",
+    "• /history — Recent prompts",
+    "",
+    "⌨️ *Inline Modes* (type @starztechbot)",
+    "• `q:` — ⭐ Quark (quick answers)",
+    "• `b:` — 🕳️ Blackhole (deep research)",
+    "• `code:` — 💻 Code help",
+    "• `e:` — 🧠 Explain (ELI5)",
+    "• `as [char]:` — 🎭 Character roleplay",
+    "• `sum:` — 📝 Summarize text",
+    "• `p:` — 💕 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status — Bot status & stats",
-    "• /info <userId> — User details",
-    "• /grant <userId> <free|premium|ultra>",
-    "• /revoke <userId>",
-    "• /allow <userId> <modelId>",
-    "• /deny <userId> <modelId>",
+    "• /status, /info, /grant, /revoke",
   ].join("\n");
 }
 
@@ -1217,8 +1336,8 @@ bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   await ctx.reply(
-    "Yo 👋\n\nUse me in DM, groups (mention me), or inline.\nTap Help to see features.",
-    { reply_markup: helpKeyboard() }
+    `⚡ *Welcome to StarzAI!*\n\n💬 *DM* - Chat directly with AI\n👥 *Groups* - Mention @starztechbot\n⌨️ *Inline* - Type @starztechbot anywhere\n\n🌟 *Features:*\n• Multiple AI modes (Quark, Blackhole, Code...)\n• 💕 AI Partner with persistent memory\n• 🎭 Character roleplay\n• 📊 Usage stats & history\n\n_Tap Features below to learn more!_`,
+    { parse_mode: "Markdown", reply_markup: helpKeyboard() }
   );
 });
 
@@ -1362,6 +1481,140 @@ bot.command("history", async (ctx) => {
   });
   
   await ctx.reply(historyText, { parse_mode: "Markdown", reply_markup: keyboard });
+});
+
+// /partner - Manage your AI partner
+bot.command("partner", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const args = ctx.message.text.split(" ").slice(1);
+  const subcommand = args[0]?.toLowerCase();
+  const value = args.slice(1).join(" ").trim();
+  
+  const partner = getPartner(u.id);
+  
+  // No subcommand - show current partner or help
+  if (!subcommand) {
+    if (!partner) {
+      return ctx.reply(
+        `💕 *Create Your AI Partner*\n\nSet up a personalized AI companion!\n\n*Commands:*\n• \`/partner name [name]\` - Set name\n• \`/partner personality [traits]\` - Set personality\n• \`/partner background [story]\` - Set backstory\n• \`/partner style [how they talk]\` - Set speaking style\n• \`/partner chat\` - Start chatting\n• \`/partner stop\` - Stop partner mode\n• \`/partner clear\` - Delete partner\n\n_Example: \`/partner name Luna\`_`,
+        { parse_mode: "Markdown" }
+      );
+    }
+    
+    // Show current partner info
+    const status = partner.active ? "🟢 Active" : "⚪ Inactive";
+    const chatCount = partner.chatHistory?.length || 0;
+    
+    let info = `💕 *Your Partner: ${partner.name || "Unnamed"}*\n\n`;
+    info += `${status}\n\n`;
+    if (partner.personality) info += `🎭 *Personality:* ${partner.personality}\n`;
+    if (partner.background) info += `📖 *Background:* ${partner.background}\n`;
+    if (partner.style) info += `💬 *Style:* ${partner.style}\n`;
+    info += `\n📝 *Chat messages:* ${chatCount}\n`;
+    info += `\n_Use \`/partner [field] [value]\` to edit_`;
+    
+    const keyboard = new InlineKeyboard()
+      .text(partner.active ? "⏹ Stop Chat" : "💬 Start Chat", partner.active ? "partner_stop" : "partner_chat")
+      .text("🗑 Clear Chat", "partner_clearchat")
+      .row()
+      .text("❌ Delete Partner", "partner_delete");
+    
+    return ctx.reply(info, { parse_mode: "Markdown", reply_markup: keyboard });
+  }
+  
+  // Subcommands
+  switch (subcommand) {
+    case "name":
+      if (!value) return ctx.reply("❌ Please provide a name: `/partner name Luna`", { parse_mode: "Markdown" });
+      setPartner(u.id, { name: value.slice(0, 50) });
+      return ctx.reply(`✅ Partner name set to: *${value.slice(0, 50)}*`, { parse_mode: "Markdown" });
+      
+    case "personality":
+      if (!value) return ctx.reply("❌ Please provide personality traits: `/partner personality cheerful, witty, caring`", { parse_mode: "Markdown" });
+      setPartner(u.id, { personality: value.slice(0, 200) });
+      return ctx.reply(`✅ Partner personality set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      
+    case "background":
+      if (!value) return ctx.reply("❌ Please provide a background: `/partner background A mysterious traveler from another dimension`", { parse_mode: "Markdown" });
+      setPartner(u.id, { background: value.slice(0, 300) });
+      return ctx.reply(`✅ Partner background set to: _${value.slice(0, 300)}_`, { parse_mode: "Markdown" });
+      
+    case "style":
+      if (!value) return ctx.reply("❌ Please provide a speaking style: `/partner style speaks softly with poetic phrases`", { parse_mode: "Markdown" });
+      setPartner(u.id, { style: value.slice(0, 200) });
+      return ctx.reply(`✅ Partner speaking style set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      
+    case "chat":
+      if (!partner?.name) {
+        return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]` to start.", { parse_mode: "Markdown" });
+      }
+      setPartner(u.id, { active: true });
+      return ctx.reply(`💕 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\n\n_Use \`/partner stop\` to end the conversation._`, { parse_mode: "Markdown" });
+      
+    case "stop":
+      if (partner) {
+        setPartner(u.id, { active: false });
+      }
+      return ctx.reply("⏹ Partner mode deactivated. Normal AI responses resumed.");
+      
+    case "clearchat":
+      clearPartnerChat(u.id);
+      return ctx.reply("🗑 Partner chat history cleared. Starting fresh!");
+      
+    case "clear":
+    case "delete":
+      clearPartner(u.id);
+      return ctx.reply("❌ Partner deleted. Use `/partner` to create a new one.", { parse_mode: "Markdown" });
+      
+    default:
+      return ctx.reply(
+        `❓ Unknown subcommand: \`${subcommand}\`\n\n*Available:* name, personality, background, style, chat, stop, clearchat, clear`,
+        { parse_mode: "Markdown" }
+      );
+  }
+});
+
+// Partner callback handlers
+bot.callbackQuery("partner_chat", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  const partner = getPartner(u.id);
+  
+  if (!partner?.name) {
+    return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]`", { parse_mode: "Markdown" });
+  }
+  
+  setPartner(u.id, { active: true });
+  await ctx.editMessageText(
+    `💕 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages!\n\n_Use \`/partner stop\` to end._`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.callbackQuery("partner_stop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  const partner = getPartner(u.id);
+  
+  if (partner) {
+    setPartner(u.id, { active: false });
+  }
+  
+  await ctx.editMessageText("⏹ Partner mode deactivated. Normal AI responses resumed.");
+});
+
+bot.callbackQuery("partner_clearchat", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Chat history cleared!" });
+  clearPartnerChat(ctx.from.id);
+});
+
+bot.callbackQuery("partner_delete", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Partner deleted" });
+  clearPartner(ctx.from.id);
+  await ctx.editMessageText("❌ Partner deleted. Use `/partner` to create a new one.", { parse_mode: "Markdown" });
 });
 
 // Helper for time ago
@@ -1721,7 +1974,40 @@ bot.callbackQuery("noop", async (ctx) => {
 bot.callbackQuery("help_features", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   await ctx.answerCallbackQuery();
-  await ctx.reply(helpText(), { parse_mode: "Markdown", reply_markup: helpKeyboard() });
+  
+  const featuresText = [
+    "🌟 *StarzAI Features*",
+    "",
+    "⚡ *AI Modes (Inline)*",
+    "• ⭐ *Quark* (`q:`) - Lightning fast answers",
+    "• 🕳️ *Blackhole* (`b:`) - Deep research & analysis",
+    "• 💻 *Code* (`code:`) - Programming help & snippets",
+    "• 🧠 *Explain* (`e:`) - Simple ELI5 explanations",
+    "• 🎭 *Character* (`as:`) - Roleplay as any character",
+    "• 📝 *Summarize* (`sum:`) - Condense long text",
+    "",
+    "💕 *AI Partner*",
+    "Create your personalized AI companion!",
+    "• Custom name, personality, background",
+    "• Persistent chat memory",
+    "• Works in DM and inline (`p:`)",
+    "_Use /partner to set up_",
+    "",
+    "🎭 *Persona Mode*",
+    "Set a personality for all DM responses",
+    "_Use /persona [personality]_",
+    "",
+    "📊 *Stats & History*",
+    "• /stats - Your usage statistics",
+    "• /history - Recent prompts with quick re-use",
+    "",
+    "📡 *Multi-Platform*",
+    "• DM - Direct chat with AI",
+    "• Groups - Mention @starztechbot",
+    "• Inline - Type @starztechbot anywhere",
+  ].join("\n");
+  
+  await ctx.reply(featuresText, { parse_mode: "Markdown", reply_markup: helpKeyboard() });
 });
 
 bot.callbackQuery("do_register", async (ctx) => {
@@ -2681,29 +2967,61 @@ bot.on("message:text", async (ctx) => {
     }, 4000);
     await ctx.replyWithChatAction("typing");
 
-    // Get user's custom persona if set
-    const userRecord = getUserRecord(u.id);
-    const persona = userRecord?.persona;
+    // Check if partner mode is active
+    const partner = getPartner(u.id);
+    const isPartnerMode = partner?.active && partner?.name;
     
     let systemPrompt;
-    if (persona) {
-      systemPrompt = replyContext
-        ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
-        : `You are StarzTechBot with the personality of: ${persona}. Stay in character throughout your response. Answer clearly.`;
+    let out;
+    
+    if (isPartnerMode) {
+      // Partner mode - use partner's persona and separate chat history
+      systemPrompt = buildPartnerSystemPrompt(partner);
+      
+      // Add user message to partner history
+      addPartnerMessage(u.id, "user", text);
+      const partnerHistory = getPartnerChatHistory(u.id);
+      
+      // Build messages array with partner history
+      const messages = [
+        { role: "system", content: systemPrompt },
+        ...partnerHistory.map(m => ({ role: m.role, content: m.content })),
+      ];
+      
+      out = await llmText({
+        model,
+        messages,
+        temperature: 0.8,
+        max_tokens: 500,
+      });
+      
+      // Add AI response to partner history
+      addPartnerMessage(u.id, "assistant", out);
+      
     } else {
-      systemPrompt = replyContext
-        ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
-        : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+      // Normal mode - use persona or default
+      const userRecord = getUserRecord(u.id);
+      const persona = userRecord?.persona;
+      
+      if (persona) {
+        systemPrompt = replyContext
+          ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
+          : `You are StarzTechBot with the personality of: ${persona}. Stay in character throughout your response. Answer clearly.`;
+      } else {
+        systemPrompt = replyContext
+          ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
+          : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+      }
+
+      const userTextWithContext = replyContext + text;
+
+      out = await llmChatReply({
+        chatId: chat.id,
+        userText: userTextWithContext,
+        systemPrompt,
+        model,
+      });
     }
-
-    const userTextWithContext = replyContext + text;
-
-    const out = await llmChatReply({
-      chatId: chat.id,
-      userText: userTextWithContext,
-      systemPrompt,
-      model,
-    });
 
     // Mark response as sent to stop typing
     responseSent = true;
@@ -2715,7 +3033,8 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    const response = `${out.slice(0, 3700)}\n\n_⚡ ${elapsed}s • ${model}_`;
+    const partnerLabel = isPartnerMode ? `💕 *${partner.name}*\n\n` : "";
+    const response = `${partnerLabel}${out.slice(0, 3600)}\n\n_⚡ ${elapsed}s • ${model}_`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
@@ -2864,7 +3183,7 @@ bot.on("inline_query", async (ctx) => {
         description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n\n_Tap a button or type directly!_`,
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n💕 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
@@ -2875,7 +3194,9 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("🧠 Explain", "e: ")
           .row()
           .switchInlineCurrent("🎭 Character", "as ")
-          .switchInlineCurrent("📝 Summarize", "sum: "),
+          .switchInlineCurrent("📝 Summarize", "sum: ")
+          .row()
+          .switchInlineCurrent("💕 Partner", "p: "),
       },
       {
         type: "article",
@@ -3340,6 +3661,113 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `sum_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "p:" or "p " - Partner mode (chat with your AI partner)
+  if (qLower.startsWith("p:") || qLower.startsWith("p ")) {
+    const message = q.slice(2).trim();
+    const partner = getPartner(userId);
+    
+    if (!partner?.name) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `p_nopartner_${sessionKey}`,
+          title: "💕 No Partner Set Up",
+          description: "Use /partner in bot DM to create your AI companion",
+          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+          input_message_content: { 
+            message_text: "💕 *Set up your Partner first!*\n\nGo to @starztechbot DM and use:\n\n\`/partner name [name]\`\n\`/partner personality [traits]\`\n\`/partner background [story]\`\n\`/partner style [how they talk]\`\n\nThen come back and chat!",
+            parse_mode: "Markdown"
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    if (!message) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `p_typing_${sessionKey}`,
+          title: `💕 Chat with ${partner.name}`,
+          description: "Type your message to your partner",
+          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      // Build partner system prompt
+      const systemPrompt = buildPartnerSystemPrompt(partner);
+      
+      // Get partner chat history for context
+      const partnerHistory = getPartnerChatHistory(userId);
+      
+      // Build messages with history
+      const messages = [
+        { role: "system", content: systemPrompt },
+        ...partnerHistory.slice(-6).map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: message },
+      ];
+      
+      const out = await llmText({
+        model,
+        messages,
+        temperature: 0.85,
+        max_tokens: 400,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const answer = (out || "*stays silent*").slice(0, 1500);
+      const pKey = makeId(6);
+      
+      // Store for Reply button
+      inlineCache.set(pKey, {
+        prompt: message,
+        answer,
+        userId: String(userId),
+        model,
+        isPartner: true,
+        partnerName: partner.name,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(pKey), 30 * 60 * 1000);
+      
+      // Add to partner chat history
+      addPartnerMessage(userId, "user", message);
+      addPartnerMessage(userId, "assistant", answer);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `partner_${pKey}`,
+          title: `💕 ${partner.name}: ${message.slice(0, 30)}`,
+          description: answer.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+          input_message_content: {
+            message_text: `💕 *${partner.name}*\n\n${answer}\n\n_via StarzAI • Partner • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("💬 Reply", `p: `)
+            .text("🔁 Regen", `inl_regen:${pKey}`),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `p_err_${sessionKey}`,
           title: "⚠️ Taking too long...",
           description: "Try again",
           thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
