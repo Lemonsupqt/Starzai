@@ -100,11 +100,17 @@ let prefsDb = readJson(PREFS_FILE, { userModel: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 
 // Track message IDs for each data type in the storage channel
-let storageMessageIds = {
+// Persist to file so we can delete old messages after restart
+const STORAGE_IDS_FILE = path.join(DATA_DIR, "storageIds.json");
+let storageMessageIds = readJson(STORAGE_IDS_FILE, {
   users: null,
   prefs: null,
   inlineSessions: null,
-};
+});
+
+function saveStorageIds() {
+  writeJson(STORAGE_IDS_FILE, storageMessageIds);
+}
 
 // Debounce saves to avoid hitting Telegram rate limits
 let saveTimeout = null;
@@ -171,6 +177,7 @@ async function saveToTelegram(dataType) {
       caption: `${label} | Updated: ${new Date().toISOString()}`,
     });
     storageMessageIds[dataType] = msg.message_id;
+    saveStorageIds(); // Persist message ID so we can delete it after restart
     console.log(`Saved ${dataType} to Telegram (msg_id: ${msg.message_id})`);
     
     // Also save locally as backup
