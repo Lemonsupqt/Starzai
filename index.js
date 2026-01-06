@@ -2705,7 +2705,7 @@ bot.on("inline_query", async (ctx) => {
         description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick, concise answers\n🕳️ *Blackhole* - Deep research & analysis\n💻 *Code* - Programming help & snippets\n🧠 *Explain* - Simple explanations (ELI5)\n\n_Tap a button below or type your question directly!_`,
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n\n_Tap a button or type directly!_`,
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
@@ -2713,7 +2713,10 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("🕳️ Blackhole", "b: ")
           .row()
           .switchInlineCurrent("💻 Code", "code: ")
-          .switchInlineCurrent("🧠 Explain", "e: "),
+          .switchInlineCurrent("🧠 Explain", "e: ")
+          .row()
+          .switchInlineCurrent("🎭 Character", "as pirate: ")
+          .switchInlineCurrent("📝 Summarize", "sum: "),
       },
       {
         type: "article",
@@ -3015,6 +3018,151 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `e_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "as:" - Character/Persona mode (as pirate:, as shakespeare:, etc.)
+  const asMatch = q.match(/^as\s+([^:]+):\s*(.*)$/i);
+  if (asMatch) {
+    const character = asMatch[1].trim();
+    const question = asMatch[2].trim();
+    
+    if (!question) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `as_typing_${sessionKey}`,
+          title: `🎭 ${character} Mode`,
+          description: `Type your question for ${character} to answer`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: `You are roleplaying as ${character}. Stay completely in character. Respond to everything as ${character} would - use their speech patterns, vocabulary, mannerisms, and personality. Be creative and entertaining while still being helpful.` },
+          { role: "user", content: question },
+        ],
+        temperature: 0.9,
+        max_tokens: 400,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const answer = (out || "*stays silent*").slice(0, 1500);
+      const asKey = makeId(6);
+      
+      inlineCache.set(asKey, {
+        prompt: question,
+        answer,
+        userId: String(userId),
+        model,
+        character,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(asKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `char_${asKey}`,
+          title: `🎭 ${character}: ${question.slice(0, 30)}`,
+          description: answer.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+          input_message_content: {
+            message_text: `🎭 *${character}*\n\n❓ _${question}_\n\n${answer}\n\n_via StarzAI • Character Mode • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(asKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `as_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "sum:" or "s:" (if not settings) - Summarize mode
+  if (qLower.startsWith("sum:") || qLower.startsWith("sum ")) {
+    const textToSum = q.slice(4).trim();
+    
+    if (!textToSum) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `sum_typing_${sessionKey}`,
+          title: "📝 Summarize",
+          description: "Paste text to summarize",
+          thumbnail_url: "https://img.icons8.com/fluency/96/summary.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Summarize the given text concisely. Extract key points and main ideas. Use bullet points if helpful. Keep it brief but comprehensive." },
+          { role: "user", content: `Summarize this:\n\n${textToSum}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 400,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const summary = (out || "Could not summarize").slice(0, 1500);
+      const sumKey = makeId(6);
+      
+      inlineCache.set(sumKey, {
+        prompt: textToSum.slice(0, 200) + "...",
+        answer: summary,
+        userId: String(userId),
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(sumKey), 30 * 60 * 1000);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `sum_${sumKey}`,
+          title: `📝 Summary`,
+          description: summary.slice(0, 80),
+          thumbnail_url: "https://img.icons8.com/fluency/96/summary.png",
+          input_message_content: {
+            message_text: `📝 *Summary*\n\n${summary}\n\n_via StarzAI • Summarize • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineAnswerKeyboard(sumKey),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `sum_err_${sessionKey}`,
           title: "⚠️ Taking too long...",
           description: "Try again",
           thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
