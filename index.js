@@ -1674,4 +1674,46 @@ http
     } else {
       console.warn("PUBLIC_URL not set; webhook not configured automatically.");
     }
+
+    // Register bot commands for the "/" menu popup
+    try {
+      // Default commands for all users
+      await bot.api.setMyCommands([
+        { command: "start", description: "👋 Welcome & menu" },
+        { command: "help", description: "📖 Show all features" },
+        { command: "register", description: "✅ Register your account" },
+        { command: "model", description: "🤖 Choose AI model" },
+        { command: "whoami", description: "👤 Your profile & stats" },
+        { command: "reset", description: "🗑️ Clear chat memory" },
+      ]);
+      console.log("Bot commands registered (default)");
+
+      // Owner-only commands (private chats with owners)
+      for (const ownerId of OWNER_IDS) {
+        try {
+          await bot.api.setMyCommands(
+            [
+              { command: "start", description: "👋 Welcome & menu" },
+              { command: "help", description: "📖 Show all features" },
+              { command: "register", description: "✅ Register your account" },
+              { command: "model", description: "🤖 Choose AI model" },
+              { command: "whoami", description: "👤 Your profile & stats" },
+              { command: "reset", description: "🗑️ Clear chat memory" },
+              { command: "status", description: "📊 Bot status & analytics" },
+              { command: "info", description: "🔍 User info (info <userId>)" },
+              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
+              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
+              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
+              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
+            ],
+            { scope: { type: "chat", chat_id: Number(ownerId) } }
+          );
+        } catch (e) {
+          console.error(`Failed to set owner commands for ${ownerId}:`, e.message);
+        }
+      }
+      console.log("Owner commands registered");
+    } catch (e) {
+      console.error("Failed to register bot commands:", e);
+    }
   });
