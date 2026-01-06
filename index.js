@@ -1710,6 +1710,8 @@ bot.on("message:text", async (ctx) => {
       // Send confirmation
       await ctx.reply(`✅ Sent to group chat! Getting AI response...`);
       
+      console.log(`Shared chat: chatKey=${chatKey}, inlineMessageId=${inlineMessageId}`);
+      
       try {
         // Get AI response
         const model = session.model || "gpt-4o-mini";
@@ -1731,23 +1733,32 @@ bot.on("message:text", async (ctx) => {
         // Add AI response to shared chat
         addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
         
+        // Get fresh session reference after adding AI response
+        const updatedSession = getSharedChat(chatKey);
+        
         // Update the inline message
         if (inlineMessageId) {
+          console.log(`Updating inline message: ${inlineMessageId}`);
           try {
+            const newText = formatSharedChatDisplay(updatedSession);
+            console.log(`New text length: ${newText.length}`);
             await bot.api.editMessageTextInline(
               inlineMessageId,
-              formatSharedChatDisplay(session),
+              newText,
               { 
                 parse_mode: "Markdown",
                 reply_markup: sharedChatKeyboard(chatKey)
               }
             );
+            console.log("Inline message updated successfully!");
           } catch (e) {
-            console.error("Could not update inline message:", e.message);
+            console.error("Could not update inline message:", e.message, e);
           }
+        } else {
+          console.log("No inlineMessageId found!");
         }
         
-        await ctx.reply(`🤖 AI responded! Check the group chat.`);
+        await ctx.reply(`🤖 AI responded! Tap 🔄 Refresh in the group chat to see it.`);
       } catch (e) {
         console.error("Shared chat AI error:", e);
         await ctx.reply(`❌ AI error. Try again!`);
