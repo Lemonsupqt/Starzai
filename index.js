@@ -2705,9 +2705,15 @@ bot.on("inline_query", async (ctx) => {
         description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick, concise answers\n\`@starztechbot q: your question\`\n\n🕳️ *Blackhole* - Deep research & analysis\n\`@starztechbot b: your topic\`\n\n💻 *Code* - Programming help & snippets\n\`@starztechbot c: your code question\`\n\n🧠 *Explain* - Simple explanations (ELI5)\n\`@starztechbot e: concept to explain\`\n\n_Or just type your question directly!_`,
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick, concise answers\n🕳️ *Blackhole* - Deep research & analysis\n💻 *Code* - Programming help & snippets\n🧠 *Explain* - Simple explanations (ELI5)\n\n_Tap a button below or type your question directly!_`,
           parse_mode: "Markdown"
         },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("⭐ Quark", "q: ")
+          .switchInlineCurrent("🕳️ Blackhole", "b: ")
+          .row()
+          .switchInlineCurrent("💻 Code", "code: ")
+          .switchInlineCurrent("🧠 Explain", "e: "),
       },
       {
         type: "article",
