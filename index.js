@@ -2440,20 +2440,19 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `nav_research_${sessionKey}`,
         title: "🔍 Research",
-        description: "➡️ Tap the button below to start",
+        description: "▶️ Tap button to enter topic",
         thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
         input_message_content: { message_text: "_" },
-        reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Start Research", "r "),
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Enter Research Topic", "r "),
       },
-
       {
         type: "article",
         id: `nav_settings_${sessionKey}`,
         title: `⚙️ Settings (${shortModel})`,
-        description: "➡️ Tap the button below to change model",
+        description: "▶️ Tap button to change model",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
         input_message_content: { message_text: "_" },
-        reply_markup: new InlineKeyboard().switchInlineCurrent("⚙️ Open Settings", "s "),
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⚙️ View Models", "s "),
       },
       {
         type: "article",
@@ -2489,6 +2488,7 @@ bot.on("inline_query", async (ctx) => {
           description: "Example: r quantum computing",
           thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
           input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
