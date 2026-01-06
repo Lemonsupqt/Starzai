@@ -773,6 +773,53 @@ async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, r
   }
 }
 
+// Streaming LLM function - calls onChunk callback with accumulated text
+async function llmTextStream({ model, messages, temperature = 0.7, max_tokens = 500, onChunk }) {
+  try {
+    const stream = await openai.chat.completions.create({
+      model,
+      messages,
+      temperature,
+      max_tokens,
+      stream: true,
+    });
+    
+    let fullText = "";
+    let lastUpdate = 0;
+    const UPDATE_INTERVAL = 500; // Update every 500ms to avoid rate limits
+    
+    for await (const chunk of stream) {
+      const content = chunk.choices?.[0]?.delta?.content || "";
+      if (content) {
+        fullText += content;
+        
+        // Throttle updates to avoid Telegram rate limits
+        const now = Date.now();
+        if (now - lastUpdate >= UPDATE_INTERVAL) {
+          lastUpdate = now;
+          try {
+            await onChunk(fullText);
+          } catch (e) {
+            // Ignore edit errors (message unchanged, etc)
+          }
+        }
+      }
+    }
+    
+    // Final update with complete text
+    try {
+      await onChunk(fullText);
+    } catch (e) {
+      // Ignore
+    }
+    
+    return fullText.trim();
+  } catch (err) {
+    console.error("Streaming LLM Error:", err.message);
+    throw err;
+  }
+}
+
 async function llmChatReply({ chatId, userText, systemPrompt, model }) {
   const history = getHistory(chatId);
   const messages = [
@@ -2099,9 +2146,9 @@ bot.on("message:text", async (ctx) => {
         // Acknowledge in DM
         await ctx.reply(`✅ Message sent to group chat! Getting AI response...`);
         
-        // Get AI response
+        // Get AI response with streaming
         try {
-          const model = session.model || ensureChosenModelValid(u.id);
+          const yapModel = session.model || ensureChosenModelValid(u.id);
           const messages = [
             { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
             ...session.history.slice(-8).map(m => ({
@@ -2110,19 +2157,35 @@ bot.on("message:text", async (ctx) => {
             }))
           ];
           
-          const aiResponse = await llmText({
-            model,
+          // Use streaming for real-time updates
+          const aiResponse = await llmTextStream({
+            model: yapModel,
             messages,
             temperature: 0.7,
-            max_tokens: 300,
-            timeout: 20000,
-            retries: 1,
+            max_tokens: 400,
+            onChunk: async (partialText) => {
+              // Update the inline message with partial response
+              const tempSession = { ...session, history: [...session.history, { role: "assistant", content: partialText + "█", userName: "AI", userId: "0" }] };
+              const totalPages = Math.max(1, Math.ceil(tempSession.history.length / MESSAGES_PER_PAGE));
+              try {
+                await bot.api.editMessageTextInline(
+                  msgId,
+                  formatSharedChatDisplay(tempSession, -1),
+                  {
+                    parse_mode: "Markdown",
+                    reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
+                  }
+                );
+              } catch (e) {
+                // Ignore edit errors (message unchanged, rate limit, etc)
+              }
+            },
           });
           
-          // Add AI response to session
+          // Add final AI response to session
           addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
           
-          // Update the inline message
+          // Final update with complete response
           const updatedSession = getSharedChat(chatKey);
           const totalPages = getSharedChatPageCount(updatedSession);
           
@@ -2355,72 +2418,55 @@ bot.on("inline_query", async (ctx) => {
     console.log("Showing main menu (empty query)");
     const chatKey = makeId(8);
     const userName = ctx.from?.first_name || "User";
+    const shortModel = model.split("/").pop();
     
-    // Create inline keyboard for switch_inline buttons
-    const quickKb = new InlineKeyboard().switchInlineCurrent("");
-    const researchKb = new InlineKeyboard().switchInlineCurrent("research: ");
-    const translateKb = new InlineKeyboard().switchInlineCurrent("translate to English: ");
+    // Create session for Yap immediately so it's ready when user selects it
+    createSharedChat(chatKey, userId, userName, model);
     
     const results = [
       {
         type: "article",
-        id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
+        id: `yap_start_${chatKey}`,
         title: "👥 Yap (Group Chat)",
-        description: "Anyone in this chat can talk to AI together!",
+        description: "Start a shared AI chat anyone can join",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${shortModel}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Anyone can tap 💬 Ask to start!_\n\n━━━━━━━━━━━━━━━`,
           parse_mode: "Markdown",
         },
         reply_markup: sharedChatKeyboard(chatKey),
       },
       {
         type: "article",
-        id: `quick_${sessionKey}`,
-        title: "💬 Quick Answer",
-        description: "Tap to type your question",
-        thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
-        input_message_content: {
-          message_text: `⚡ *Quick Answer*\n\nTap the button below to type your question:`,
-          parse_mode: "Markdown",
-        },
-        reply_markup: quickKb,
-      },
-      {
-        type: "article",
-        id: `research_${sessionKey}`,
-        title: "🔍 Research",
-        description: "Tap to type your research topic",
+        id: `hint_research_${sessionKey}`,
+        title: "🔍 Research → Type 'r' to start",
+        description: "In-depth answers on any topic",
         thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
-        input_message_content: {
-          message_text: `🔍 *Research Mode*\n\nTap the button below to type your topic:`,
-          parse_mode: "Markdown",
-        },
-        reply_markup: researchKb,
+        input_message_content: { message_text: `🔍 *Research Mode*\n\nType \`r\` then your topic to research anything!\n\nExample: \`r quantum computing\``, parse_mode: "Markdown" },
       },
       {
         type: "article",
-        id: `translate_${sessionKey}`,
-        title: "🌐 Translate",
-        description: "Tap to type text to translate",
+        id: `hint_translate_${sessionKey}`,
+        title: "🌐 Translate → Type 't' to start",
+        description: "Translate text to any language",
         thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
-        input_message_content: {
-          message_text: `🌐 *Translate Mode*\n\nTap the button below to type text to translate:`,
-          parse_mode: "Markdown",
-        },
-        reply_markup: translateKb,
+        input_message_content: { message_text: `🌐 *Translate Mode*\n\nType \`t [lang] [text]\` to translate!\n\nExample: \`t spanish hello world\``, parse_mode: "Markdown" },
       },
       {
         type: "article",
-        id: `settings_${sessionKey}`,
-        title: `⚙️ Settings (${model.split("/").pop()})`,
+        id: `hint_settings_${sessionKey}`,
+        title: `⚙️ Settings (${shortModel}) → Type 's'`,
         description: "Change your AI model",
         thumbnail_url: "https://img.icons8.com/fluency/96/settings.png",
-        input_message_content: {
-          message_text: `⚙️ *Model Settings*\n\n🤖 Current: \`${model}\`\n\nSelect a category to change model:`,
-          parse_mode: "Markdown",
-        },
-        reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId),
+        input_message_content: { message_text: `⚙️ *Settings*\n\nType \`s\` to open model settings!\n\nCurrent model: \`${shortModel}\``, parse_mode: "Markdown" },
+      },
+      {
+        type: "article",
+        id: `hint_quick_${sessionKey}`,
+        title: "⚡ Quick Answer → Just type your question!",
+        description: "Fast answers to any question",
+        thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
+        input_message_content: { message_text: `⚡ *Quick Answer*\n\nJust type any question to get a fast answer!\n\nExample: \`what is photosynthesis\``, parse_mode: "Markdown" },
       },
     ];
 
@@ -2429,10 +2475,250 @@ bot.on("inline_query", async (ctx) => {
   
   // Filter modes when user types partial text
   const qLower = q.toLowerCase();
+  const shortModel = model.split("/").pop();
+  
+  // =====================
+  // SHORT PREFIX HANDLERS - r, t, s for quick access
+  // =====================
+  
+  // "r " or "r:" - Research shortcut
+  if (qLower.startsWith("r ") || qLower.startsWith("r:")) {
+    const topic = q.slice(2).trim();
+    
+    if (!topic) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `r_typing_${sessionKey}`,
+          title: "✍️ Type your research topic...",
+          description: "Example: r quantum computing",
+          thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Get research answer
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research assistant. Provide detailed, well-structured, informative answers. Be thorough but clear." },
+          { role: "user", content: `Research and explain: ${topic}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+        timeout: 15000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No results").slice(0, 3500);
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `r_send_${makeId(6)}`,
+          title: `✉️ Send: ${topic.slice(0, 35)}`,
+          description: `🔍 ${answer.slice(0, 80)}...`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+          input_message_content: {
+            message_text: `🔍 *Research: ${topic}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `r_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try a simpler topic",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "t " - Translate shortcut (t [lang] [text])
+  if (qLower.startsWith("t ")) {
+    const parts = q.slice(2).trim().split(/\s+/);
+    const targetLang = parts[0] || "";
+    const textToTranslate = parts.slice(1).join(" ");
+    
+    if (!targetLang) {
+      // Show language options
+      const languages = ["English", "Spanish", "French", "German", "Chinese", "Japanese", "Korean", "Hindi"];
+      const results = languages.map((lang, i) => ({
+        type: "article",
+        id: `t_lang_${i}_${sessionKey}`,
+        title: `🌐 ${lang}`,
+        description: `Translate to ${lang}`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+        input_message_content: { message_text: "_" },
+      }));
+      return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    }
+    
+    if (!textToTranslate) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `t_typing_${sessionKey}`,
+          title: `✍️ Type text to translate to ${targetLang}...`,
+          description: `Example: t ${targetLang} hello world`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Get translation
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: `Translate to ${targetLang}. Output only the translation.` },
+          { role: "user", content: textToTranslate },
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const translation = (out || "Translation failed").trim();
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `t_send_${makeId(6)}`,
+          title: `✉️ Send: ${translation.slice(0, 35)}`,
+          description: `🌐 ${targetLang}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+          input_message_content: {
+            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}\n\n_via StarzAI_`,
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `t_err_${sessionKey}`,
+          title: "⚠️ Translation failed",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "s" or "s " - Settings shortcut
+  if (qLower === "s" || qLower === "s " || qLower.startsWith("s:")) {
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    
+    const results = [
+      {
+        type: "article",
+        id: `s_free_${sessionKey}`,
+        title: `🆓 Free Models (${FREE_MODELS.length})`,
+        description: "Tap to see free models",
+        thumbnail_url: "https://img.icons8.com/fluency/96/free.png",
+        input_message_content: { message_text: "_" },
+      },
+    ];
+    
+    if (tier === "premium" || tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `s_premium_${sessionKey}`,
+        title: `⭐ Premium Models (${PREMIUM_MODELS.length})`,
+        description: "Tap to see premium models",
+        thumbnail_url: "https://img.icons8.com/fluency/96/star.png",
+        input_message_content: { message_text: "_" },
+      });
+    }
+    
+    if (tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `s_ultra_${sessionKey}`,
+        title: `💎 Ultra Models (${ULTRA_MODELS.length})`,
+        description: "Tap to see ultra models",
+        thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+        input_message_content: { message_text: "_" },
+      });
+    }
+    
+    results.push({
+      type: "article",
+      id: `s_current_${sessionKey}`,
+      title: `✅ Current: ${shortModel}`,
+      description: "Your selected model",
+      thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+      input_message_content: { message_text: "_" },
+    });
+    
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "s:free", "s:premium", "s:ultra" - Show models in category
+  if (qLower.startsWith("s:") && qLower.length > 2) {
+    const category = qLower.slice(2).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    
+    let models = [];
+    if (category === "free" || category.startsWith("free")) models = FREE_MODELS;
+    else if ((category === "premium" || category.startsWith("premium")) && (tier === "premium" || tier === "ultra")) models = PREMIUM_MODELS;
+    else if ((category === "ultra" || category.startsWith("ultra")) && tier === "ultra") models = ULTRA_MODELS;
+    
+    if (models.length === 0) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `s_noaccess_${sessionKey}`,
+          title: "🚫 No access to this tier",
+          description: "Upgrade to access more models",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const results = models.map((m, i) => {
+      const mShort = m.split("/").pop();
+      const isSelected = m === model;
+      return {
+        type: "article",
+        id: `s_model_${i}_${sessionKey}`,
+        title: `${isSelected ? "✅ " : ""}${mShort}`,
+        description: isSelected ? "Currently selected" : "Tap to select",
+        thumbnail_url: isSelected 
+          ? "https://img.icons8.com/fluency/96/checkmark.png"
+          : "https://img.icons8.com/fluency/96/robot.png",
+        input_message_content: { message_text: "_" },
+      };
+    });
+    
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // =====================
+  // ORIGINAL HANDLERS
+  // =====================
   
   // "yap" filter - show only yap option (starting new yap)
   if (qLower === "yap" || (qLower.startsWith("yap ") && !qLower.includes(":"))) {
     const chatKey = makeId(8);
+    const userName = ctx.from?.first_name || "User";
+    // Create session immediately so it's ready
+    createSharedChat(chatKey, userId, userName, model);
     return ctx.answerInlineQuery([
       {
         type: "article",
@@ -2452,21 +2738,197 @@ bot.on("inline_query", async (ctx) => {
   // NOTE: yap:chatKey:message inline query was removed because it creates duplicate messages
   // Instead, users tap "💬 Ask AI" button which DMs them for input, then edits the ORIGINAL message
   
+  // =====================
+  // SETTINGS - All in popup, no messages sent!
+  // =====================
+  
+  // "settings" - show model categories
+  if (qLower === "settings" || qLower === "settings ") {
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const shortModel = model.split("/").pop();
+    
+    const results = [
+      {
+        type: "article",
+        id: `set_cat_free_${sessionKey}`,
+        title: "🆓 Free Models",
+        description: `${FREE_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/free.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🆓 View Free Models", "settings:free "),
+      },
+    ];
+    
+    if (tier === "premium" || tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `set_cat_premium_${sessionKey}`,
+        title: "⭐ Premium Models",
+        description: `${PREMIUM_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/star.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⭐ View Premium Models", "settings:premium "),
+      });
+    }
+    
+    if (tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `set_cat_ultra_${sessionKey}`,
+        title: "💎 Ultra Models",
+        description: `${ULTRA_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("💎 View Ultra Models", "settings:ultra "),
+      });
+    }
+    
+    // Back to main menu
+    results.push({
+      type: "article",
+      id: `set_back_${sessionKey}`,
+      title: `← Back (Current: ${shortModel})`,
+      description: "Return to main menu",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+    });
+    
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "settings:category" - show models in category
+  if (qLower.startsWith("settings:")) {
+    const category = qLower.split(":")[1]?.trim()?.split(" ")[0];
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const shortModel = model.split("/").pop();
+    
+    let models = [];
+    let categoryTitle = "";
+    let categoryEmoji = "";
+    
+    if (category === "free") {
+      models = FREE_MODELS;
+      categoryTitle = "Free";
+      categoryEmoji = "🆓";
+    } else if (category === "premium" && (tier === "premium" || tier === "ultra")) {
+      models = PREMIUM_MODELS;
+      categoryTitle = "Premium";
+      categoryEmoji = "⭐";
+    } else if (category === "ultra" && tier === "ultra") {
+      models = ULTRA_MODELS;
+      categoryTitle = "Ultra";
+      categoryEmoji = "💎";
+    }
+    
+    if (models.length === 0) {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `set_noaccess_${sessionKey}`,
+          title: "🚫 No Access",
+          description: "Upgrade your tier to access these models",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const results = models.map((m, i) => {
+      const mShort = m.split("/").pop();
+      const isSelected = m === model;
+      return {
+        type: "article",
+        id: `set_model_${i}_${sessionKey}`,
+        title: `${isSelected ? "✅ " : ""}${mShort}`,
+        description: isSelected ? "Currently selected" : "Tap to select",
+        thumbnail_url: isSelected 
+          ? "https://img.icons8.com/fluency/96/checkmark.png"
+          : "https://img.icons8.com/fluency/96/robot.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent(
+          isSelected ? `✅ ${mShort}` : `Select ${mShort}`,
+          `set:${m} `
+        ),
+      };
+    });
+    
+    // Back button
+    results.push({
+      type: "article",
+      id: `set_back_cat_${sessionKey}`,
+      title: "← Back to Categories",
+      description: "Return to category selection",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+    });
+    
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "set:modelname" - select model (no message sent!)
+  if (qLower.startsWith("set:")) {
+    const newModel = q.slice(4).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const allowedModels = allModelsForTier(tier);
+    
+    if (allowedModels.includes(newModel)) {
+      // Set the model
+      setUserModel(userId, newModel);
+      const inlineSess = getInlineSession(userId);
+      inlineSess.model = newModel;
+      
+      const shortModel = newModel.split("/").pop();
+      
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `set_done_${sessionKey}`,
+          title: `✅ Model set to ${shortModel}`,
+          description: "Tap to return to main menu",
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } else {
+      return ctx.answerInlineQuery([
+        {
+          type: "article",
+          id: `set_err_${sessionKey}`,
+          title: "❌ Model not available",
+          description: "You don't have access to this model",
+          thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // =====================
+  // RESEARCH MODE
+  // =====================
+  
   // "research:" prefix - detailed research answer
   if (qLower.startsWith("research:") || qLower.startsWith("research ")) {
     const topic = q.replace(/^research[:\s]+/i, "").trim();
     
     if (!topic) {
+      // Show typing hint - stays in popup
       return ctx.answerInlineQuery([
         {
           type: "article",
-          id: `research_help_${sessionKey}`,
-          title: "🔍 Research Mode",
-          description: "Type your topic after 'research:'",
-          input_message_content: {
-            message_text: `🔍 *Research Mode*\n\nType your topic after \`research:\`\n\nExample: \`@starztechbot research: artificial intelligence\``,
-            parse_mode: "Markdown",
-          },
+          id: `research_typing_${sessionKey}`,
+          title: "✍️ Type your research topic...",
+          description: "Example: quantum computing, climate change, AI",
+          thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -2485,17 +2947,28 @@ bot.on("inline_query", async (ctx) => {
       });
       
       const answer = (out || "No results").slice(0, 3500);
+      const shortModel = model.split("/").pop();
       
       return ctx.answerInlineQuery([
         {
           type: "article",
           id: `research_${makeId(6)}`,
-          title: `🔍 ${topic.slice(0, 40)}`,
-          description: answer.slice(0, 100),
+          title: `✉️ Send: ${topic.slice(0, 35)}`,
+          description: `🔍 ${answer.slice(0, 80)}...`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
           input_message_content: {
-            message_text: `🔍 *Research: ${topic}*\n\n${answer}`,
+            message_text: `🔍 *Research: ${topic}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
             parse_mode: "Markdown",
           },
+        },
+        {
+          type: "article",
+          id: `research_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
@@ -2503,11 +2976,20 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `research_err_${sessionKey}`,
-          title: "⚠️ Research taking too long",
-          description: "Try a simpler topic or use Quick Answer",
-          input_message_content: {
-            message_text: `⚠️ Research is taking too long. Try a simpler query!`,
-          },
+          title: "⚠️ Taking too long...",
+          description: "Try a simpler topic",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `research: ${topic}`),
+        },
+        {
+          type: "article",
+          id: `research_back_err_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -2518,16 +3000,47 @@ bot.on("inline_query", async (ctx) => {
     const match = q.match(/^translate\s+to\s+([\w]+)[:\s]+(.+)$/i);
     
     if (!match) {
+      // Show language options or typing hint
+      const partialMatch = q.match(/^translate\s+to\s+([\w]*)$/i);
+      if (partialMatch) {
+        // User is typing language, show common options
+        const languages = ["English", "Spanish", "French", "German", "Chinese", "Japanese", "Korean", "Arabic", "Hindi", "Portuguese"];
+        const typed = partialMatch[1]?.toLowerCase() || "";
+        const filtered = languages.filter(l => l.toLowerCase().startsWith(typed));
+        
+        const results = filtered.slice(0, 8).map((lang, i) => ({
+          type: "article",
+          id: `translate_lang_${i}_${sessionKey}`,
+          title: `🌐 Translate to ${lang}`,
+          description: "Tap to select this language",
+          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent(`🌐 ${lang}`, `translate to ${lang}: `),
+        }));
+        
+        results.push({
+          type: "article",
+          id: `translate_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        });
+        
+        return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+      }
+      
+      // Show typing hint
       return ctx.answerInlineQuery([
         {
           type: "article",
-          id: `translate_help_${sessionKey}`,
-          title: "🌐 Translate Mode",
-          description: "Format: translate to [language]: text",
-          input_message_content: {
-            message_text: `🌐 *Translate Mode*\n\nFormat: \`translate to [language]: your text\`\n\nExample: \`@starztechbot translate to French: Hello world\``,
-            parse_mode: "Markdown",
-          },
+          id: `translate_typing_${sessionKey}`,
+          title: "✍️ Type: translate to [language]: text",
+          description: "Example: translate to Spanish: Hello",
+          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -2549,17 +3062,28 @@ bot.on("inline_query", async (ctx) => {
       });
       
       const translation = (out || "Translation failed").trim();
+      const shortModel = model.split("/").pop();
       
       return ctx.answerInlineQuery([
         {
           type: "article",
           id: `translate_${makeId(6)}`,
-          title: `🌐 ${targetLang}: ${translation.slice(0, 40)}`,
-          description: translation.slice(0, 100),
+          title: `✉️ Send: ${translation.slice(0, 35)}`,
+          description: `🌐 ${targetLang} translation`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
           input_message_content: {
-            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}`,
+            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}\n\n_via StarzAI • ${shortModel}_`,
             parse_mode: "Markdown",
           },
+        },
+        {
+          type: "article",
+          id: `translate_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
@@ -2569,9 +3093,18 @@ bot.on("inline_query", async (ctx) => {
           id: `translate_err_${sessionKey}`,
           title: "⚠️ Translation failed",
           description: "Try again",
-          input_message_content: {
-            message_text: `⚠️ Translation failed. Try again!`,
-          },
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `translate to ${targetLang}: ${textToTranslate}`),
+        },
+        {
+          type: "article",
+          id: `translate_back_err_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
