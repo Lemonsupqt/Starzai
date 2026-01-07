@@ -1979,7 +1979,7 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke, /ban, /unban, /softban, /warn, /banlist, /mute, /unmute, /mutelist",
+    "• /status, /info, /grant, /revoke, /ban, /unban, /softban, /warn, /clearwarns, /banlist, /mute, /unmute, /mutelist, /ownerhelp",
   ].join("\n");
 }
 
@@ -3763,6 +3763,42 @@ bot.command("warn", async (ctx) => {
   }
 });
 
+bot.command("clearwarns", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /clearwarns <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot clear warnings for an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings) || rec.warnings.length === 0) {
+    return ctx.reply(`User ${targetIdStr} has no warnings.`);
+  }
+
+  const count = rec.warnings.length;
+  rec.warnings = [];
+  saveUsers();
+
+  let ownerMsg = `🧹 Cleared ${count} warnings for user ${targetIdStr}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🧹 *Your warnings on StarzAI have been cleared.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
 bot.command("softban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
@@ -3999,6 +4035,40 @@ bot.command("mutelist", async (ctx) => {
   }
 
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+
+bot.command("ownerhelp", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const text = [
+    "📘 *StarzAI Owner Guide (Quick)*",
+    "",
+    "👤 *User info & status*",
+    "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
+    "• /status — global bot stats",
+    "",
+    "🎫 *Tiers & access*",
+    "• /grant <userId> <tier>, /revoke <userId>",
+    "• /allow <userId> <model>, /deny <userId> <model>",
+    "",
+    "🚫 *Bans*",
+    "• /ban <userId> [reason], /unban <userId> [reason]",
+    "• /softban <userId> [reason] — 24h total mute",
+    "• /banlist — list banned users",
+    "",
+    "🔇 *Mutes*",
+    "• /mute <userId> <duration> [scope] [reason]",
+    "• /unmute <userId> [reason], /mutelist",
+    "  scope: all, dm, group, inline, tier",
+    "",
+    "⚠️ *Warnings*",
+    "• /warn <userId> [reason] — auto softban at 3 warnings",
+    "• /clearwarns <userId> [reason] — reset warnings",
+    "",
+    "_Owners cannot be banned, muted, or warned._",
+  ].join("\n");
+
+  await ctx.reply(text, { parse_mode: "Markdown" });
 });
 
 // =====================
@@ -8921,31 +8991,12 @@ http
               { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
               { command: "softban", description: "🚫 Softban user (softban <userId> [reason])" },
               { command: "warn", description: "⚠️ Warn user (warn <userId> [reason])" },
+              { command: "clearwarns", description: "🧹 Clear warnings (clearwarns <userId> [reason])" },
               { command: "banlist", description: "📜 List banned users" },
               { command: "mute", description: "🔇 Mute user (mute <userId> <duration> [scope] [reason])" },
               { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
               { command: "mutelist", description: "🔇 List muted users" },
-              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
-              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },us", description: "📊 Bot status & analytics" },
-              { command: "info", description: "🔍 User info (info <userId>)" },
-              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
-              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
-              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
-              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
-              { command: "banlist", description: "📜 List banned users" },
-              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> [scope] [reason])" },
-              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
-              { command: "mutelist", description: "🔇 List muted users" },
-              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
-              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },us", description: "📊 Bot status & analytics" },
-              { command: "info", description: "🔍 User info (info <userId>)" },
-              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
-              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
-              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
-              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
-              { command: "banlist", description: "📜 List banned users" },
-              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> ...)" },
-              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
+              { command: "ownerhelp", description: "📘 Owner help guide" },
               { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
               { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
             ],

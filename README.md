@@ -65,12 +65,14 @@ Set a custom personality for all DM responses:
 | `/unban <userId> [reason]` | Remove ban from user |
 | `/softban <userId> [reason]` | Temporary soft ban (24h total mute) |
 | `/warn <userId> [reason]` | Add a warning; auto softban on repeated warnings |
+| `/clearwarns <userId> [reason]` | Clear a user's warnings (optionally with a note) |
 | `/banlist` | List all banned users |
 | `/mute <userId> <duration> [scope] [reason]` | Temporarily mute a user (`scope`: all/dm/group/inline/tier) |
 | `/unmute <userId> [reason]` | Remove active mute from user |
 | `/mutelist` | List all muted users |
 | `/allow <userId> <model>` | Allow specific model |
 | `/deny <userId> <model>` | Deny specific model |
+| `/ownerhelp` | Show a quick owner-only moderation guide in chat |
 
 ## 🚀 Deployment
 
