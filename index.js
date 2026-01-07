@@ -1912,31 +1912,31 @@ bot.command("char", async (ctx) => {
   const activeChar = getActiveCharacter(u.id, chat.id);
   const savedChars = getSavedCharacters(u.id);
   
-  // No subcommand - show character status and help
+  // No subcommand - show character status and help with button list
   if (!subcommand) {
     const statusText = activeChar 
-      ? `🎭 *Active Character:* ${activeChar.name}\n\n`
-      : "🎭 *No active character*\n\n";
+      ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
+      : "🎭 <b>No active character</b>\n\n";
     
     const savedList = savedChars.length > 0
-      ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
+      ? `💾 <b>Saved Characters:</b>\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\n")}\n\n`
       : "";
     
     const helpText = [
       statusText,
       savedList,
-      "*Commands:*",
-      "• `/char yoda` - Start as Yoda",
-      "• `/char save yoda` - Save character",
-      "• `/char list` - Show saved",
-      "• `/char remove yoda` - Remove saved",
-      "• `/char stop` - Stop character mode",
+      "<b>Commands:</b>",
+      "• /char yoda - Start as Yoda",
+      "• /char save yoda - Save character",
+      "• /char list - Show saved",
+      "• /char remove yoda - Remove saved",
+      "• /char stop or /default - Stop character mode",
       "",
-      "_Unlike Partner, Character is for quick roleplay as existing characters!_",
+      "<i>Tap a character button below to start!</i>",
     ].join("\n");
     
     return ctx.reply(helpText, { 
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
       reply_markup: buildCharacterKeyboard(savedChars, activeChar)
     });
   }
@@ -1999,6 +1999,23 @@ bot.command("char", async (ctx) => {
       );
     }
   }
+});
+
+// /default - Stop character mode and return to normal AI
+bot.command("default", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  const chat = ctx.chat;
+  if (!u?.id) return;
+  
+  const activeChar = getActiveCharacter(u.id, chat.id);
+  
+  if (!activeChar) {
+    return ctx.reply("✅ Already in default mode. No active character.");
+  }
+  
+  clearActiveCharacter(u.id, chat.id);
+  return ctx.reply(`⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\n\n<i>Normal AI responses resumed.</i>`, { parse_mode: "HTML" });
 });
 
 // Build character selection keyboard
@@ -2091,25 +2108,27 @@ bot.callbackQuery("open_char", async (ctx) => {
   const savedChars = getSavedCharacters(userId);
   
   const statusText = activeChar 
-    ? `🎭 *Active Character:* ${activeChar.name}\n\n`
-    : "🎭 *No active character*\n\n";
+    ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
+    : "🎭 <b>No active character</b>\n\n";
   
   const savedList = savedChars.length > 0
-    ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
+    ? `💾 <b>Saved Characters:</b>\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\n")}\n\n`
     : "";
   
   const helpText = [
     statusText,
     savedList,
-    "*Commands:*",
-    "• `/char yoda` - Start as Yoda",
-    "• `/char save yoda` - Save character",
-    "• `/char list` - Show saved",
-    "• `/char stop` - Stop character mode",
+    "<b>Commands:</b>",
+    "• /char yoda - Start as Yoda",
+    "• /char save yoda - Save character",
+    "• /char list - Show saved",
+    "• /char stop or /default - Stop",
+    "",
+    "<i>Tap a character button to start!</i>",
   ].join("\n");
   
   await ctx.reply(helpText, { 
-    parse_mode: "Markdown",
+    parse_mode: "HTML",
     reply_markup: buildCharacterKeyboard(savedChars, activeChar)
   });
 });
@@ -3709,7 +3728,16 @@ bot.on("message:text", async (ctx) => {
   // Check if user is replying to a specific message
   const replyToMsg = ctx.message?.reply_to_message;
   let replyContext = "";
+  let replyCharacter = null; // Character from replied message (for GC character continuation)
+  
   if (replyToMsg && replyToMsg.text) {
+    // Check if the replied message is a character message (contains "🎭 *CharName*" pattern)
+    const charMatch = replyToMsg.text.match(/^🎭 \*?([^*\n]+)\*?\n/);
+    if (charMatch && replyToMsg.from?.is_bot) {
+      // Someone is replying to a character message - continue with that character
+      replyCharacter = charMatch[1].trim();
+    }
+    
     // User is replying to a specific message - include that context
     const replyFrom = replyToMsg.from?.is_bot ? "AI" : "User";
     replyContext = `[Replying to ${replyFrom}'s message: "${replyToMsg.text.slice(0, 200)}"]
@@ -3739,8 +3767,10 @@ bot.on("message:text", async (ctx) => {
     const isPartnerMode = partner?.active && partner?.name;
     
     // Check if character mode is active
+    // Priority: replyCharacter (from replied message) > activeChar (user's active character)
     const activeChar = getActiveCharacter(u.id, chat.id);
-    const isCharacterMode = activeChar?.name;
+    const effectiveCharacter = replyCharacter || activeChar?.name;
+    const isCharacterMode = !!effectiveCharacter;
     
     let systemPrompt;
     let out;
@@ -3773,12 +3803,15 @@ bot.on("message:text", async (ctx) => {
       
     } else if (isCharacterMode) {
       // Character mode - roleplay as existing character
-      systemPrompt = buildCharacterSystemPrompt(activeChar.name);
-      modeLabel = `🎭 *${activeChar.name}*\n\n`;
+      // Use effectiveCharacter which could be from reply or active character
+      systemPrompt = buildCharacterSystemPrompt(effectiveCharacter);
+      modeLabel = `🎭 *${effectiveCharacter}*\n\n`;
       
-      // Add user message to character history
-      addCharacterMessage(u.id, chat.id, "user", text);
-      const charHistory = getCharacterChatHistory(u.id, chat.id);
+      // Add user message to character history (only if it's their active character, not a reply)
+      if (activeChar?.name) {
+        addCharacterMessage(u.id, chat.id, "user", text);
+      }
+      const charHistory = activeChar?.name ? getCharacterChatHistory(u.id, chat.id) : [];
       
       // Build messages array with character history
       const messages = [
@@ -3793,8 +3826,10 @@ bot.on("message:text", async (ctx) => {
         max_tokens: 500,
       });
       
-      // Add AI response to character history
-      addCharacterMessage(u.id, chat.id, "assistant", out);
+      // Add AI response to character history (only if it's their active character)
+      if (activeChar?.name) {
+        addCharacterMessage(u.id, chat.id, "assistant", out);
+      }
       
     } else {
       // Normal mode - use persona or default
@@ -4077,6 +4112,7 @@ bot.on("inline_query", async (ctx) => {
   // =====================
   
   // "q:" or "q " - Quark mode (quick, concise answers)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("q:") || qLower.startsWith("q ")) {
     const question = q.slice(2).trim();
     
@@ -4094,64 +4130,36 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Give extremely concise answers. 1-2 sentences max. Be direct and to the point. No fluff." },
-          { role: "user", content: question },
-        ],
-        temperature: 0.5,
-        max_tokens: 100,
-        timeout: 8000,
-        retries: 0,
-      });
-      
-      const answer = (out || "No answer").slice(0, 500);
-      const quarkKey = makeId(6);
-      
-      inlineCache.set(quarkKey, {
-        prompt: question,
-        answer,
-        userId: String(userId),
-        model,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(quarkKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(userId, question, "quark");
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedQuestion = escapeHTML(question);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `quark_${quarkKey}`,
-          title: `⭐ ${question.slice(0, 40)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
-          input_message_content: {
-            message_text: `⭐ <b>${escapedQuestion}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: inlineAnswerKeyboard(quarkKey),
+    // Generate a unique key for this request
+    const qKey = makeId(6);
+    const escapedQuestion = escapeHTML(question);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`q_pending_${qKey}`, {
+      prompt: question,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`q_pending_${qKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `q_start_${qKey}`,
+        title: `⭐ Quark: ${question.slice(0, 35)}`,
+        description: "Tap to get quick answer",
+        thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+        input_message_content: {
+          message_text: `⭐ <b>Quark: ${escapedQuestion}</b>\n\n⏳ <i>Getting quick answer...</i>\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `q_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "b:" or "b " - Blackhole mode (deep research & analysis)
@@ -4207,6 +4215,7 @@ bot.on("inline_query", async (ctx) => {
   }
   
   // "code:" - Code mode (programming help)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("code:") || qLower.startsWith("code ")) {
     const codeQ = q.slice(5).trim();
     
@@ -4224,67 +4233,40 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "You are an expert programmer. Provide clear, working code with brief explanations. Use proper code formatting with language tags. Focus on best practices and clean code." },
-          { role: "user", content: codeQ },
-        ],
-        temperature: 0.3,
-        max_tokens: 600,
-        timeout: 12000,
-        retries: 1,
-      });
-      
-      const answer = (out || "No code").slice(0, 2500);
-      const codeKey = makeId(6);
-      
-      inlineCache.set(codeKey, {
-        prompt: codeQ,
-        answer,
-        userId: String(userId),
-        model,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(codeKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(userId, codeQ, "code");
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedCodeQ = escapeHTML(codeQ);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `code_${codeKey}`,
-          title: `💻 ${codeQ.slice(0, 40)}`,
-          description: answer.slice(0, 80).replace(/```/g, ""),
-          thumbnail_url: "https://img.icons8.com/fluency/96/code.png",
-          input_message_content: {
-            message_text: `💻 <b>Code: ${escapedCodeQ}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Code • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: inlineAnswerKeyboard(codeKey),
+    // Generate a unique key for this request
+    const codeKey = makeId(6);
+    const escapedCodeQ = escapeHTML(codeQ);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`code_pending_${codeKey}`, {
+      prompt: codeQ,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`code_pending_${codeKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `code_start_${codeKey}`,
+        title: `💻 Code: ${codeQ.slice(0, 35)}`,
+        description: "Tap to get code help",
+        thumbnail_url: "https://img.icons8.com/fluency/96/code.png",
+        input_message_content: {
+          message_text: `💻 <b>Code: ${escapedCodeQ}</b>\n\n⏳ <i>Writing code...</i>\n\n<i>via StarzAI • Code • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `code_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "e:" or "e " - Explain mode (ELI5 style)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("e:") || qLower.startsWith("e ")) {
     const concept = q.slice(2).trim();
     
@@ -4302,64 +4284,36 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Explain concepts in the simplest possible way, like explaining to a 5-year-old (ELI5). Use analogies, simple words, and relatable examples. Avoid jargon. Make it fun and easy to understand." },
-          { role: "user", content: `Explain simply: ${concept}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 400,
-        timeout: 10000,
-        retries: 1,
-      });
-      
-      const answer = (out || "No explanation").slice(0, 1500);
-      const expKey = makeId(6);
-      
-      inlineCache.set(expKey, {
-        prompt: concept,
-        answer,
-        userId: String(userId),
-        model,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(expKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(userId, concept, "explain");
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedConcept = escapeHTML(concept);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `explain_${expKey}`,
-          title: `🧠 ${concept.slice(0, 40)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
-          input_message_content: {
-            message_text: `🧠 <b>Explain: ${escapedConcept}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: inlineAnswerKeyboard(expKey),
+    // Generate a unique key for this request
+    const expKey = makeId(6);
+    const escapedConcept = escapeHTML(concept);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`e_pending_${expKey}`, {
+      prompt: concept,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`e_pending_${expKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `e_start_${expKey}`,
+        title: `🧠 Explain: ${concept.slice(0, 35)}`,
+        description: "Tap to get simple explanation",
+        thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
+        input_message_content: {
+          message_text: `🧠 <b>Explain: ${escapedConcept}</b>\n\n⏳ <i>Simplifying...</i>\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `e_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "as " - Show saved characters when user types just "as " or "as"
@@ -4544,6 +4498,7 @@ bot.on("inline_query", async (ctx) => {
   }
   
   // "sum:" or "s:" (if not settings) - Summarize mode
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("sum:") || qLower.startsWith("sum ")) {
     const textToSum = q.slice(4).trim();
     
@@ -4561,66 +4516,39 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Summarize the given text concisely. Extract key points and main ideas. Use bullet points if helpful. Keep it brief but comprehensive." },
-          { role: "user", content: `Summarize this:\n\n${textToSum}` },
-        ],
-        temperature: 0.3,
-        max_tokens: 400,
-        timeout: 10000,
-        retries: 1,
-      });
-      
-      const summary = (out || "Could not summarize").slice(0, 1500);
-      const sumKey = makeId(6);
-      
-      inlineCache.set(sumKey, {
-        prompt: textToSum.slice(0, 200) + "...",
-        answer: summary,
-        userId: String(userId),
-        model,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(sumKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(userId, textToSum.slice(0, 50), "summarize");
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedSummary = convertToTelegramHTML(summary);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `sum_${sumKey}`,
-          title: `📝 Summary`,
-          description: summary.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/summary.png",
-          input_message_content: {
-            message_text: `📝 <b>Summary</b>\n\n${formattedSummary}\n\n<i>via StarzAI • Summarize • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: inlineAnswerKeyboard(sumKey),
+    // Generate a unique key for this request
+    const sumKey = makeId(6);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`sum_pending_${sumKey}`, {
+      prompt: textToSum,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`sum_pending_${sumKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `sum_start_${sumKey}`,
+        title: `📝 Summarize`,
+        description: "Tap to summarize text",
+        thumbnail_url: "https://img.icons8.com/fluency/96/summary.png",
+        input_message_content: {
+          message_text: `📝 <b>Summary</b>\n\n⏳ <i>Summarizing...</i>\n\n<i>via StarzAI • Summarize • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `sum_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "p:" or "p " - Partner mode (chat with your AI partner)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("p:") || qLower.startsWith("p ")) {
     const message = q.slice(2).trim();
     const partner = getPartner(userId);
@@ -4655,80 +4583,37 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      // Build partner system prompt
-      const systemPrompt = buildPartnerSystemPrompt(partner);
-      
-      // Get partner chat history for context
-      const partnerHistory = getPartnerChatHistory(userId);
-      
-      // Build messages with history
-      const messages = [
-        { role: "system", content: systemPrompt },
-        ...partnerHistory.slice(-6).map(m => ({ role: m.role, content: m.content })),
-        { role: "user", content: message },
-      ];
-      
-      const out = await llmText({
-        model,
-        messages,
-        temperature: 0.85,
-        max_tokens: 400,
-        timeout: 10000,
-        retries: 1,
-      });
-      
-      const answer = (out || "*stays silent*").slice(0, 1500);
-      const pKey = makeId(6);
-      
-      // Store for Reply button
-      inlineCache.set(pKey, {
-        prompt: message,
-        answer,
-        userId: String(userId),
-        model,
-        isPartner: true,
-        partnerName: partner.name,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(pKey), 30 * 60 * 1000);
-      
-      // Add to partner chat history
-      addPartnerMessage(userId, "user", message);
-      addPartnerMessage(userId, "assistant", answer);
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPartnerName = escapeHTML(partner.name);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `partner_${pKey}`,
-          title: `🤝🏻 ${partner.name}: ${message.slice(0, 30)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
-          input_message_content: {
-            message_text: `🤝🏻 <b>${escapedPartnerName}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: new InlineKeyboard()
-            .switchInlineCurrent("💬 Reply", `p: `)
-            .text("🔁 Regen", `inl_regen:${pKey}`),
+    // Generate a unique key for this request
+    const pKey = makeId(6);
+    const escapedPartnerName = escapeHTML(partner.name);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`p_pending_${pKey}`, {
+      prompt: message,
+      userId: String(userId),
+      model,
+      shortModel,
+      partner,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`p_pending_${pKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `p_start_${pKey}`,
+        title: `🤝🏻 ${partner.name}: ${message.slice(0, 30)}`,
+        description: "Tap to chat with your partner",
+        thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+        input_message_content: {
+          message_text: `🤝🏻 <b>${escapedPartnerName}</b>\n\n⏳ <i>${partner.name} is thinking...</i>\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `p_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try again",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "r " or "r:" - Research shortcut
@@ -6155,6 +6040,350 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Clean up pending
     inlineCache.delete(`r_pending_${rKey}`);
+    return;
+  }
+  
+  // Handle Quark deferred response - q_start_KEY
+  if (resultId.startsWith("q_start_")) {
+    const qKey = resultId.replace("q_start_", "");
+    const pending = inlineCache.get(`q_pending_${qKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Quark pending not found or no inlineMessageId: qKey=${qKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Quark: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Give extremely concise answers. 1-2 sentences max. Be direct and to the point. No fluff." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.5,
+        max_tokens: 100,
+      });
+      
+      const answer = (out || "No answer").slice(0, 500);
+      const newKey = makeId(6);
+      
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      addToHistory(pending.userId, prompt, "quark");
+      
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Quark updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Quark response:", e.message);
+      const escapedPrompt = escapeHTML(prompt);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `⭐ <b>${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`q_pending_${qKey}`);
+    return;
+  }
+  
+  // Handle Code deferred response - code_start_KEY
+  if (resultId.startsWith("code_start_")) {
+    const codeKey = resultId.replace("code_start_", "");
+    const pending = inlineCache.get(`code_pending_${codeKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Code pending not found or no inlineMessageId: codeKey=${codeKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Code: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are an expert programmer. Provide clear, working code with brief explanations. Use proper code formatting with language tags. Focus on best practices and clean code." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 600,
+      });
+      
+      const answer = (out || "No code").slice(0, 2500);
+      const newKey = makeId(6);
+      
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      addToHistory(pending.userId, prompt, "code");
+      
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `💻 <b>Code: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Code • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Code updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Code response:", e.message);
+      const escapedPrompt = escapeHTML(prompt);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `💻 <b>Code: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`code_pending_${codeKey}`);
+    return;
+  }
+  
+  // Handle Explain deferred response - e_start_KEY
+  if (resultId.startsWith("e_start_")) {
+    const eKey = resultId.replace("e_start_", "");
+    const pending = inlineCache.get(`e_pending_${eKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Explain pending not found or no inlineMessageId: eKey=${eKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Explain: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Explain concepts in the simplest possible way, like explaining to a 5-year-old (ELI5). Use analogies, simple words, and relatable examples. Avoid jargon. Make it fun and easy to understand." },
+          { role: "user", content: `Explain simply: ${prompt}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 400,
+      });
+      
+      const answer = (out || "No explanation").slice(0, 1500);
+      const newKey = makeId(6);
+      
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      addToHistory(pending.userId, prompt, "explain");
+      
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🧠 <b>Explain: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Explain updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Explain response:", e.message);
+      const escapedPrompt = escapeHTML(prompt);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧠 <b>Explain: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`e_pending_${eKey}`);
+    return;
+  }
+  
+  // Handle Summarize deferred response - sum_start_KEY
+  if (resultId.startsWith("sum_start_")) {
+    const sumKey = resultId.replace("sum_start_", "");
+    const pending = inlineCache.get(`sum_pending_${sumKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Summarize pending not found or no inlineMessageId: sumKey=${sumKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Summarize`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "Summarize the given text concisely. Extract key points and main ideas. Use bullet points if helpful. Keep it brief but comprehensive." },
+          { role: "user", content: `Summarize this:\n\n${prompt}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 400,
+      });
+      
+      const answer = (out || "Could not summarize").slice(0, 1500);
+      const newKey = makeId(6);
+      
+      inlineCache.set(newKey, {
+        prompt: prompt.slice(0, 200) + "...",
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      addToHistory(pending.userId, prompt.slice(0, 50), "summarize");
+      
+      const formattedAnswer = convertToTelegramHTML(answer);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `📝 <b>Summary</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Summarize • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Summarize updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Summarize response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `📝 <b>Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`sum_pending_${sumKey}`);
+    return;
+  }
+  
+  // Handle Partner deferred response - p_start_KEY
+  if (resultId.startsWith("p_start_")) {
+    const pKey = resultId.replace("p_start_", "");
+    const pending = inlineCache.get(`p_pending_${pKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Partner pending not found or no inlineMessageId: pKey=${pKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel, partner } = pending;
+    console.log(`Processing Partner: ${prompt}`);
+    
+    try {
+      const systemPrompt = buildPartnerSystemPrompt(partner);
+      const partnerHistory = getPartnerChatHistory(pending.userId);
+      
+      const messages = [
+        { role: "system", content: systemPrompt },
+        ...partnerHistory.slice(-6).map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: prompt },
+      ];
+      
+      const out = await llmText({
+        model,
+        messages,
+        temperature: 0.85,
+        max_tokens: 400,
+      });
+      
+      const answer = (out || "*stays silent*").slice(0, 1500);
+      const newKey = makeId(6);
+      
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        isPartner: true,
+        partnerName: partner.name,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      addPartnerMessage(pending.userId, "user", prompt);
+      addPartnerMessage(pending.userId, "assistant", answer);
+      
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPartnerName = escapeHTML(partner.name);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🤝🏻 <b>${escapedPartnerName}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("💬 Reply", `p: `)
+            .text("🔁 Regen", `inl_regen:${newKey}`)
+        }
+      );
+      console.log(`Partner updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Partner response:", e.message);
+      const escapedPartnerName = escapeHTML(partner.name);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🤝🏻 <b>${escapedPartnerName}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`p_pending_${pKey}`);
     return;
   }
   
