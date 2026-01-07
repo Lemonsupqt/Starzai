@@ -3439,19 +3439,19 @@ bot.command("info", async (ctx) => {
   }
 
   lines.push(
-    `📊 <b>Usage Stats</b>`,
+    `📊 &lt;b&gt;Usage Stats&lt;/b&gt;`,
     `• Messages: ${stats.totalMessages || 0}`,
     `• Inline queries: ${stats.totalInlineQueries || 0}`,
     `• Last model: ${escapeHTML(stats.lastModel) || "unknown"}`,
     `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "unknown"}`,
     ``,
-    `💬 <b>Inline Session</b>`,
+    `💬 &lt;b&gt;Inline Session&lt;/b&gt;`,
     `• History: ${inlineSession?.history?.length || 0} messages`,
     `• Model: ${escapeHTML(inlineSession?.model) || "none"}`,
     ``,
     `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "unknown"}`,
     `🔑 Models: ${allModelsForTier(user.tier || "free").length} (${user.tier || "free"} tier)`,
-  ];
+  );
   
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 });
