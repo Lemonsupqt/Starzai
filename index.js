@@ -598,6 +598,8 @@ function ensureUser(userId, from = null) {
       savedCharacters: [],
       // Active character mode for DM/GC
       activeCharacter: null,
+      // Web search toggle - when ON, all messages get web search
+      webSearch: false,
     };
     saveUsers();
   } else {
@@ -1287,27 +1289,138 @@ async function cleanupTempDir(tempDir) {
 }
 
 // =====================
-// WEB SEARCH - SearXNG Integration
+// WEB SEARCH - Multi-Engine Integration
 // =====================
 
+// SearXNG instances (free, open source meta search)
 const SEARXNG_INSTANCES = [
+  'https://search.ononoki.org',
+  'https://searx.work',
+  'https://search.bus-hit.me',
+  'https://searx.tuxcloud.net',
+  'https://search.mdosch.de',
   'https://searx.be',
   'https://search.sapti.me',
   'https://searx.tiekoetter.com'
 ];
 
-async function webSearch(query, numResults = 5) {
+// DuckDuckGo Instant Answer API (free, no key needed)
+async function duckDuckGoSearch(query) {
+  try {
+    // DDG Instant Answer API - gives quick facts
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'StarzAI-Bot/1.0' },
+      timeout: 8000
+    });
+    
+    if (!response.ok) return null;
+    
+    const data = await response.json();
+    const results = [];
+    
+    // Abstract (main answer)
+    if (data.Abstract) {
+      results.push({
+        title: data.Heading || query,
+        url: data.AbstractURL || '',
+        content: data.Abstract,
+        engine: 'DuckDuckGo'
+      });
+    }
+    
+    // Related topics
+    if (data.RelatedTopics) {
+      for (const topic of data.RelatedTopics.slice(0, 4)) {
+        if (topic.Text && topic.FirstURL) {
+          results.push({
+            title: topic.Text.split(' - ')[0] || 'Related',
+            url: topic.FirstURL,
+            content: topic.Text,
+            engine: 'DuckDuckGo'
+          });
+        }
+      }
+    }
+    
+    if (results.length > 0) {
+      return {
+        success: true,
+        results: results,
+        query: query,
+        instance: 'DuckDuckGo'
+      };
+    }
+    return null;
+  } catch (e) {
+    console.log('DDG search error:', e.message);
+    return null;
+  }
+}
+
+// DuckDuckGo HTML scraping fallback (more comprehensive results)
+async function duckDuckGoScrape(query, numResults = 5) {
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 10000
+    });
+    
+    if (!response.ok) return null;
+    
+    const html = await response.text();
+    const results = [];
+    
+    // Parse results using regex (simple extraction)
+    const resultRegex = /<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([^<]*)<\/a>/g;
+    let match;
+    
+    while ((match = resultRegex.exec(html)) !== null && results.length < numResults) {
+      const [, url, title, snippet] = match;
+      if (url && title) {
+        results.push({
+          title: title.trim(),
+          url: url.startsWith('//') ? 'https:' + url : url,
+          content: snippet?.trim() || 'No description',
+          engine: 'DuckDuckGo'
+        });
+      }
+    }
+    
+    if (results.length > 0) {
+      return {
+        success: true,
+        results: results,
+        query: query,
+        instance: 'DuckDuckGo'
+      };
+    }
+    return null;
+  } catch (e) {
+    console.log('DDG scrape error:', e.message);
+    return null;
+  }
+}
+
+// SearXNG search
+async function searxngSearch(query, numResults = 5) {
   const errors = [];
   
-  for (const instance of SEARXNG_INSTANCES) {
+  // Shuffle instances to distribute load
+  const shuffled = [...SEARXNG_INSTANCES].sort(() => Math.random() - 0.5);
+  
+  for (const instance of shuffled) {
     try {
-      const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json`;
+      const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json&engines=google,bing,duckduckgo`;
       const response = await fetch(url, {
         headers: {
-          'User-Agent': 'StarzAI-Bot/1.0',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'application/json'
         },
-        timeout: 10000
+        timeout: 8000
       });
       
       if (!response.ok) {
@@ -1318,14 +1431,13 @@ async function webSearch(query, numResults = 5) {
       const data = await response.json();
       
       if (data.results && data.results.length > 0) {
-        // Return top results
         return {
           success: true,
           results: data.results.slice(0, numResults).map(r => ({
             title: r.title || 'No title',
             url: r.url || '',
             content: r.content || r.snippet || 'No description',
-            engine: r.engine || 'unknown'
+            engine: r.engine || 'SearXNG'
           })),
           query: query,
           instance: instance
@@ -1336,9 +1448,26 @@ async function webSearch(query, numResults = 5) {
     }
   }
   
+  return { success: false, errors };
+}
+
+// Main web search function - tries multiple sources
+async function webSearch(query, numResults = 5) {
+  // Try SearXNG first (best results, uses Google/Bing)
+  const searxResult = await searxngSearch(query, numResults);
+  if (searxResult.success) return searxResult;
+  
+  // Try DuckDuckGo scrape (comprehensive)
+  const ddgScrape = await duckDuckGoScrape(query, numResults);
+  if (ddgScrape) return ddgScrape;
+  
+  // Try DuckDuckGo Instant Answer API (quick facts)
+  const ddgInstant = await duckDuckGoSearch(query);
+  if (ddgInstant) return ddgInstant;
+  
   return {
     success: false,
-    error: `All search instances failed: ${errors.join('; ')}`,
+    error: 'All search engines unavailable. Try again later.',
     query: query
   };
 }
@@ -1574,7 +1703,10 @@ function buildMainMenuMessage(userId) {
 }
 
 // Main menu keyboard
-function mainMenuKeyboard() {
+function mainMenuKeyboard(userId) {
+  const user = getUserRecord(userId);
+  const webSearchIcon = user?.webSearch ? "🌐 Web: ON" : "🔍 Web: OFF";
+  
   return new InlineKeyboard()
     .text("🌟 Features", "menu_features")
     .text("⚙️ Model", "menu_model")
@@ -1583,7 +1715,7 @@ function mainMenuKeyboard() {
     .text("📊 Stats", "menu_stats")
     .row()
     .text("🎭 Character", "menu_char")
-    .text("📝 Register", "menu_register")
+    .text(webSearchIcon, "toggle_websearch")
     .row()
     .switchInline("⚡ Try Inline", "");
 }
@@ -1594,8 +1726,8 @@ function backToMainKeyboard() {
 }
 
 // Legacy helpKeyboard for compatibility
-function helpKeyboard() {
-  return mainMenuKeyboard();
+function helpKeyboard(userId) {
+  return mainMenuKeyboard(userId);
 }
 
 // Beautiful inline help card
@@ -1997,7 +2129,7 @@ bot.command("start", async (ctx) => {
     activateGroup(ctx.chat.id);
   }
   
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
 });
 
 bot.command("help", async (ctx) => {
@@ -2009,7 +2141,7 @@ bot.command("help", async (ctx) => {
     activateGroup(ctx.chat.id);
   }
   
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
 });
 
 // /search command - Web search
@@ -3086,7 +3218,7 @@ bot.callbackQuery("menu_back", async (ctx) => {
   try {
     await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
       parse_mode: "Markdown",
-      reply_markup: mainMenuKeyboard()
+      reply_markup: mainMenuKeyboard(ctx.from.id)
     });
   } catch (e) {
     // If edit fails (message unchanged), ignore
@@ -3350,7 +3482,39 @@ bot.callbackQuery("menu_register", async (ctx) => {
   try {
     await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
       parse_mode: "Markdown",
-      reply_markup: mainMenuKeyboard()
+      reply_markup: mainMenuKeyboard(ctx.from.id)
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Toggle web search setting
+bot.callbackQuery("toggle_websearch", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from.id;
+  const user = getUserRecord(userId);
+  
+  if (!user) {
+    return ctx.answerCallbackQuery({ text: "Please register first!", show_alert: true });
+  }
+  
+  // Toggle the setting
+  const newValue = !user.webSearch;
+  usersDb.users[String(userId)].webSearch = newValue;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ 
+    text: newValue ? "🌐 Web Search ON - All messages will include web results!" : "🔍 Web Search OFF - Auto-detect mode",
+    show_alert: false
+  });
+  
+  // Update the menu to show new toggle state
+  try {
+    await ctx.editMessageText(buildMainMenuMessage(userId), {
+      parse_mode: "Markdown",
+      reply_markup: mainMenuKeyboard(userId)
     });
   } catch (e) {
     // If edit fails, ignore
@@ -4633,8 +4797,10 @@ bot.on("message:text", async (ctx) => {
       const persona = userRecord?.persona;
       
       // Check if query needs real-time web search
+      // Either: user has webSearch toggle ON, or auto-detect triggers
       let searchContext = "";
-      if (needsWebSearch(text)) {
+      const shouldSearch = userRecord?.webSearch || needsWebSearch(text);
+      if (shouldSearch) {
         try {
           await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
             `🔍 Searching the web for current info...`, 
