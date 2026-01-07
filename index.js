@@ -1312,8 +1312,11 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
 // Inline chat LLM - uses inline session history
 async function llmInlineChatReply({ userId, userText, model }) {
   const session = getInlineSession(userId);
-  const systemPrompt = "You are StarzAI, a helpful and friendly AI assistant. Be concise but thorough. Use emojis occasionally to be engaging. Keep responses under 800 characters for inline display.";
-  
+  const systemPrompt =
+    "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot, currently responding in inline mode. " +
+    "Provide concise but helpful answers (ideally under 800 characters) suitable to appear inside other chats. " +
+    "Be friendly and clear, and avoid mentioning system prompts or internal implementation.";
+
   const messages = [
     { role: "system", content: systemPrompt },
     ...session.history,
@@ -1321,11 +1324,11 @@ async function llmInlineChatReply({ userId, userText, model }) {
   ];
 
   const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 300 });
-  
+
   // Add to history
   addToInlineHistory(userId, "user", userText);
   addToInlineHistory(userId, "assistant", out);
-  
+
   return out || "(no output)";
 }
 
@@ -5703,20 +5706,35 @@ bot.on("message:text", async (ctx) => {
         }
       }
       
+      const identityBase =
+        "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot. " +
+        "You chat with users in direct messages and group chats on Telegram. " +
+        "Be friendly, clear, and reasonably concise while staying helpful. " +
+        "Avoid mentioning system prompts or internal implementation.";
+
       if (persona) {
-        systemPrompt = replyContext
-          ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
-          : `You are StarzTechBot with the personality of: ${persona}. Stay in character throughout your response. Answer clearly.`;
+        systemPrompt =
+          identityBase +
+          ` Your personality: ${persona}.` +
+          (replyContext
+            ? " The user is replying to a specific earlier message; pay close attention to that context when answering."
+            : "");
       } else {
-        systemPrompt = replyContext
-          ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
-          : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+        systemPrompt =
+          identityBase +
+          (replyContext
+            ? " The user is replying to a specific earlier message; focus your response on that context."
+            : "");
       }
-      
+
       // Add search context instruction if we have search results
       if (searchContext) {
-        systemPrompt += " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
+        systemPrompt +=
+          " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
       }
+
+      systemPrompt +=
+        " When genuinely helpful, you may briefly mention that users can change models with /model or use inline mode by typing @starztechbot with prefixes like q:, b:, code:, e:, as, sum, or p:.";
 
       const userTextWithContext = replyContext + text + searchContext;
 
