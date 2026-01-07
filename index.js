@@ -7045,6 +7045,7 @@ bot.on("inline_query", async (ctx) => {
         userId: String(userId),
         model,
         character,
+        mode: "character",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(asKey), 30 * 60 * 1000);
@@ -7507,6 +7508,7 @@ bot.on("inline_query", async (ctx) => {
         answer,
         userId: String(userId),
         model,
+        mode: "chat",
         history: [
           ...(cached.history || [{ role: "user", content: cached.prompt }, { role: "assistant", content: cached.answer }]),
           { role: "user", content: userMessage },
@@ -8070,12 +8072,13 @@ bot.on("inline_query", async (ctx) => {
     
     const answer = (out || "I couldn't generate a response.").slice(0, 2000);
     
-    // Store for Reply/Regen/Shorter/Longer buttons
+    // Store for Reply/Regen/Shorter/Longer/Continue buttons
     inlineCache.set(quickKey, {
       prompt: q,
       answer,
       userId: String(userId),
       model,
+      mode: "quick",
       createdAt: Date.now(),
     });
     
@@ -8202,6 +8205,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "chat",
         history: [
           { role: "user", content: cached.prompt },
           { role: "assistant", content: cached.answer },
@@ -8277,12 +8281,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (out || "I couldn't generate a response.").slice(0, 2000);
       const newKey = makeId(6);
       
-      // Store for Reply/Regen/Shorter/Longer buttons
+      // Store for Reply/Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
         userId: pending.userId,
         model,
+        mode: "quick",
         createdAt: Date.now(),
       });
       
@@ -8350,12 +8355,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (out || "No results").slice(0, 3500);
       const newKey = makeId(6);
       
-      // Store for Regen/Shorter/Longer buttons
+      // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
         userId: pending.userId,
         model,
+        mode: "blackhole",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8437,12 +8443,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (out || "No results").slice(0, 2000);
       const newKey = makeId(6);
       
-      // Store for Regen/Shorter/Longer buttons
+      // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
         userId: pending.userId,
         model,
+        mode: "research",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8513,6 +8520,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "quark",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8580,6 +8588,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "code",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8647,6 +8656,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "explain",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8714,6 +8724,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "summarize",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
