@@ -62,6 +62,8 @@ const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 
+const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
+
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 
@@ -470,6 +472,37 @@ function isOwner(ctx) {
   return OWNER_IDS.has(uid);
 }
 
+// Parse human duration strings like "10m", "2h", "1d" or plain minutes ("30")
+function parseDurationToMs(input) {
+  if (!input) return null;
+  const trimmed = String(input).trim().toLowerCase();
+
+  const unitMatch = trimmed.match(/^(\d+)([smhd])$/);
+  let value;
+  let unit;
+
+  if (unitMatch) {
+    value = Number(unitMatch[1]);
+    unit = unitMatch[2];
+  } else if (/^\d+$/.test(trimmed)) {
+    value = Number(trimmed);
+    unit = "m"; // default to minutes
+  } else {
+    return null;
+  }
+
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return value * multipliers[unit];
+}
+
 // =====================
 // RATE LIMIT
 // =====================
@@ -584,6 +617,7 @@ function ensureUser(userId, from = null) {
       tier: defaultTier,
       model: defaultModel,
       allowedModels: [],
+      banned: false,
       // Usage stats
       stats: {
         totalMessages: 0,
@@ -600,6 +634,8 @@ function ensureUser(userId, from = null) {
       activeCharacter: null,
       // Web search toggle - when ON, all messages get web search
       webSearch: false,
+      // Warning history (for /warn)
+      warnings: [],
     };
     saveUsers();
   } else {
@@ -637,10 +673,185 @@ function ensureUser(userId, from = null) {
     if (usersDb.users[id].activeCharacter === undefined) {
       usersDb.users[id].activeCharacter = null;
     }
+    // migration: add banned flag if missing
+    if (usersDb.users[id].banned === undefined) {
+      usersDb.users[id].banned = false;
+    }
+    // migration: add warnings array if missing
+    if (!usersDb.users[id].warnings) {
+      usersDb.users[id].warnings = [];
+    }
     saveUsers();
   }
   return usersDb.users[id];
 }
+
+// Check if a user is banned
+function isUserBanned(userId) {
+  const rec = getUserRecord(userId);
+  return !!rec?.banned;
+}
+
+// Global ban middleware - blocks banned users from using the bot
+// but still allows feedback (/feedback + Feedback button) so banned
+// users can send an appeal or report an issue.
+bot.use(async (ctx, next) => {
+  const fromId = ctx.from?.id;
+  if (!fromId) return next();
+
+  const idStr = String(fromId);
+
+  // Owners are never blocked by ban middleware
+  if (OWNER_IDS.has(idStr)) {
+    return next();
+  }
+
+  const user = getUserRecord(idStr);
+  if (user && user.banned) {
+    // Allow feedback flows even when banned (DM only)
+    const chatType = ctx.chat?.type;
+    const isPrivate = chatType === "private";
+    const text = ctx.message?.text || "";
+
+    const isFeedbackCommand = isPrivate && /^\/feedback\b/i.test(text);
+    const isFeedbackButton =
+      ctx.callbackQuery?.data === "menu_feedback";
+    const isFeedbackActive =
+      isPrivate && pendingFeedback.has(String(idStr));
+
+    if (isFeedbackCommand || isFeedbackButton || isFeedbackActive) {
+      return next();
+    }
+
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({
+          text: "🚫 You are banned from using this bot.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      if (ctx.inlineQuery) {
+        await ctx.answerInlineQuery([], { cache_time: 1, is_personal: true });
+        return;
+      }
+
+      if (ctx.message) {
+        if (ctx.chat?.type === "private") {
+          const replyMarkup =
+            FEEDBACK_CHAT_ID
+              ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+              : undefined;
+          await ctx.reply("🚫 You are banned from using this bot.", {
+            reply_markup: replyMarkup,
+          });
+        }
+        return;
+      }
+    } catch {
+      // Ignore errors from notifying banned users
+      return;
+    }
+    return;
+  }
+
+  return next();
+});
+
+// Global mute middleware - temporary or scoped mutes
+bot.use(async (ctx, next) => {
+  const fromId = ctx.from?.id;
+  if (!fromId) return next();
+
+  const idStr = String(fromId);
+
+  // Owners are never blocked by mute middleware
+  if (OWNER_IDS.has(idStr)) {
+    return next();
+  }
+
+  const user = getUserRecord(idStr);
+  if (!user || !user.mute) {
+    return next();
+  }
+
+  const m = user.mute;
+  const now = Date.now();
+
+  // Expired mute: clear and optionally restore tier, then continue
+  if (m.until && now > m.until) {
+    if (m.scope === "tier" && m.previousTier && user.tier === "free") {
+      user.tier = m.previousTier;
+      user.role = m.previousTier;
+    }
+    delete user.mute;
+    saveUsers();
+    return next();
+  }
+
+  const scope = m.scope || "all";
+
+  // Tier-only mute is handled via tier change, not by blocking requests
+  if (scope === "tier") {
+    return next();
+  }
+
+  const chatType = ctx.chat?.type;
+  const isInline = !!ctx.inlineQuery;
+  const isPrivate = chatType === "private";
+  const isGroup = chatType === "group" || chatType === "supergroup";
+
+  let shouldBlock = false;
+
+  if (scope === "all") {
+    shouldBlock = true;
+  } else if (scope === "dm" && isPrivate && ctx.message) {
+    shouldBlock = true;
+  } else if (scope === "group" && isGroup && ctx.message) {
+    shouldBlock = true;
+  } else if (scope === "inline" && isInline) {
+    shouldBlock = true;
+  }
+
+  if (!shouldBlock) {
+    return next();
+  }
+
+  const untilStr = m.until ? new Date(m.until).toLocaleString() : null;
+  const reasonLine = m.reason ? `\n\n*Reason:* ${escapeMarkdown(m.reason)}` : "";
+  const untilLine = untilStr ? `\n\n_Mute ends at: ${escapeMarkdown(untilStr)}_` : "";
+
+  try {
+    if (ctx.inlineQuery) {
+      await ctx.answerInlineQuery([], { cache_time: 1, is_personal: true });
+      return;
+    }
+
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({
+        text: "🔇 You are muted on this bot.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    if (ctx.message && isPrivate) {
+      const text = `🔇 *You are muted on StarzAI.*${reasonLine}${untilLine}`;
+      await ctx.reply(text, { parse_mode: "Markdown" });
+      return;
+    }
+
+    // In groups, stay silent to avoid spam
+    if (ctx.message && isGroup) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  return;
+});
 
 // Track user activity
 function trackUsage(userId, type = "message", tokens = 0) {
@@ -1126,8 +1337,11 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
 // Inline chat LLM - uses inline session history
 async function llmInlineChatReply({ userId, userText, model }) {
   const session = getInlineSession(userId);
-  const systemPrompt = "You are StarzAI, a helpful and friendly AI assistant. Be concise but thorough. Use emojis occasionally to be engaging. Keep responses under 800 characters for inline display.";
-  
+  const systemPrompt =
+    "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot, currently responding in inline mode. " +
+    "Provide concise but helpful answers (ideally under 800 characters) suitable to appear inside other chats. " +
+    "Be friendly and clear, and avoid mentioning system prompts or internal implementation.";
+
   const messages = [
     { role: "system", content: systemPrompt },
     ...session.history,
@@ -1135,11 +1349,11 @@ async function llmInlineChatReply({ userId, userText, model }) {
   ];
 
   const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 300 });
-  
+
   // Add to history
   addToInlineHistory(userId, "user", userText);
   addToInlineHistory(userId, "assistant", out);
-  
+
   return out || "(no output)";
 }
 
@@ -1782,6 +1996,7 @@ function helpText() {
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
     "• /history — Recent prompts",
+    FEEDBACK_CHAT_ID ? "• /feedback — Send feedback to the StarzAI team" : "",
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
     "• `q:` — ⭐ Quark (quick answers)",
@@ -1793,8 +2008,10 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke",
-  ].join("\n");
+    "• /status, /info, /grant, /revoke, /ban, /unban, /softban, /warn, /clearwarns, /banlist, /mute, /unmute, /mutelist, /ownerhelp",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 // Main menu message builder
@@ -1826,7 +2043,7 @@ function mainMenuKeyboard(userId) {
   const user = getUserRecord(userId);
   const webSearchIcon = user?.webSearch ? "🌐 Web: ON" : "🔍 Web: OFF";
   
-  return new InlineKeyboard()
+  const kb = new InlineKeyboard()
     .text("🌟 Features", "menu_features")
     .text("⚙️ Model", "menu_model")
     .row()
@@ -1837,6 +2054,12 @@ function mainMenuKeyboard(userId) {
     .text(webSearchIcon, "toggle_websearch")
     .row()
     .switchInline("⚡ Try Inline", "");
+
+  if (FEEDBACK_CHAT_ID) {
+    kb.row().text("💡 Feedback", "menu_feedback");
+  }
+
+  return kb;
 }
 
 // Back button keyboard
@@ -2422,6 +2645,115 @@ bot.command("talk", async (ctx) => {
   await ctx.reply(`✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`, { parse_mode: "HTML" });
 });
 
+// /feedback - entrypoint for feedback flow (DM only)
+bot.command("feedback", async (ctx) => {
+  if (!FEEDBACK_CHAT_ID) {
+    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+  }
+  if (ctx.chat.type !== "private") {
+    return ctx.reply("💡 Please send feedback in a private chat with me.");
+  }
+
+  const u = ctx.from;
+  if (!u?.id) return;
+
+  pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "command" });
+  await ctx.reply(
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Feedback button in main menu or moderation messages
+bot.callbackQuery("menu_feedback", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+
+  if (!FEEDBACK_CHAT_ID) {
+    await ctx.answerCallbackQuery({
+      text: "Feedback is not configured yet.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  const chatType = ctx.chat?.type;
+  if (chatType !== "private") {
+    await ctx.answerCallbackQuery({
+      text: "Open a private chat with @starztechbot to send feedback.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  const u = ctx.from;
+  if (!u?.id) {
+    await ctx.answerCallbackQuery({ text: "No user ID.", show_alert: true });
+    return;
+  }
+
+  // Infer context from the message text (ban/mute/softban/warn/general)
+  const msgText = ctx.callbackQuery.message?.text || "";
+  let source = "general";
+  if (msgText.includes("You have been banned from using StarzAI")) {
+    source = "ban";
+  } else if (msgText.includes("You have been muted on StarzAI")) {
+    source = "mute";
+  } else if (msgText.includes("temporary soft ban on StarzAI")) {
+    source = "softban";
+  } else if (msgText.includes("You have received a warning on StarzAI")) {
+    source = "warn";
+  }
+
+  pendingFeedback.set(String(u.id), { createdAt: Date.now(), source });
+
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Owner command: reply to feedback by feedback ID
+bot.command("fbreply", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /fbreply <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("fbreply send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
+});
+
 // /stats - Show user usage statistics
 bot.command("stats", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -2853,6 +3185,8 @@ bot.callbackQuery("open_char", async (ctx) => {
 
 // Partner callback handlers - Setup field buttons
 const pendingPartnerInput = new Map(); // userId -> { field, messageId }
+// pendingFeedback: userId -> { createdAt, source }
+const pendingFeedback = new Map();
 
 bot.callbackQuery("partner_set_name", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -3077,16 +3411,21 @@ bot.command("whoami", async (ctx) => {
   const u = ensureUser(ctx.from.id, ctx.from);
   const model = ensureChosenModelValid(ctx.from.id);
   const stats = u.stats || {};
-  
+
+  const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
+  const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
+  const shortModel = model.split("/").pop();
+  const safeModel = escapeMarkdown(shortModel);
+
   const lines = [
     `👤 *Your Profile*`,
     ``,
     `🆔 User ID: \`${ctx.from.id}\``,
-    `📛 Username: ${u.username ? "@" + u.username : "_not set_"}`,
-    `👋 Name: ${u.firstName || "_not set_"}`,
+    `📛 Username: ${safeUsername}`,
+    `👋 Name: ${safeName}`,
     ``,
     `🎫 *Tier:* ${u.tier.toUpperCase()}`,
-    `🤖 *Model:* \`${model}\``,
+    `🤖 *Model:* \`${safeModel}\``,
     ``,
     `📊 *Usage Stats*`,
     `• Messages: ${stats.totalMessages || 0}`,
@@ -3095,7 +3434,7 @@ bot.command("whoami", async (ctx) => {
     ``,
     `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
   ];
-  
+
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 });
 
@@ -3113,6 +3452,7 @@ bot.command("status", async (ctx) => {
   let totalInline = 0;
   let activeToday = 0;
   let activeWeek = 0;
+  let bannedCount = 0;
   
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -3120,6 +3460,9 @@ bot.command("status", async (ctx) => {
   
   for (const [id, user] of Object.entries(usersDb.users)) {
     usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
+    if (user.banned) {
+      bannedCount++;
+    }
     if (user.stats) {
       totalMessages += user.stats.totalMessages || 0;
       totalInline += user.stats.totalInlineQueries || 0;
@@ -3145,6 +3488,7 @@ bot.command("status", async (ctx) => {
     `• Free: ${usersByTier.free}`,
     `• Premium: ${usersByTier.premium}`,
     `• Ultra: ${usersByTier.ultra}`,
+    `• Banned: ${bannedCount}`,
     ``,
     `📈 *Activity*`,
     `• Active today: ${activeToday}`,
@@ -3183,6 +3527,7 @@ bot.command("info", async (ctx) => {
   
   const stats = user.stats || {};
   const inlineSession = inlineSessionsDb.sessions[targetId];
+  const now = Date.now();
   
   // Use HTML to avoid Markdown parsing issues with usernames
   const lines = [
@@ -3194,20 +3539,72 @@ bot.command("info", async (ctx) => {
     ``,
     `🎫 <b>Tier:</b> ${user.tier?.toUpperCase() || "FREE"}`,
     `🤖 <b>Model:</b> <code>${escapeHTML(user.model) || "default"}</code>`,
-    ``,
-    `📊 <b>Usage Stats</b>`,
+    `🚫 <b>Banned:</b> ${user.banned ? "YES" : "no"}`,
+  ];
+
+  if (user.banned) {
+    if (user.bannedAt) {
+      lines.push(`⏰ <b>Banned at:</b> ${new Date(user.bannedAt).toLocaleString()}`);
+    }
+    if (user.bannedBy) {
+      lines.push(`👮 <b>Banned by:</b> <code>${escapeHTML(String(user.bannedBy))}</code>`);
+    }
+    if (user.banReason) {
+      lines.push(`📄 <b>Reason:</b> ${escapeHTML(user.banReason)}`);
+    }
+    lines.push(``);
+  }
+
+  if (user.mute) {
+    const m = user.mute;
+    const scope = m.scope || "all";
+    const until = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    const active = !m.until || now <= m.until;
+    const status = active ? "ACTIVE" : "expired";
+    lines.push(
+      `🔇 <b>Mute:</b> ${status}`,
+      `• Scope: ${escapeHTML(scope)}`,
+      `• Until: ${escapeHTML(until)}`
+    );
+    if (m.reason) {
+      lines.push(`• Reason: ${escapeHTML(m.reason)}`);
+    }
+    if (m.mutedBy) {
+      lines.push(`• Muted by: <code>${escapeHTML(String(m.mutedBy))}</code>`);
+    }
+    lines.push(``);
+  }
+
+  if (Array.isArray(user.warnings) && user.warnings.length > 0) {
+    const count = user.warnings.length;
+    const last = user.warnings[user.warnings.length - 1] || {};
+    lines.push(`⚠️ <b>Warnings:</b> ${count}`);
+    if (last.reason) {
+      lines.push(`• Last reason: ${escapeHTML(last.reason)}`);
+    }
+    if (last.at) {
+      lines.push(`• Last at: ${new Date(last.at).toLocaleString()}`);
+    }
+    if (last.by) {
+      lines.push(`• Last by: <code>${escapeHTML(String(last.by))}</code>`);
+    }
+    lines.push(``);
+  }
+
+  lines.push(
+    `📊 &lt;b&gt;Usage Stats&lt;/b&gt;`,
     `• Messages: ${stats.totalMessages || 0}`,
     `• Inline queries: ${stats.totalInlineQueries || 0}`,
     `• Last model: ${escapeHTML(stats.lastModel) || "unknown"}`,
     `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "unknown"}`,
     ``,
-    `💬 <b>Inline Session</b>`,
+    `💬 &lt;b&gt;Inline Session&lt;/b&gt;`,
     `• History: ${inlineSession?.history?.length || 0} messages`,
     `• Model: ${escapeHTML(inlineSession?.model) || "none"}`,
     ``,
     `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "unknown"}`,
     `🔑 Models: ${allModelsForTier(user.tier || "free").length} (${user.tier || "free"} tier)`,
-  ];
+  );
   
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 });
@@ -3323,6 +3720,552 @@ bot.command("deny", async (ctx) => {
   saveUsers();
 
   await ctx.reply(`Denied model ${modelId} for user ${targetId}.`);
+});
+
+bot.command("ban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /ban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
+  const targetIdStr = String(targetId);
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot ban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  rec.banned = true;
+  rec.bannedAt = new Date().toISOString();
+  rec.bannedBy = String(ctx.from?.id || "");
+  rec.banReason = reason || null;
+  saveUsers();
+
+  let msg = `🚫 User ${targetIdStr} has been banned.`;
+  if (reason) msg += ` Reason: ${reason}`;
+  await ctx.reply(msg);
+
+  // Notify the banned user (if they have started the bot)
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const contactLine =
+      "\n\nIf you believe this is a mistake, you can share feedback using the button below.";
+    const bannedMsg = [
+      "🚫 *You have been banned from using StarzAI.*",
+      reasonLine,
+      contactLine,
+    ].join("");
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, bannedMsg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // User might not have started the bot; ignore send error
+  }
+});
+
+bot.command("unban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /unban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
+  const targetIdStr = String(targetId);
+  const rec = ensureUser(targetIdStr);
+
+  if (!rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is not banned.`);
+  }
+
+  rec.banned = false;
+  delete rec.bannedAt;
+  delete rec.bannedBy;
+  delete rec.banReason;
+  saveUsers();
+
+  let ownerMsg = `✅ User ${targetIdStr} has been unbanned.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify the unbanned user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const baseLine = "✅ *You have been unbanned on StarzAI.*";
+    const tailLine = "\n\nYou can use the bot again. Please follow the rules to avoid future bans.";
+    const unbannedMsg = [baseLine, reasonLine, tailLine].join("");
+
+    await bot.api.sendMessage(targetIdStr, unbannedMsg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore send error
+  }
+});
+
+function applyMuteToUser(targetIdStr, durationMs, scope, reason, mutedById) {
+  const rec = ensureUser(targetIdStr);
+  const now = Date.now();
+  const until = now + durationMs;
+
+  const muteData = {
+    until,
+    scope,
+    reason: reason || null,
+    mutedBy: mutedById ? String(mutedById) : "",
+    createdAt: new Date(now).toISOString(),
+  };
+
+  if (scope === "tier") {
+    muteData.previousTier = rec.tier;
+    if (rec.tier !== "free") {
+      rec.tier = "free";
+      rec.role = "free";
+    }
+  }
+
+  rec.mute = muteData;
+  saveUsers();
+
+  return { rec, until };
+}
+
+const WARN_SOFTBAN_THRESHOLD = 3;
+const WARN_SOFTBAN_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function extractUserIdFromFeedbackId(feedbackId) {
+  if (!feedbackId || typeof feedbackId !== "string") return null;
+  const match = feedbackId.match(/^FB-(\d+)-/);
+  if (!match) return null;
+  return match[1];
+}
+
+bot.command("warn", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /warn <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot warn an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings)) rec.warnings = [];
+
+  const warnEntry = {
+    at: new Date().toISOString(),
+    reason: reason || null,
+    by: String(ctx.from?.id || ""),
+  };
+  rec.warnings.push(warnEntry);
+  saveUsers();
+
+  const totalWarnings = rec.warnings.length;
+
+  let ownerMsg = `⚠️ Warning added for user ${targetIdStr}. Total warnings: ${totalWarnings}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Auto softban on repeated warnings if not already banned/muted
+  let autoSoftbanApplied = false;
+  let autoSoftbanUntil = null;
+
+  if (totalWarnings >= WARN_SOFTBAN_THRESHOLD && !rec.banned && !rec.mute) {
+    const autoReason = reason
+      ? `${reason} (auto-temporary mute after ${totalWarnings} warnings)`
+      : `Auto-temporary mute after ${totalWarnings} warnings`;
+
+    const { until } = applyMuteToUser(
+      targetIdStr,
+      WARN_SOFTBAN_DURATION_MS,
+      "all",
+      autoReason,
+      ctx.from?.id
+    );
+    autoSoftbanApplied = true;
+    autoSoftbanUntil = until;
+
+    const humanUntil = new Date(until).toLocaleString();
+    await ctx.reply(
+      `🔇 Auto softban applied to user ${targetIdStr} for 24h (total mute). Ends at: ${humanUntil}.`
+    );
+  }
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const countLine = `\n\n*Total warnings:* ${totalWarnings}`;
+    let extra = "";
+
+    if (autoSoftbanApplied && autoSoftbanUntil) {
+      const softbanUntilStr = new Date(autoSoftbanUntil).toLocaleString();
+      extra =
+        `\n\n🔇 *Temporary mute applied due to repeated warnings.*` +
+        `\n_Mute ends at: ${escapeMarkdown(softbanUntilStr)}_`;
+    }
+
+    const msg =
+      `⚠️ *You have received a warning on StarzAI.*` +
+      reasonLine +
+      countLine +
+      extra;
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.command("clearwarns", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /clearwarns <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot clear warnings for an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings) || rec.warnings.length === 0) {
+    return ctx.reply(`User ${targetIdStr} has no warnings.`);
+  }
+
+  const count = rec.warnings.length;
+  rec.warnings = [];
+  saveUsers();
+
+  let ownerMsg = `🧹 Cleared ${count} warnings for user ${targetIdStr}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🧹 *Your warnings on StarzAI have been cleared.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.command("softban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /softban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot softban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    WARN_SOFTBAN_DURATION_MS,
+    "all",
+    reason || null,
+    ctx.from?.id
+  );
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🚫 Softban applied to user ${targetIdStr} for 24h (total mute).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Ban ends at: ${escapeMarkdown(humanUntil)}_`;
+    const msg =
+      "🚫 *You have received a temporary soft ban on StarzAI.*" +
+      reasonLine +
+      "\n\nYou are temporarily blocked from using the bot." +
+      untilLine;
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.command("mute", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply(
+      "Usage: /mute <userId> <duration> [scope] [reason]\n\n" +
+      "duration examples: 10m, 2h, 1d, 30 (minutes)\n" +
+      "scope: all, dm, group, inline, tier (default: all)"
+    );
+  }
+
+  const [targetId, durationRaw, scopeOrReason, ...rest] = args;
+  const targetIdStr = String(targetId);
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot mute an owner.");
+  }
+
+  const durationMs = parseDurationToMs(durationRaw);
+  if (!durationMs) {
+    return ctx.reply("Invalid duration. Use formats like 10m, 2h, 1d, 60 (minutes).");
+  }
+
+  let scope = "all";
+  let reason = "";
+
+  const possibleScope = (scopeOrReason || "").toLowerCase();
+  const validScopes = new Set(["all", "dm", "group", "inline", "tier"]);
+  if (possibleScope && validScopes.has(possibleScope)) {
+    scope = possibleScope;
+    reason = rest.join(" ").trim();
+  } else {
+    reason = [scopeOrReason, ...rest].filter(Boolean).join(" ").trim();
+  }
+
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    durationMs,
+    scope,
+    reason || null,
+    ctx.from?.id
+  );
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🔇 User ${targetIdStr} muted for ${durationRaw} (scope: ${scope}).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify muted user
+  try {
+    const scopeText =
+      scope === "all"
+        ? "everywhere"
+        : scope === "dm"
+        ? "in direct messages"
+        : scope === "group"
+        ? "in groups"
+        : scope === "inline"
+        ? "in inline mode"
+        : "for premium/paid features";
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Mute ends at: ${escapeMarkdown(humanUntil)}_`;
+    const baseLine = `🔇 *You have been muted on StarzAI* (${scopeText}).`;
+    const mutedMsg = [baseLine, reasonLine, untilLine].join("");
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, mutedMsg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // User might not have started the bot; ignore
+  }
+});
+
+bot.command("unmute", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /unmute <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
+  const targetIdStr = String(targetId);
+  const rec = ensureUser(targetIdStr);
+
+  if (!rec.mute) {
+    return ctx.reply(`User ${targetIdStr} is not muted.`);
+  }
+
+  if (rec.mute.scope === "tier" && rec.mute.previousTier && rec.tier === "free") {
+    rec.tier = rec.mute.previousTier;
+    rec.role = rec.mute.previousTier;
+  }
+
+  delete rec.mute;
+  saveUsers();
+
+  let ownerMsg = `🔊 User ${targetIdStr} has been unmuted.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🔊 *Your mute on StarzAI has been lifted.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore
+  }
+});
+
+bot.command("banlist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const entries = Object.entries(usersDb.users || {}).filter(
+    ([, u]) => u.banned
+  );
+
+  if (entries.length === 0) {
+    return ctx.reply("✅ No banned users currently.");
+  }
+
+  const max = 50;
+  const subset = entries.slice(0, max);
+  const lines = [
+    `🚫 <b>Banned users</b> (${entries.length})`,
+    "",
+  ];
+
+  subset.forEach(([id, u], idx) => {
+    const username = u.username ? "@" + escapeHTML(u.username) : "<i>no username</i>";
+    const name = u.firstName ? escapeHTML(u.firstName) : "<i>no name</i>";
+    const bannedAt = u.bannedAt ? new Date(u.bannedAt).toLocaleString() : "unknown";
+    const reasonText = u.banReason ? escapeHTML(u.banReason.slice(0, 80)) : "none";
+    lines.push(
+      `${idx + 1}. <code>${id}</code> – ${username} (${name})`,
+      `   ⏰ ${bannedAt} • Reason: ${reasonText}`,
+      ""
+    );
+  });
+
+  if (entries.length > max) {
+    lines.push(
+      `... and ${entries.length - max} more. Use /info &lt;userId&gt; for details.`
+    );
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+
+bot.command("mutelist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const entries = Object.entries(usersDb.users || {}).filter(
+    ([, u]) => u.mute
+  );
+
+  if (entries.length === 0) {
+    return ctx.reply("✅ No muted users currently.");
+  }
+
+  const max = 50;
+  const subset = entries.slice(0, max);
+  const lines = [
+    `🔇 <b>Muted users</b> (${entries.length})`,
+    "",
+  ];
+
+  subset.forEach(([id, u], idx) => {
+    const m = u.mute;
+    const scope = m.scope || "all";
+    const until = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    const reasonText = m.reason ? escapeHTML(m.reason.slice(0, 80)) : "none";
+    const username = u.username ? "@" + escapeHTML(u.username) : "<i>no username</i>";
+    const name = u.firstName ? escapeHTML(u.firstName) : "<i>no name</i>";
+    lines.push(
+      `${idx + 1}. <code>${id}</code> – ${username} (${name})`,
+      `   🎯 Scope: ${escapeHTML(scope)} • Until: ${escapeHTML(until)} • Reason: ${reasonText}`,
+      ""
+    );
+  });
+
+  if (entries.length > max) {
+    lines.push(
+      `... and ${entries.length - max} more. Use /info &lt;userId&gt; for details.`
+    );
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+
+bot.command("ownerhelp", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const lines = [
+    "📘 *StarzAI Owner Guide (Quick)*",
+    "",
+    "👤 *User info & status*",
+    "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
+    "• /status — global bot stats",
+    "",
+    "🎫 *Tiers & access*",
+    "• /grant <userId> <tier>, /revoke <userId>",
+    "• /allow <userId> <model>, /deny <userId> <model>",
+    "",
+    "🚫 *Bans*",
+    "• /ban <userId> [reason], /unban <userId> [reason]",
+    "• /softban <userId> [reason] — 24h total mute",
+    "• /banlist — list banned users",
+    "",
+    "🔇 *Mutes*",
+    "• /mute <userId> <duration> [scope] [reason]",
+    "• /unmute <userId> [reason], /mutelist",
+    "  scope: all, dm, group, inline, tier",
+    "",
+    "⚠️ *Warnings*",
+    "• /warn <userId> [reason] — auto softban at 3 warnings",
+    "• /clearwarns <userId> [reason] — reset warnings",
+    "",
+    FEEDBACK_CHAT_ID ? "💡 *Feedback* \n• /feedback — user-side command (button in menu)\n• /fbreply <feedbackId> <text> — reply to feedback sender" : "",
+    "",
+    "_Owners cannot be banned, muted, or warned._",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  await ctx.reply(lines, { parse_mode: "Markdown" });
 });
 
 // =====================
@@ -4492,8 +5435,9 @@ const processingMessages = new Map(); // chatId:messageId -> timestamp
 bot.on("message:text", async (ctx) => {
   const chat = ctx.chat;
   const u = ctx.from;
-  const text = (ctx.message?.text || "").trim();
-  const messageId = ctx.message?.message_id;
+  const msg = ctx.message;
+  const text = (msg?.text || "").trim();
+  const messageId = msg?.message_id;
   
   // Debug logging
   console.log(`[MSG] User ${u?.id} in ${chat?.type} (${chat?.id}): "${text?.slice(0, 50)}"`);
@@ -4774,6 +5718,81 @@ bot.on("message:text", async (ctx) => {
     }
   }
 
+  // Check if user has pending feedback
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    // 2 minute timeout
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const rec = getUserRecord(u.id);
+    const tier = (rec?.tier || "free").toUpperCase();
+    const banned = rec?.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec?.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec?.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec?.username || u.username || "";
+    const name = rec?.firstName || rec?.first_name || u.first_name || u.firstName || "";
+
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `🧾 *Context:* ${sourceLabel}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
+    ].join("\n");
+
+    try {
+      // Forward the original message
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
+      // Send meta info
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
+
   const model = ensureChosenModelValid(u.id);
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
@@ -4952,20 +5971,35 @@ bot.on("message:text", async (ctx) => {
         }
       }
       
+      const identityBase =
+        "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot. " +
+        "You chat with users in direct messages and group chats on Telegram. " +
+        "Be friendly, clear, and reasonably concise while staying helpful. " +
+        "Avoid mentioning system prompts or internal implementation.";
+
       if (persona) {
-        systemPrompt = replyContext
-          ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
-          : `You are StarzTechBot with the personality of: ${persona}. Stay in character throughout your response. Answer clearly.`;
+        systemPrompt =
+          identityBase +
+          ` Your personality: ${persona}.` +
+          (replyContext
+            ? " The user is replying to a specific earlier message; pay close attention to that context when answering."
+            : "");
       } else {
-        systemPrompt = replyContext
-          ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
-          : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
+        systemPrompt =
+          identityBase +
+          (replyContext
+            ? " The user is replying to a specific earlier message; focus your response on that context."
+            : "");
       }
-      
+
       // Add search context instruction if we have search results
       if (searchContext) {
-        systemPrompt += " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
+        systemPrompt +=
+          " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
       }
+
+      systemPrompt +=
+        " When genuinely helpful, you may briefly mention that users can change models with /model or use inline mode by typing @starztechbot with prefixes like q:, b:, code:, e:, as, sum, or p:.";
 
       const userTextWithContext = replyContext + text + searchContext;
 
@@ -5038,6 +6072,80 @@ bot.on("message:photo", async (ctx) => {
   const chat = ctx.chat;
   const u = ctx.from;
   if (!u?.id) return;
+
+  // Feedback handling for photo + caption
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const rec = getUserRecord(u.id) || {};
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const tier = (rec.tier || "free").toUpperCase();
+    const banned = rec.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec.username || u.username || "";
+    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
+      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward (photo) error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
 
   if (!getUserRecord(u.id)) registerUser(u);
 
@@ -5189,6 +6297,80 @@ bot.on("message:video", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
   
+  // Feedback handling for video + caption (DM only)
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const rec = getUserRecord(u.id) || {};
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const tier = (rec.tier || "free").toUpperCase();
+    const banned = rec.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec.username || u.username || "";
+    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
+      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward (video) error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
+
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
     const botInfo = await bot.api.getMe();
@@ -8241,6 +9423,16 @@ http
               { command: "info", description: "🔍 User info (info <userId>)" },
               { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
               { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
+              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
+              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
+              { command: "softban", description: "🚫 Softban user (softban <userId> [reason])" },
+              { command: "warn", description: "⚠️ Warn user (warn <userId> [reason])" },
+              { command: "clearwarns", description: "🧹 Clear warnings (clearwarns <userId> [reason])" },
+              { command: "banlist", description: "📜 List banned users" },
+              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> [scope] [reason])" },
+              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
+              { command: "mutelist", description: "🔇 List muted users" },
+              { command: "ownerhelp", description: "📘 Owner help guide" },
               { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
               { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
             ],
