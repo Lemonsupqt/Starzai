@@ -57,20 +57,15 @@ Set a custom personality for all DM responses:
 ### Owner Commands
 | Command | Description |
 |---------|-------------|
-| `/status` | Bot status &amp; stats |
-| `/info &lt;userId&gt;` | User details |
-| `/grant &lt;userId&gt; &lt;tier&gt;` | Grant tier (free/premium/ultra) |
-| `/revoke &lt;userId&gt;` | Revoke to free tier |
-| `/ban &lt;userId&gt; [reason]` | Ban user from using the bot |
-| `/unban &lt;userId&gt;` | Remove ban from user |
-| `/allow &lt;userId&gt; &lt;model&gt;` | Allow specific model |
-| `/deny &lt;userId&gt; &lt;model&gt;` | Deny specific model |wner Commands
-| Command | Description |
-|---------|-------------|
 | `/status` | Bot status & stats |
 | `/info <userId>` | User details |
 | `/grant <userId> <tier>` | Grant tier (free/premium/ultra) |
 | `/revoke <userId>` | Revoke to free tier |
+| `/ban <userId> [reason]` | Ban user from using the bot |
+| `/unban <userId> [reason]` | Remove ban from user |
+| `/banlist` | List all banned users |
+| `/mute <userId> <duration> [scope] [reason]` | Temporarily mute a user (`scope`: all/dm/group/inline/tier) |
+| `/unmute <userId> [reason]` | Remove active mute from user |
 | `/allow <userId> <model>` | Allow specific model |
 | `/deny <userId> <model>` | Deny specific model |
 

@@ -470,6 +470,37 @@ function isOwner(ctx) {
   return OWNER_IDS.has(uid);
 }
 
+// Parse human duration strings like "10m", "2h", "1d" or plain minutes ("30")
+function parseDurationToMs(input) {
+  if (!input) return null;
+  const trimmed = String(input).trim().toLowerCase();
+
+  const unitMatch = trimmed.match(/^(\d+)([smhd])$/);
+  let value;
+  let unit;
+
+  if (unitMatch) {
+    value = Number(unitMatch[1]);
+    unit = unitMatch[2];
+  } else if (/^\d+$/.test(trimmed)) {
+    value = Number(trimmed);
+    unit = "m"; // default to minutes
+  } else {
+    return null;
+  }
+
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  const multipliers = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+
+  return value * multipliers[unit];
+}
+
 // =====================
 // RATE LIMIT
 // =====================
@@ -695,6 +726,100 @@ bot.use(async (ctx, next) => {
   }
 
   return next();
+});
+
+// Global mute middleware - temporary or scoped mutes
+bot.use(async (ctx, next) => {
+  const fromId = ctx.from?.id;
+  if (!fromId) return next();
+
+  const idStr = String(fromId);
+
+  // Owners are never blocked by mute middleware
+  if (OWNER_IDS.has(idStr)) {
+    return next();
+  }
+
+  const user = getUserRecord(idStr);
+  if (!user || !user.mute) {
+    return next();
+  }
+
+  const m = user.mute;
+  const now = Date.now();
+
+  // Expired mute: clear and optionally restore tier, then continue
+  if (m.until && now > m.until) {
+    if (m.scope === "tier" && m.previousTier && user.tier === "free") {
+      user.tier = m.previousTier;
+      user.role = m.previousTier;
+    }
+    delete user.mute;
+    saveUsers();
+    return next();
+  }
+
+  const scope = m.scope || "all";
+
+  // Tier-only mute is handled via tier change, not by blocking requests
+  if (scope === "tier") {
+    return next();
+  }
+
+  const chatType = ctx.chat?.type;
+  const isInline = !!ctx.inlineQuery;
+  const isPrivate = chatType === "private";
+  const isGroup = chatType === "group" || chatType === "supergroup";
+
+  let shouldBlock = false;
+
+  if (scope === "all") {
+    shouldBlock = true;
+  } else if (scope === "dm" && isPrivate && ctx.message) {
+    shouldBlock = true;
+  } else if (scope === "group" && isGroup && ctx.message) {
+    shouldBlock = true;
+  } else if (scope === "inline" && isInline) {
+    shouldBlock = true;
+  }
+
+  if (!shouldBlock) {
+    return next();
+  }
+
+  const untilStr = m.until ? new Date(m.until).toLocaleString() : null;
+  const reasonLine = m.reason ? `\n\n*Reason:* ${escapeMarkdown(m.reason)}` : "";
+  const untilLine = untilStr ? `\n\n_Mute ends at: ${escapeMarkdown(untilStr)}_` : "";
+
+  try {
+    if (ctx.inlineQuery) {
+      await ctx.answerInlineQuery([], { cache_time: 1, is_personal: true });
+      return;
+    }
+
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({
+        text: "🔇 You are muted on this bot.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    if (ctx.message && isPrivate) {
+      const text = `🔇 *You are muted on StarzAI.*${reasonLine}${untilLine}`;
+      await ctx.reply(text, { parse_mode: "Markdown" });
+      return;
+    }
+
+    // In groups, stay silent to avoid spam
+    if (ctx.message && isGroup) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  return;
 });
 
 // Track user activity
@@ -1848,7 +1973,7 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke, /ban, /unban",
+    "• /status, /info, /grant, /revoke, /ban, /unban, /banlist, /mute, /unmute",
   ].join("\n");
 }
 
@@ -3168,6 +3293,7 @@ bot.command("status", async (ctx) => {
   let totalInline = 0;
   let activeToday = 0;
   let activeWeek = 0;
+  let bannedCount = 0;
   
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -3175,6 +3301,9 @@ bot.command("status", async (ctx) => {
   
   for (const [id, user] of Object.entries(usersDb.users)) {
     usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
+    if (user.banned) {
+      bannedCount++;
+    }
     if (user.stats) {
       totalMessages += user.stats.totalMessages || 0;
       totalInline += user.stats.totalInlineQueries || 0;
@@ -3200,6 +3329,7 @@ bot.command("status", async (ctx) => {
     `• Free: ${usersByTier.free}`,
     `• Premium: ${usersByTier.premium}`,
     `• Ultra: ${usersByTier.ultra}`,
+    `• Banned: ${bannedCount}`,
     ``,
     `📈 *Activity*`,
     `• Active today: ${activeToday}`,
@@ -3238,6 +3368,7 @@ bot.command("info", async (ctx) => {
   
   const stats = user.stats || {};
   const inlineSession = inlineSessionsDb.sessions[targetId];
+  const now = Date.now();
   
   // Use HTML to avoid Markdown parsing issues with usernames
   const lines = [
@@ -3250,7 +3381,42 @@ bot.command("info", async (ctx) => {
     `🎫 <b>Tier:</b> ${user.tier?.toUpperCase() || "FREE"}`,
     `🤖 <b>Model:</b> <code>${escapeHTML(user.model) || "default"}</code>`,
     `🚫 <b>Banned:</b> ${user.banned ? "YES" : "no"}`,
-    ``,
+  ];
+
+  if (user.banned) {
+    if (user.bannedAt) {
+      lines.push(`⏰ <b>Banned at:</b> ${new Date(user.bannedAt).toLocaleString()}`);
+    }
+    if (user.bannedBy) {
+      lines.push(`👮 <b>Banned by:</b> <code>${escapeHTML(String(user.bannedBy))}</code>`);
+    }
+    if (user.banReason) {
+      lines.push(`📄 <b>Reason:</b> ${escapeHTML(user.banReason)}`);
+    }
+    lines.push(``);
+  }
+
+  if (user.mute) {
+    const m = user.mute;
+    const scope = m.scope || "all";
+    const until = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    const active = !m.until || now <= m.until;
+    const status = active ? "ACTIVE" : "expired";
+    lines.push(
+      `🔇 <b>Mute:</b> ${status}`,
+      `• Scope: ${escapeHTML(scope)}`,
+      `• Until: ${escapeHTML(until)}`
+    );
+    if (m.reason) {
+      lines.push(`• Reason: ${escapeHTML(m.reason)}`);
+    }
+    if (m.mutedBy) {
+      lines.push(`• Muted by: <code>${escapeHTML(String(m.mutedBy))}</code>`);
+    }
+    lines.push(``);
+  }
+
+  lines.push(
     `📊 <b>Usage Stats</b>`,
     `• Messages: ${stats.totalMessages || 0}`,
     `• Inline queries: ${stats.totalInlineQueries || 0}`,
@@ -3462,6 +3628,169 @@ bot.command("unban", async (ctx) => {
   } catch (e) {
     // User might not have started the bot; ignore send error
   }
+});
+
+bot.command("mute", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply(
+      "Usage: /mute <userId> <duration> [scope] [reason]\n\n" +
+      "duration examples: 10m, 2h, 1d, 30 (minutes)\n" +
+      "scope: all, dm, group, inline, tier (default: all)"
+    );
+  }
+
+  const [targetId, durationRaw, scopeOrReason, ...rest] = args;
+  const targetIdStr = String(targetId);
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot mute an owner.");
+  }
+
+  const durationMs = parseDurationToMs(durationRaw);
+  if (!durationMs) {
+    return ctx.reply("Invalid duration. Use formats like 10m, 2h, 1d, 60 (minutes).");
+  }
+
+  let scope = "all";
+  let reason = "";
+
+  const possibleScope = (scopeOrReason || "").toLowerCase();
+  const validScopes = new Set(["all", "dm", "group", "inline", "tier"]);
+  if (possibleScope && validScopes.has(possibleScope)) {
+    scope = possibleScope;
+    reason = rest.join(" ").trim();
+  } else {
+    reason = [scopeOrReason, ...rest].filter(Boolean).join(" ").trim();
+  }
+
+  const rec = ensureUser(targetIdStr);
+  const now = Date.now();
+  const until = now + durationMs;
+
+  const muteData = {
+    until,
+    scope,
+    reason: reason || null,
+    mutedBy: String(ctx.from?.id || ""),
+    createdAt: new Date(now).toISOString(),
+  };
+
+  if (scope === "tier") {
+    muteData.previousTier = rec.tier;
+    if (rec.tier !== "free") {
+      rec.tier = "free";
+      rec.role = "free";
+    }
+  }
+
+  rec.mute = muteData;
+  saveUsers();
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🔇 User ${targetIdStr} muted for ${durationRaw} (scope: ${scope}).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify muted user
+  try {
+    const scopeText =
+      scope === "all"
+        ? "everywhere"
+        : scope === "dm"
+        ? "in direct messages"
+        : scope === "group"
+        ? "in groups"
+        : scope === "inline"
+        ? "in inline mode"
+        : "for premium/paid features";
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Mute ends at: ${escapeMarkdown(humanUntil)}_`;
+    const baseLine = `🔇 *You have been muted on StarzAI* (${scopeText}).`;
+    const mutedMsg = [baseLine, reasonLine, untilLine].join("");
+
+    await bot.api.sendMessage(targetIdStr, mutedMsg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore
+  }
+});
+
+bot.command("unmute", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /unmute <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
+  const targetIdStr = String(targetId);
+  const rec = ensureUser(targetIdStr);
+
+  if (!rec.mute) {
+    return ctx.reply(`User ${targetIdStr} is not muted.`);
+  }
+
+  if (rec.mute.scope === "tier" && rec.mute.previousTier && rec.tier === "free") {
+    rec.tier = rec.mute.previousTier;
+    rec.role = rec.mute.previousTier;
+  }
+
+  delete rec.mute;
+  saveUsers();
+
+  let ownerMsg = `🔊 User ${targetIdStr} has been unmuted.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🔊 *Your mute on StarzAI has been lifted.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore
+  }
+});
+
+bot.command("banlist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const entries = Object.entries(usersDb.users || {}).filter(
+    ([, u]) => u.banned
+  );
+
+  if (entries.length === 0) {
+    return ctx.reply("✅ No banned users currently.");
+  }
+
+  const max = 50;
+  const subset = entries.slice(0, max);
+  const lines = [
+    `🚫 <b>Banned users</b> (${entries.length})`,
+    "",
+  ];
+
+  subset.forEach(([id, u], idx) => {
+    const username = u.username ? "@" + escapeHTML(u.username) : "<i>no username</i>";
+    const name = u.firstName ? escapeHTML(u.firstName) : "<i>no name</i>";
+    const bannedAt = u.bannedAt ? new Date(u.bannedAt).toLocaleString() : "unknown";
+    const reasonText = u.banReason ? escapeHTML(u.banReason.slice(0, 80)) : "none";
+    lines.push(
+      `${idx + 1}. <code>${id}</code> – ${username} (${name})`,
+      `   ⏰ ${bannedAt} • Reason: ${reasonText}`,
+      ""
+    );
+  });
+
+  if (entries.length > max) {
+    lines.push(
+      `... and ${entries.length - max} more. Use /info &lt;userId&gt; for details.`
+    );
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 });
 
 // =====================
@@ -8377,13 +8706,16 @@ http
               { command: "whoami", description: "👤 Your profile & stats" },
               { command: "reset", description: "🗑️ Clear chat memory" },
               { command: "status", description: "📊 Bot status & analytics" },
-              { command: "info", description: "🔍 User info (info &lt;userId&gt;)" },
-              { command: "grant", description: "🎁 Grant tier (grant &lt;userId&gt; &lt;tier&gt;)" },
-              { command: "revoke", description: "❌ Revoke to free (revoke &lt;userId&gt;)" },
-              { command: "ban", description: "🚫 Ban user (ban &lt;userId&gt; [reason])" },
-              { command: "unban", description: "✅ Unban user (unban &lt;userId&gt;)" },
-              { command: "allow", description: "✅ Allow model (allow &lt;userId&gt; &lt;model&gt;)" },
-              { command: "deny", description: "🚫 Deny model (deny &lt;userId&gt; &lt;model&gt;)" },
+              { command: "info", description: "🔍 User info (info <userId>)" },
+              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
+              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
+              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
+              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
+              { command: "banlist", description: "📜 List banned users" },
+              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> ...)" },
+              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
+              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
+              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
             ],
             { scope: { type: "chat", chat_id: Number(ownerId) } }
           );
