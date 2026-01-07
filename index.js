@@ -376,6 +376,8 @@ const chatHistory = new Map(); // chatId -> [{role, content}...]
 const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separate history for partner mode
 const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, userId }
 const rate = new Map(); // userId -> { windowStartMs, count }
+const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
+const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
 
 // Active inline message tracking (for editing)
 const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
@@ -518,6 +520,41 @@ async function enforceRateLimit(ctx) {
     await ctx.reply(msg);
   }
   return false;
+}
+
+// =====================
+// GROUP ACTIVATION SYSTEM
+// =====================
+// Bot is dormant by default in groups. Activates for 2 minutes after command/mention.
+// During active window, responds to all messages. Goes dormant after inactivity.
+
+function activateGroup(chatId) {
+  const id = String(chatId);
+  groupActiveUntil.set(id, Date.now() + GROUP_ACTIVE_DURATION);
+}
+
+function deactivateGroup(chatId) {
+  const id = String(chatId);
+  groupActiveUntil.delete(id);
+}
+
+function isGroupActive(chatId) {
+  const id = String(chatId);
+  const until = groupActiveUntil.get(id);
+  if (!until) return false;
+  if (Date.now() > until) {
+    groupActiveUntil.delete(id); // Clean up expired
+    return false;
+  }
+  return true;
+}
+
+function getGroupActiveRemaining(chatId) {
+  const id = String(chatId);
+  const until = groupActiveUntil.get(id);
+  if (!until) return 0;
+  const remaining = until - Date.now();
+  return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
 }
 
 // =====================
@@ -1742,12 +1779,24 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
+  
+  // Activate group if used in group chat
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
   await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
 });
 
 bot.command("help", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
+  
+  // Activate group if used in group chat
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
   await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
 });
 
@@ -1769,6 +1818,26 @@ bot.command("reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   chatHistory.delete(ctx.chat.id);
   await ctx.reply("Done. Memory cleared for this chat.");
+});
+
+// Group activation commands
+bot.command("stop", async (ctx) => {
+  if (ctx.chat.type === "private") {
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+  }
+  
+  deactivateGroup(ctx.chat.id);
+  await ctx.reply("🚫 Bot is now dormant. Mention me or reply to wake me up!", { parse_mode: "HTML" });
+});
+
+bot.command("talk", async (ctx) => {
+  if (ctx.chat.type === "private") {
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+  }
+  
+  activateGroup(ctx.chat.id);
+  const remaining = getGroupActiveRemaining(ctx.chat.id);
+  await ctx.reply(`✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`, { parse_mode: "HTML" });
 });
 
 // /stats - Show user usage statistics
@@ -4095,8 +4164,32 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group: respond to ALL messages (no mention required)
-  // Bot now works like DM in group chats
+  // Group chat activation system:
+  // - Bot is dormant by default in groups
+  // - Activates for 2 minutes after mention or reply to bot
+  // - During active window, responds to all messages
+  // - Goes dormant after 2 minutes of no interaction
+  
+  if (chat.type !== "private") {
+    const isMentioned = text.toLowerCase().includes(`@${botUsername}`);
+    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
+    
+    // Check if bot should activate
+    if (isMentioned || isReplyToBot) {
+      activateGroup(chat.id);
+    }
+    
+    // If not active and no active character, ignore the message
+    if (!isGroupActive(chat.id) && !hasActiveChar && !isMentioned && !isReplyToBot) {
+      return; // Bot is dormant, ignore message
+    }
+    
+    // Reset timer on any interaction when active
+    if (isGroupActive(chat.id)) {
+      activateGroup(chat.id); // Refresh the timer
+    }
+  }
 
   // Check if user is replying to a specific message
   const replyToMsg = ctx.message?.reply_to_message;
