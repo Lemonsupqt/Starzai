@@ -4704,8 +4704,10 @@ bot.on("message:video", async (ctx) => {
       { parse_mode: "HTML" }
     ).catch(() => {});
 
-    // Extract frames
-    let { frames, duration, error: frameError } = await extractVideoFrames(videoPath, tempDir, 5);
+    // Extract frames - more frames for better context
+    const videoDuration = video.duration || 10;
+    const frameCount = Math.min(Math.max(Math.ceil(videoDuration / 2), 5), 15); // 1 frame per 2 seconds, min 5, max 15
+    let { frames, duration, error: frameError } = await extractVideoFrames(videoPath, tempDir, frameCount);
     
     // Fallback: use Telegram's video thumbnail if ffmpeg failed
     if (frames.length === 0 && video.thumb) {
@@ -4759,17 +4761,26 @@ bot.on("message:video", async (ctx) => {
       image_url: { url: `data:image/jpeg;base64,${f.base64}` }
     }));
 
-    // Context-aware system prompt
-    let systemPrompt = `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} key frame(s). `;
+    // Context-aware system prompt - emphasize accuracy over speculation
+    let systemPrompt = `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} sequential frame(s) taken at regular intervals. `;
+    
+    // Core instruction: be accurate, don't hallucinate
+    systemPrompt += `\n\nIMPORTANT RULES:
+- ONLY describe what you can actually SEE in the frames
+- DO NOT make up or guess things that aren't visible
+- If you're unsure about something, say "appears to be" or "possibly"
+- If you can't identify something, say so honestly
+- Focus on observable facts: people, objects, actions, text, setting\n\n`;
+    
     if (transcript) {
-      systemPrompt += "An audio transcript is also provided. ";
+      systemPrompt += "Audio transcript is provided - use it to understand context, identify speech, music, or sounds. ";
     }
     if (hasQuestion) {
-      systemPrompt += "Answer the user's specific question about this video directly and concisely. Focus on what they're asking about.";
+      systemPrompt += "Answer the user's specific question based ONLY on what you can see/hear. If you can't answer from the video, say so.";
     } else if (caption) {
-      systemPrompt += "Respond to the user's message in context of what you see in the video.";
+      systemPrompt += "Respond to the user's message based on what you observe in the video.";
     } else {
-      systemPrompt += "Describe what's happening - identify people, actions, context, and any notable details. Be specific and observant.";
+      systemPrompt += "Describe what's happening: the setting, people/characters, actions, any visible text, and notable details. Be specific and factual.";
     }
 
     const messages = [
@@ -4998,13 +5009,13 @@ bot.on("message:animation", async (ctx) => {
         max_tokens: 500,
       });
     } else {
-      let gifSystemPrompt = `You are analyzing a ${duration}s GIF/animation through ${frames.length} frame(s). `;
+      let gifSystemPrompt = `You are analyzing a ${duration}s GIF/animation through ${frames.length} sequential frame(s).\n\nIMPORTANT: Only describe what you can actually SEE. Don't guess or make things up. If it's a meme, describe the visual elements and any text. If you recognize a person/character, name them. If unsure, say so.\n\n`;
       if (hasQuestion) {
-        gifSystemPrompt += "Answer the user's specific question directly and concisely.";
+        gifSystemPrompt += "Answer the user's specific question based on what you see.";
       } else if (caption) {
-        gifSystemPrompt += "Respond to the user's message in context of what you see.";
+        gifSystemPrompt += "Respond to the user's message based on what you observe.";
       } else {
-        gifSystemPrompt += "Describe what's happening - identify people, characters, actions, memes, or jokes. Be specific.";
+        gifSystemPrompt += "Describe: the scene, any people/characters, actions, visible text, and if it's a meme/joke, explain it.";
       }
       
       out = await llmText({
