@@ -1241,6 +1241,31 @@ function escapeHTML(text) {
     .replace(/>/g, '&gt;');
 }
 
+// Escape special Markdown characters
+function escapeMarkdown(text) {
+  if (!text) return text;
+  return String(text)
+    .replace(/\\/g, '\\\\')
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/~/g, '\\~')
+    .replace(/`/g, '\\`')
+    .replace(/>/g, '\\>')
+    .replace(/#/g, '\\#')
+    .replace(/\+/g, '\\+')
+    .replace(/-/g, '\\-')
+    .replace(/=/g, '\\=')
+    .replace(/\|/g, '\\|')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/\./g, '\\.')
+    .replace(/!/g, '\\!');
+}
+
 // =====================
 // UI HELPERS
 // =====================
@@ -4098,8 +4123,8 @@ bot.on("message:text", async (ctx) => {
   let responseSent = false;
 
   try {
-    // Send initial processing status
-    statusMsg = await ctx.reply(`⏳ Processing with *${model}*...`, { parse_mode: "Markdown" });
+    // Send initial processing status - use HTML to avoid Markdown escaping issues
+    statusMsg = await ctx.reply(`⏳ Processing with <b>${model}</b>...`, { parse_mode: "HTML" });
 
     // Keep typing indicator active
     typingInterval = setInterval(() => {
