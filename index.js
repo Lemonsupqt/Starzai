@@ -5383,8 +5383,9 @@ const processingMessages = new Map(); // chatId:messageId -> timestamp
 bot.on("message:text", async (ctx) => {
   const chat = ctx.chat;
   const u = ctx.from;
-  const text = (ctx.message?.text || "").trim();
-  const messageId = ctx.message?.message_id;
+  const msg = ctx.message;
+  const text = (msg?.text || "").trim();
+  const messageId = msg?.message_id;
   
   // Debug logging
   console.log(`[MSG] User ${u?.id} in ${chat?.type} (${chat?.id}): "${text?.slice(0, 50)}"`);
