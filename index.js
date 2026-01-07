@@ -4047,6 +4047,7 @@ bot.on("inline_query", async (ctx) => {
     });
     
     // Send placeholder immediately - this won't timeout!
+    // IMPORTANT: Must include reply_markup (inline keyboard) to receive inline_message_id in chosen_inline_result
     return safeAnswerInline(ctx, [
       {
         type: "article",
@@ -4058,6 +4059,8 @@ bot.on("inline_query", async (ctx) => {
           message_text: `🗿🔬 <b>Blackhole Analysis: ${escapedTopic}</b>\n\n⏳ <i>Analyzing in depth... Please wait...</i>\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
           parse_mode: "HTML",
         },
+        // Keyboard is required to get inline_message_id for editing!
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", `bh_loading_${bhKey}`),
       },
     ], { cache_time: 0, is_personal: true });
   }
@@ -4569,6 +4572,7 @@ bot.on("inline_query", async (ctx) => {
     });
     
     // Send placeholder immediately - this won't timeout!
+    // IMPORTANT: Must include reply_markup (inline keyboard) to receive inline_message_id in chosen_inline_result
     return safeAnswerInline(ctx, [
       {
         type: "article",
@@ -4580,6 +4584,8 @@ bot.on("inline_query", async (ctx) => {
           message_text: `🔍 <b>Research: ${escapedTopic}</b>\n\n⏳ <i>Researching... Please wait...</i>\n\n<i>via StarzAI • ${shortModel}</i>`,
           parse_mode: "HTML",
         },
+        // Keyboard is required to get inline_message_id for editing!
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", `r_loading_${rKey}`),
       },
     ], { cache_time: 0, is_personal: true });
   }
