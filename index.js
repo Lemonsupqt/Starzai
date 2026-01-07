@@ -3723,14 +3723,8 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group: respond if mentioned OR if user has active character
-  if (chat.type !== "private") {
-    const mentioned =
-      text.toLowerCase().includes(`@${botUsername}`) ||
-      ctx.message?.reply_to_message?.from?.id === botInfo.id;
-
-    if (!mentioned && !userHasActiveChar) return;
-  }
+  // Group: respond to ALL messages (no mention required)
+  // Bot now works like DM in group chats
 
   // Check if user is replying to a specific message
   const replyToMsg = ctx.message?.reply_to_message;
