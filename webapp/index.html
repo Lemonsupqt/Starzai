@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>StarzAI</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #0f0f0f;
+      --bg-secondary: #1a1a1a;
+      --bg-card: #242424;
+      --text-primary: #ffffff;
+      --text-secondary: #a0a0a0;
+      --accent: #8b5cf6;
+      --accent-hover: #7c3aed;
+      --border: #333333;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 16px;
+      padding-bottom: 100px;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #8b5cf6, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    .modes-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .mode-card {
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+
+    .mode-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .mode-card.selected {
+      border-color: var(--accent);
+      background: rgba(139, 92, 246, 0.1);
+    }
+
+    .mode-card .icon {
+      font-size: 32px;
+      margin-bottom: 8px;
+    }
+
+    .mode-card .title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .mode-card .desc {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .input-section {
+      background: var(--bg-secondary);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .input-section label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+
+    .input-section textarea {
+      width: 100%;
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      color: var(--text-primary);
+      font-size: 16px;
+      resize: none;
+      min-height: 100px;
+      font-family: inherit;
+    }
+
+    .input-section textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .input-section textarea::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .submit-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 16px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      width: calc(100% - 32px);
+    }
+
+    .submit-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
+    }
+
+    .submit-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .selected-mode-display {
+      text-align: center;
+      padding: 8px;
+      background: rgba(139, 92, 246, 0.1);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>✨ StarzAI</h1>
+    <p>Select a mode and type your query</p>
+  </div>
+
+  <div class="modes-grid">
+    <div class="mode-card" data-mode="q:" data-name="Quark">
+      <div class="icon">⭐</div>
+      <div class="title">Quark</div>
+      <div class="desc">Quick answers</div>
+    </div>
+    <div class="mode-card" data-mode="b:" data-name="Blackhole">
+      <div class="icon">🗿</div>
+      <div class="title">Blackhole</div>
+      <div class="desc">Deep research</div>
+    </div>
+    <div class="mode-card" data-mode="code:" data-name="Code">
+      <div class="icon">💻</div>
+      <div class="title">Code</div>
+      <div class="desc">Programming help</div>
+    </div>
+    <div class="mode-card" data-mode="e:" data-name="Explain">
+      <div class="icon">🧠</div>
+      <div class="title">Explain</div>
+      <div class="desc">Simple explanations</div>
+    </div>
+    <div class="mode-card" data-mode="as " data-name="Character">
+      <div class="icon">🎭</div>
+      <div class="title">Character</div>
+      <div class="desc">Fun roleplay</div>
+    </div>
+    <div class="mode-card" data-mode="sum:" data-name="Summarize">
+      <div class="icon">📝</div>
+      <div class="title">Summarize</div>
+      <div class="desc">Condense text</div>
+    </div>
+    <div class="mode-card" data-mode="p:" data-name="Partner">
+      <div class="icon">🤝</div>
+      <div class="title">Partner</div>
+      <div class="desc">AI companion</div>
+    </div>
+    <div class="mode-card" data-mode="r:" data-name="Research">
+      <div class="icon">🔍</div>
+      <div class="title">Research</div>
+      <div class="desc">Quick research</div>
+    </div>
+  </div>
+
+  <div class="input-section">
+    <div class="selected-mode-display" id="selectedModeDisplay">
+      Select a mode above
+    </div>
+    <label for="queryInput">Your Query</label>
+    <textarea 
+      id="queryInput" 
+      placeholder="Type your question or topic here..."
+      rows="4"
+    ></textarea>
+  </div>
+
+  <button class="submit-btn" id="submitBtn" disabled>
+    Select a mode first
+  </button>
+
+  <script>
+    // Initialize Telegram WebApp
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    // Apply Telegram theme colors if available
+    if (tg.themeParams.bg_color) {
+      document.documentElement.style.setProperty('--bg-primary', tg.themeParams.bg_color);
+    }
+    if (tg.themeParams.secondary_bg_color) {
+      document.documentElement.style.setProperty('--bg-secondary', tg.themeParams.secondary_bg_color);
+    }
+
+    let selectedMode = null;
+    let selectedModeName = null;
+
+    const modeCards = document.querySelectorAll('.mode-card');
+    const queryInput = document.getElementById('queryInput');
+    const submitBtn = document.getElementById('submitBtn');
+    const selectedModeDisplay = document.getElementById('selectedModeDisplay');
+
+    // Mode selection
+    modeCards.forEach(card => {
+      card.addEventListener('click', () => {
+        // Remove selection from all
+        modeCards.forEach(c => c.classList.remove('selected'));
+        // Add selection to clicked
+        card.classList.add('selected');
+        
+        selectedMode = card.dataset.mode;
+        selectedModeName = card.dataset.name;
+        
+        // Update display
+        selectedModeDisplay.textContent = `Mode: ${selectedModeName}`;
+        
+        // Update placeholder based on mode
+        const placeholders = {
+          'q:': 'Ask a quick question...',
+          'b:': 'Enter a topic for deep analysis...',
+          'code:': 'Describe your coding problem...',
+          'e:': 'What would you like explained?',
+          'as ': 'Enter character name (e.g., Yoda, Sherlock)...',
+          'sum:': 'Paste text to summarize...',
+          'p:': 'Send a message to your partner...',
+          'r:': 'What would you like to research?'
+        };
+        queryInput.placeholder = placeholders[selectedMode] || 'Type your query...';
+        
+        updateSubmitButton();
+        queryInput.focus();
+      });
+    });
+
+    // Input change handler
+    queryInput.addEventListener('input', updateSubmitButton);
+
+    function updateSubmitButton() {
+      const hasMode = selectedMode !== null;
+      const hasQuery = queryInput.value.trim().length > 0;
+      
+      submitBtn.disabled = !hasMode || !hasQuery;
+      
+      if (!hasMode) {
+        submitBtn.textContent = 'Select a mode first';
+      } else if (!hasQuery) {
+        submitBtn.textContent = 'Type your query';
+      } else {
+        submitBtn.textContent = `Send with ${selectedModeName}`;
+      }
+    }
+
+    // Submit handler
+    submitBtn.addEventListener('click', () => {
+      if (!selectedMode || !queryInput.value.trim()) return;
+      
+      const fullQuery = selectedMode + queryInput.value.trim();
+      
+      // Send data back to Telegram
+      tg.sendData(JSON.stringify({
+        mode: selectedMode,
+        modeName: selectedModeName,
+        query: queryInput.value.trim(),
+        fullQuery: fullQuery
+      }));
+    });
+
+    // Handle main button (optional - Telegram's built-in button)
+    tg.MainButton.setText('Send Query');
+    tg.MainButton.onClick(() => {
+      if (!selectedMode || !queryInput.value.trim()) {
+        tg.showAlert('Please select a mode and enter your query');
+        return;
+      }
+      
+      const fullQuery = selectedMode + queryInput.value.trim();
+      tg.sendData(JSON.stringify({
+        mode: selectedMode,
+        modeName: selectedModeName,
+        query: queryInput.value.trim(),
+        fullQuery: fullQuery
+      }));
+    });
+  </script>
+</body>
+</html>
