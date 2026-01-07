@@ -3476,9 +3476,16 @@ bot.on("message:text", async (ctx) => {
   // Auto-register
   if (!getUserRecord(u.id)) registerUser(u);
   
+  // Check if user has active character in this chat (for GC continuous conversation)
+  const activeCharForUser = getActiveCharacter(u.id, chat.id);
+  const userHasActiveChar = !!activeCharForUser?.name;
+  
   // Check if this is a reply to a Yap message (via @starztechbot)
+  // But NOT if it's a character message (starts with 🎭) or user has active character
   const replyTo = ctx.message?.reply_to_message;
-  if (replyTo && replyTo.via_bot?.username === "starztechbot") {
+  const isCharacterMessage = replyTo?.text?.startsWith("🎭");
+  
+  if (replyTo && replyTo.via_bot?.username === "starztechbot" && !isCharacterMessage && !userHasActiveChar) {
     // This is a reply to a Yap! Find the session by checking the message content
     const yapText = replyTo.text || "";
     
@@ -3716,19 +3723,13 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group: check if user has active character mode
-  const activeCharForGC = getActiveCharacter(u.id, chat.id);
-  
   // Group: respond if mentioned OR if user has active character
   if (chat.type !== "private") {
     const mentioned =
       text.toLowerCase().includes(`@${botUsername}`) ||
       ctx.message?.reply_to_message?.from?.id === botInfo.id;
-    
-    // Also respond if user has active character in this chat
-    const hasActiveCharacter = !!activeCharForGC?.name;
 
-    if (!mentioned && !hasActiveCharacter) return;
+    if (!mentioned && !userHasActiveChar) return;
   }
 
   // Check if user is replying to a specific message
@@ -3773,9 +3774,8 @@ bot.on("message:text", async (ctx) => {
     const isPartnerMode = partner?.active && partner?.name;
     
     // Check if character mode is active
-    // Priority: replyCharacter (from replied message) > activeChar (user's active character)
-    const activeChar = getActiveCharacter(u.id, chat.id);
-    const effectiveCharacter = replyCharacter || activeChar?.name;
+    // Priority: replyCharacter (from replied message) > activeCharForUser (user's active character)
+    const effectiveCharacter = replyCharacter || activeCharForUser?.name;
     const isCharacterMode = !!effectiveCharacter;
     
     let systemPrompt;
@@ -3833,7 +3833,7 @@ bot.on("message:text", async (ctx) => {
       });
       
       // Add AI response to character history (only if it's their active character)
-      if (activeChar?.name) {
+      if (activeCharForUser?.name) {
         addCharacterMessage(u.id, chat.id, "assistant", out);
       }
       
