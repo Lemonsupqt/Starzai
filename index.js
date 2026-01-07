@@ -1035,7 +1035,7 @@ function helpText() {
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
     "• `q:` — ⭐ Quark (quick answers)",
-    "• `b:` — 🕳️ Blackhole (deep research)",
+    "• `b:` — 🗿🔬 Blackhole (deep research)",
     "• `code:` — 💻 Code help",
     "• `e:` — 🧠 Explain (ELI5)",
     "• `as [char]:` — 🎭 Character roleplay",
@@ -1517,7 +1517,7 @@ bot.command("history", async (ctx) => {
   
   const modeEmojis = {
     quark: "⭐",
-    blackhole: "🕳️",
+    blackhole: "🗿🔬",
     code: "💻",
     explain: "🧠",
     character: "🎭",
@@ -2098,7 +2098,7 @@ bot.callbackQuery("help_features", async (ctx) => {
     "",
     "⚡ *AI Modes (Inline)*",
     "• ⭐ *Quark* (`q:`) - Lightning fast answers",
-    "• 🕳️ *Blackhole* (`b:`) - Deep research & analysis",
+    "• 🗿🔬 *Blackhole* (`b:`) - Deep research & analysis",
     "• 💻 *Code* (`code:`) - Programming help & snippets",
     "• 🧠 *Explain* (`e:`) - Simple ELI5 explanations",
     "• 🎭 *Character* (`as:`) - Roleplay as any character",
@@ -3326,12 +3326,12 @@ bot.on("inline_query", async (ctx) => {
         description: "Quark • Blackhole • Code • Explain",
         thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
         input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🕳️ *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n🤝🏻 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
+          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🗿🔬 *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n🤝🏻 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
           .switchInlineCurrent("⭐ Quark", "q: ")
-          .switchInlineCurrent("🕳️ Blackhole", "b: ")
+          .switchInlineCurrent("🗿🔬 Blackhole", "b: ")
           .row()
           .switchInlineCurrent("💻 Code", "code: ")
           .switchInlineCurrent("🧠 Explain", "e: ")
@@ -3449,7 +3449,7 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `b_typing_${sessionKey}`,
-          title: "🕳️ Blackhole - Deep Research",
+          title: "🗿🔬 Blackhole - Deep Research",
           description: "Type your topic for in-depth analysis",
           thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
           input_message_content: { message_text: "_" },
@@ -3490,11 +3490,11 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `blackhole_${bhKey}`,
-          title: `🕳️ ${topic.slice(0, 40)}`,
+          title: `🗿🔬 ${topic.slice(0, 40)}`,
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
           input_message_content: {
-            message_text: `🕳️ *Blackhole Analysis: ${topic}*\n\n${answer}\n\n_via StarzAI • Blackhole • ${shortModel}_`,
+            message_text: `🗿🔬 *Blackhole Analysis: ${topic}*\n\n${answer}\n\n_via StarzAI • Blackhole • ${shortModel}_`,
             parse_mode: "Markdown",
           },
           reply_markup: inlineAnswerKeyboard(bhKey),

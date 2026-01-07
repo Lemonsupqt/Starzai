@@ -13,7 +13,7 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 | Mode | Prefix | Description |
 |------|--------|-------------|
 | ⭐ Quark | `q:` | Lightning fast, concise answers |
-| 🕳️ Blackhole | `b:` | Deep research & comprehensive analysis |
+| 🗿🔬 Blackhole | `b:` | Deep research & comprehensive analysis |
 | 💻 Code | `code:` | Programming help & code snippets |
 | 🧠 Explain | `e:` | Simple ELI5 explanations |
 | 🎭 Character | `as [char]:` | Roleplay as any character |
