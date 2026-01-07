@@ -4281,14 +4281,13 @@ bot.on("message:text", async (ctx) => {
 });
 
 // =====================
-// PHOTO (DM only, optional)
+// PHOTO (DM and Groups with character support)
 // =====================
 bot.on("message:photo", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
   const chat = ctx.chat;
   const u = ctx.from;
-  if (chat.type !== "private") return;
   if (!u?.id) return;
 
   if (!getUserRecord(u.id)) registerUser(u);
@@ -4296,10 +4295,24 @@ bot.on("message:photo", async (ctx) => {
   const model = ensureChosenModelValid(u.id);
   const startTime = Date.now();
   let statusMsg = null;
+  
+  // Check if user has active character
+  const activeChar = getActiveCharacter(u.id, chat.id);
+  const isCharacterMode = !!activeChar?.name;
+  
+  // In groups without character mode, only respond if mentioned in caption
+  const caption = (ctx.message.caption || "").trim();
+  if (chat.type !== "private" && !isCharacterMode) {
+    // Skip group photos unless character is active
+    return;
+  }
 
   try {
     // Send initial processing status for images
-    statusMsg = await ctx.reply(`🖼️ Analyzing image with *${model}*...`, { parse_mode: "Markdown" });
+    const statusText = isCharacterMode 
+      ? `🎭 <b>${escapeHTML(activeChar.name)}</b> is looking at the image...`
+      : `🖼️ Analyzing image with <b>${escapeHTML(model)}</b>...`;
+    statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
 
     // Keep typing indicator active
     const typingInterval = setInterval(() => {
@@ -4307,20 +4320,58 @@ bot.on("message:photo", async (ctx) => {
     }, 4000);
     await ctx.replyWithChatAction("typing");
 
-    const caption = (ctx.message.caption || "").trim();
     const photos = ctx.message.photo;
     const best = photos[photos.length - 1];
     const file = await ctx.api.getFile(best.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const b64 = await telegramFileToBase64(fileUrl);
 
-    const out = await llmVisionReply({
-      chatId: chat.id,
-      userText: caption || "What's in this image? Describe it clearly.",
-      imageBase64: b64,
-      mime: "image/jpeg",
-      model,
-    });
+    let out;
+    let modeLabel = "";
+    
+    if (isCharacterMode) {
+      // Character mode - respond to image as the character
+      const characterPrompt = buildCharacterSystemPrompt(activeChar.name);
+      const userPrompt = caption || "What do you see in this image? React to it.";
+      
+      // Add to character history
+      addCharacterMessage(u.id, chat.id, "user", `[Sent an image] ${userPrompt}`);
+      const charHistory = getCharacterChatHistory(u.id, chat.id);
+      
+      // Build messages with vision
+      const messages = [
+        { role: "system", content: characterPrompt + " The user is showing you an image. React to it in character." },
+        ...charHistory.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userPrompt },
+            { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }
+          ]
+        }
+      ];
+      
+      out = await llmText({
+        model,
+        messages,
+        temperature: 0.9,
+        max_tokens: 500,
+      });
+      
+      // Add AI response to character history
+      addCharacterMessage(u.id, chat.id, "assistant", out);
+      modeLabel = `🎭 <b>${escapeHTML(activeChar.name)}</b>\n\n`;
+      
+    } else {
+      // Normal vision mode
+      out = await llmVisionReply({
+        chatId: chat.id,
+        userText: caption || "What's in this image? Describe it clearly.",
+        imageBase64: b64,
+        mime: "image/jpeg",
+        model,
+      });
+    }
 
     clearInterval(typingInterval);
 
@@ -4329,10 +4380,9 @@ bot.on("message:photo", async (ctx) => {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // Edit status message with response (cleaner than delete+send)
-    // Convert AI output to Telegram HTML format
+    // Edit status message with response
     const formattedOutput = convertToTelegramHTML(out.slice(0, 3700));
-    const response = `${formattedOutput}\n\n<i>👁️ ${elapsed}s • ${model}</i>`;
+    const response = `${modeLabel}${formattedOutput}\n\n<i>👁️ ${elapsed}s • ${escapeHTML(model)}</i>`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
@@ -4346,11 +4396,10 @@ bot.on("message:photo", async (ctx) => {
     console.error("Vision error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    // Edit status message with error (cleaner than delete+send)
     const isTimeout = e.message?.includes("timed out");
     const errMsg = isTimeout
-      ? `⏱️ Vision model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch.`
-      : `❌ Couldn't process image after ${elapsed}s. Try again or /model to switch.`;
+      ? `⏱️ Vision timed out after ${elapsed}s. Try /model to switch.`
+      : `❌ Couldn't process image after ${elapsed}s. Try again.`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
