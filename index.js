@@ -1335,8 +1335,6 @@ function buildInlineHelpCard() {
     "━━━━━━━━━━━━━━━━━━━━━━",
     "",
     "💖 *Thank you for using StarzAI!*",
-    "",
-    "📞 *Support:* @supqts | @SoulStarXd",
   ].join("\n");
 }
 
@@ -4060,10 +4058,10 @@ bot.on("inline_query", async (ctx) => {
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
-          .url("💬 Support: @supqts", "https://t.me/supqts")
+          .url("💬 @supqts", "https://t.me/supqts")
           .url("⭐ @SoulStarXd", "https://t.me/SoulStarXd")
           .row()
-          .switchInlineCurrent("← Back to Menu", ""),
+          .switchInlineCurrent("← Back", ""),
       },
     ];
 
