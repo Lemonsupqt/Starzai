@@ -5055,32 +5055,12 @@ bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
 // Now uses switch_inline_query_current_chat - no DM needed!
 // =====================
 
-// Page navigation (doesn't count towards rate limit - it's just navigation)
+// Page navigation (legacy Yap shared chat - now disabled)
 bot.callbackQuery(/^schat_page:(.+):(\d+)$/, async (ctx) => {
-  
-  const parts = ctx.callbackQuery.data.split(":");
-  const chatKey = parts[1];
-  const page = parseInt(parts[2], 10);
-  
-  const session = getSharedChat(chatKey);
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  const totalPages = getSharedChatPageCount(session);
-  await ctx.answerCallbackQuery({ text: `Page ${page}/${totalPages}` });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, page),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, page, totalPages)
-      }
-    );
-  } catch {
-    // Message unchanged
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
+  });
 });
 
 // Noop for page indicator button (doesn't count towards rate limit)
@@ -5088,95 +5068,28 @@ bot.callbackQuery(/^schat_noop$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
-// Ask AI - DM user for input, then update the original inline message
+// Ask AI - legacy Yap input (now disabled)
 bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = getSharedChat(chatKey);
-  const userId = ctx.from?.id;
-  const userName = ctx.from?.first_name || "User";
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  await ctx.answerCallbackQuery({ text: "Check your DM with the bot!" });
-  
-  // Store pending input state
-  pendingSharedInput.set(String(userId), {
-    chatKey,
-    userName,
-    inlineMessageId: session.inlineMessageId,
-    timestamp: Date.now()
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
   });
-  
-  // DM the user
-  try {
-    await bot.api.sendMessage(
-      userId,
-      `💬 *Group Chat Input*\n\nType your message for the Yap chat:\n\n_Your message will appear in the group chat and AI will respond!_`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (e) {
-    console.error("Failed to DM user for schat_ask:", e.message);
-    // User might not have started the bot
-    await ctx.answerCallbackQuery({ 
-      text: "Please start a chat with @starztechbot first!", 
-      show_alert: true 
-    });
-  }
 });
 
-// Refresh shared chat display (shows last page)
+// Refresh shared chat display (legacy Yap - now disabled)
 bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = getSharedChat(chatKey);
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  const totalPages = getSharedChatPageCount(session);
-  await ctx.answerCallbackQuery({ text: "Refreshed! 🔄" });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, -1), // -1 = last page
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-      }
-    );
-  } catch {
-    // Message unchanged
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
 });
 
-// Clear shared chat
+// Clear shared chat (legacy Yap - now disabled)
 bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = clearSharedChat(chatKey);
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  await ctx.answerCallbackQuery({ text: "Chat cleared! 🗑️" });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, 1),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, 1, 1)
-      }
-    );
-  } catch {
-    // ignore
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
 });
 
 // =====================
@@ -5479,117 +5392,11 @@ bot.on("message:text", async (ctx) => {
   const activeCharForUser = getActiveCharacter(u.id, chat.id);
   const userHasActiveChar = !!activeCharForUser?.name;
   
-  // Check if this is a reply to a Yap message (via @starztechbot)
-  // But NOT if it's a character message (starts with 🎭) or user has active character
+  // Check if this is a reply to a legacy Yap message (via @starztechbot)
+  // Yap shared chat mode has been removed, so we no longer treat these specially.
   const replyTo = ctx.message?.reply_to_message;
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
-  
-  if (replyTo && replyTo.via_bot?.username === "starztechbot" && !isCharacterMessage && !userHasActiveChar) {
-    // This is a reply to a Yap! Find the session by checking the message content
-    const yapText = replyTo.text || "";
-    
-    // Look for a Yap session that matches this chat
-    // We need to find the chatKey from the inline message
-    // For now, search all sessions for one with matching inlineMessageId or recent activity
-    let foundChatKey = null;
-    let foundSession = null;
-    
-    for (const [chatKey, session] of sharedChatSessions.entries()) {
-  // Check if this session was recently active (within 1 hour)
-  const lastActivity = session.history?.length > 0 
-    ? session.history[session.history.length - 1].timestamp 
-    : session.createdAt;
-  
-  if (Date.now() - lastActivity < 60 * 60 * 1000) {
-    // Check if the message looks like a Yap
-    if (yapText.includes("StarzAI Yap")) {
-      foundChatKey = chatKey;
-      foundSession = session;
-      break;
-    }
-  }
-}
-
-if (foundSession && foundSession.inlineMessageId) {
-  const userName = u.first_name || "User";
-  
-  // Add user message to session
-  addToSharedChat(foundChatKey, u.id, userName, "user", text);
-      
-      // Delete the reply message to keep chat clean (optional)
-      try {
-        await ctx.deleteMessage();
-      } catch (e) {
-        // Can't delete in some chats, that's ok
-      }
-      
-      // Update Yap with "thinking..."
-      const totalPages = getSharedChatPageCount(foundSession);
-      try {
-        await bot.api.editMessageTextInline(
-          foundSession.inlineMessageId,
-          formatSharedChatDisplay(foundSession, -1) + "\n\n_🤖 AI is thinking..._",
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
-          }
-        );
-      } catch (e) {
-        console.error("Failed to update Yap:", e.message);
-      }
-      
-      // Get AI response
-      try {
-        const yapModel = foundSession.model || ensureChosenModelValid(u.id);
-        const messages = [
-          { role: "system", content: "You are StarzAI in a chat. Be friendly, helpful, and concise." },
-          ...foundSession.history.slice(-10).map(m => ({
-            role: m.role,
-            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-          }))
-        ];
-        
-        const aiResponse = await llmText({
-          model: yapModel,
-          messages,
-          temperature: 0.7,
-          max_tokens: 500,
-        });
-        
-        // Add AI response to session
-        addToSharedChat(foundChatKey, 0, "AI", "assistant", aiResponse);
-        
-        // Update Yap with response
-        const updatedSession = getSharedChat(foundChatKey);
-        const newTotalPages = getSharedChatPageCount(updatedSession);
-        
-        await bot.api.editMessageTextInline(
-          foundSession.inlineMessageId,
-          formatSharedChatDisplay(updatedSession, -1),
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(foundChatKey, -1, newTotalPages)
-          }
-        );
-        
-      } catch (e) {
-        console.error("Yap AI error:", e.message);
-        // Show error in Yap
-        try {
-          await bot.api.editMessageTextInline(
-            foundSession.inlineMessageId,
-            formatSharedChatDisplay(foundSession, -1) + "\n\n_⚠️ AI response failed_",
-            { 
-              parse_mode: "Markdown",
-              reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
-            }
-          );
-        } catch {}
-      }
-      
-      return; // Don't process as regular message
-    }
-  }
+  // (Replies are handled as normal messages below)
   
   // Check if user has pending shared chat input
   const pendingInput = pendingSharedInput.get(String(u.id));
@@ -7602,24 +7409,19 @@ bot.on("inline_query", async (ctx) => {
   // ORIGINAL HANDLERS
   // =====================
   
-  // "yap" filter - show only yap option (starting new yap)
+  // "yap" filter - legacy shared chat mode (now removed)
   if (qLower === "yap" || (qLower.startsWith("yap ") && !qLower.includes(":"))) {
-    const chatKey = makeId(8);
-    const userName = ctx.from?.first_name || "User";
-    // Create session immediately so it's ready
-    createSharedChat(chatKey, userId, userName, model);
     return safeAnswerInline(ctx, [
       {
         type: "article",
-        id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
-        title: "👥 Start Yap Session",
-        description: "Anyone in this chat can talk to AI together!",
+        id: `yap_disabled_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Use other inline modes instead (q:, b:, code:, e:, sum:, p:).",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Reply to this message to chat!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
           parse_mode: "Markdown",
         },
-        reply_markup: sharedChatKeyboard(chatKey),
       },
     ], { cache_time: 0, is_personal: true });
   }
@@ -7747,54 +7549,18 @@ bot.on("inline_query", async (ctx) => {
     }
   }
   
-  // yap:chatKey: message - User is typing a message for the Yap
+  // yap:chatKey: message - legacy Yap mode (removed)
   if (qLower.startsWith("yap:") && q.includes(": ")) {
-    const parts = q.split(": ");
-    const chatKeyPart = parts[0].split(":")[1]; // Get chatKey from "yap:chatKey"
-    const userMessage = parts.slice(1).join(": ").trim();
-    
-    const session = getSharedChat(chatKeyPart);
-    
-    if (!session) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `yap_expired_${sessionKey}`,
-          title: "⚠️ Session Expired",
-          description: "Start a new Yap session",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-    
-    if (!userMessage) {
-      // Show typing hint
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `yap_typing_${sessionKey}`,
-          title: "✍️ Type your message...",
-          description: "Your message will be added to the Yap",
-          thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-    
-    // User has typed a message - show send button
-    const userName = ctx.from?.first_name || "User";
-    
     return safeAnswerInline(ctx, [
       {
         type: "article",
-        id: `yap_send_${chatKeyPart}_${makeId(4)}`,
-        title: `✉️ Send: ${userMessage.slice(0, 40)}${userMessage.length > 40 ? "..." : ""}`,
-        description: `Tap to send your message to the Yap`,
-        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-        input_message_content: { 
-          message_text: `💬 *${userName}:* ${userMessage}`,
-          parse_mode: "Markdown"
+        id: `yap_legacy_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Shared Yap chats are no longer supported.",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
+          parse_mode: "Markdown",
         },
       },
     ], { cache_time: 0, is_personal: true });
@@ -8368,138 +8134,31 @@ bot.on("chosen_inline_result", async (ctx) => {
   
   console.log(`chosen_inline_result: resultId=${resultId}, inlineMessageId=${inlineMessageId}`);
   
-  // Store inlineMessageId for yap_start results AND create session
+  // Store inlineMessageId for yap_start results (legacy Yap mode - now disabled)
   if (resultId.startsWith("yap_start_")) {
-    const chatKey = resultId.replace("yap_start_", "");
-    
-    // Create session if it doesn't exist
-    let session = getSharedChat(chatKey);
-    if (!session) {
-      const model = ensureChosenModelValid(userId);
-      session = createSharedChat(chatKey, userId, userName, model);
-      console.log(`Created new Yap session: chatKey=${chatKey}`);
-    }
-    
-    // Store the inline message ID
     if (inlineMessageId) {
-      setSharedChatInlineMessageId(chatKey, inlineMessageId);
-      console.log(`Stored inlineMessageId for chatKey=${chatKey}: ${inlineMessageId}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          "👥 *Yap shared chat mode has been removed.*\n\nUse other inline modes instead:\n\n• `q:`  – Quark (quick answers)\n• `b:`  – Blackhole (deep research)\n• `code:` – Programming help\n• `e:`  – Explain (ELI5)\n• `sum:` – Summarize\n• `p:`  – Partner chat",
+          { parse_mode: "Markdown" }
+        );
+      } catch {}
     }
     return;
   }
   
-  // Handle yap_send - user sent a message to the Yap
+  // Handle yap_send - legacy Yap mode (now disabled)
   if (resultId.startsWith("yap_send_")) {
-    // Extract chatKey from "yap_send_CHATKEY_RANDOM"
-    const parts = resultId.split("_");
-    const chatKey = parts[2]; // yap_send_CHATKEY_xxxx
-    
-    const session = getSharedChat(chatKey);
-    if (!session) {
-      console.log(`Yap session not found for chatKey=${chatKey}`);
-      return;
-    }
-    
-    // Get the user's message from the inline query
-    const query = ctx.chosenInlineResult.query || "";
-    // Query format: "yap:chatKey: message"
-    const messageParts = query.split(": ");
-    const userMessage = messageParts.slice(1).join(": ").trim();
-    
-    if (!userMessage) {
-      console.log("No message found in query");
-      return;
-    }
-    
-    console.log(`Yap message from ${userName}: ${userMessage}`);
-    
-    // Add user message to session
-    addToSharedChat(chatKey, userId, userName, "user", userMessage);
-    
-    // Get the inline message ID for the original Yap
-    const yapInlineMessageId = session.inlineMessageId;
-    
-    if (!yapInlineMessageId) {
-      console.log("No inlineMessageId stored for Yap");
-      return;
-    }
-    
-    // Update the Yap message to show "Thinking..."
-    try {
-      const totalPages = getSharedChatPageCount(session);
-      await bot.api.editMessageTextInline(
-        yapInlineMessageId,
-        formatSharedChatDisplay(session, -1) + "\n\n_🤖 AI is thinking..._",
-        { 
-          parse_mode: "Markdown",
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-        }
-      );
-    } catch (e) {
-      console.error("Failed to update Yap with thinking:", e.message);
-    }
-    
-    // Get AI response
-    try {
-      const model = session.model || "openrouter/quasar-alpha";
-      
-      // Build conversation history for context
-      const messages = [
-        { role: "system", content: "You are a helpful AI assistant in a group chat. Keep responses concise and friendly. Multiple users may be chatting with you." },
-      ];
-      
-      // Add recent history (last 10 messages)
-      const recentHistory = (session.history || []).slice(-10);
-      for (const msg of recentHistory) {
-        if (msg.role === "user") {
-          messages.push({ role: "user", content: `${msg.userName}: ${msg.content}` });
-        } else {
-          messages.push({ role: "assistant", content: msg.content });
-        }
-      }
-      
-      const aiResponse = await llmText({
-        model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 500,
-      });
-      
-      // Add AI response to session
-      addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
-      
-      // Update the Yap message with the response
-      const updatedSession = getSharedChat(chatKey);
-      const totalPages = getSharedChatPageCount(updatedSession);
-      
-      await bot.api.editMessageTextInline(
-        yapInlineMessageId,
-        formatSharedChatDisplay(updatedSession, -1),
-        { 
-          parse_mode: "Markdown",
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-        }
-      );
-      
-      console.log(`Yap updated with AI response for chatKey=${chatKey}`);
-      
-    } catch (e) {
-      console.error("Failed to get AI response for Yap:", e.message);
-      
-      // Update Yap to show error
+    if (inlineMessageId) {
       try {
-        const totalPages = getSharedChatPageCount(session);
         await bot.api.editMessageTextInline(
-          yapInlineMessageId,
-          formatSharedChatDisplay(session, -1) + "\n\n_⚠️ AI response failed_",
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-          }
+          inlineMessageId,
+          "👥 *Yap shared chat mode has been removed.*",
+          { parse_mode: "Markdown" }
         );
       } catch {}
     }
-    
     return;
   }
   
