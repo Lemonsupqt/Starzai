@@ -4634,7 +4634,22 @@ bot.on("message:video", async (ctx) => {
   const chat = ctx.chat;
   const u = ctx.from;
   if (!u?.id) return;
-  if (chat.type !== "private") return; // Videos only in DM for now (processing intensive)
+  
+  // In groups: only process if replying to bot or group is active
+  if (chat.type !== "private") {
+    const botInfo = await bot.api.getMe();
+    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const groupActive = isGroupActive(chat.id);
+    
+    if (!isReplyToBot && !groupActive) {
+      return; // Ignore videos in groups unless replying to bot or group is active
+    }
+    
+    // Activate group on interaction
+    if (isReplyToBot) {
+      activateGroup(chat.id);
+    }
+  }
 
   if (!getUserRecord(u.id)) registerUser(u);
 
