@@ -3808,10 +3808,10 @@ bot.on("message:text", async (ctx) => {
       modeLabel = `🎭 *${effectiveCharacter}*\n\n`;
       
       // Add user message to character history (only if it's their active character, not a reply)
-      if (activeChar?.name) {
+      if (activeCharForUser?.name) {
         addCharacterMessage(u.id, chat.id, "user", text);
       }
-      const charHistory = activeChar?.name ? getCharacterChatHistory(u.id, chat.id) : [];
+      const charHistory = activeCharForUser?.name ? getCharacterChatHistory(u.id, chat.id) : [];
       
       // Build messages array with character history
       const messages = [
