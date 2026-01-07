@@ -632,6 +632,8 @@ function ensureUser(userId, from = null) {
       activeCharacter: null,
       // Web search toggle - when ON, all messages get web search
       webSearch: false,
+      // Warning history (for /warn)
+      warnings: [],
     };
     saveUsers();
   } else {
@@ -672,6 +674,10 @@ function ensureUser(userId, from = null) {
     // migration: add banned flag if missing
     if (usersDb.users[id].banned === undefined) {
       usersDb.users[id].banned = false;
+    }
+    // migration: add warnings array if missing
+    if (!usersDb.users[id].warnings) {
+      usersDb.users[id].warnings = [];
     }
     saveUsers();
   }
@@ -1973,7 +1979,7 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke, /ban, /unban, /banlist, /mute, /unmute, /mutelist",
+    "• /status, /info, /grant, /revoke, /ban, /unban, /softban, /warn, /banlist, /mute, /unmute, /mutelist",
   ].join("\n");
 }
 
@@ -3416,6 +3422,22 @@ bot.command("info", async (ctx) => {
     lines.push(``);
   }
 
+  if (Array.isArray(user.warnings) && user.warnings.length > 0) {
+    const count = user.warnings.length;
+    const last = user.warnings[user.warnings.length - 1] || {};
+    lines.push(`⚠️ <b>Warnings:</b> ${count}`);
+    if (last.reason) {
+      lines.push(`• Last reason: ${escapeHTML(last.reason)}`);
+    }
+    if (last.at) {
+      lines.push(`• Last at: ${new Date(last.at).toLocaleString()}`);
+    }
+    if (last.by) {
+      lines.push(`• Last by: <code>${escapeHTML(String(last.by))}</code>`);
+    }
+    lines.push(``);
+  }
+
   lines.push(
     `📊 <b>Usage Stats</b>`,
     `• Messages: ${stats.totalMessages || 0}`,
@@ -3630,6 +3652,166 @@ bot.command("unban", async (ctx) => {
   }
 });
 
+function applyMuteToUser(targetIdStr, durationMs, scope, reason, mutedById) {
+  const rec = ensureUser(targetIdStr);
+  const now = Date.now();
+  const until = now + durationMs;
+
+  const muteData = {
+    until,
+    scope,
+    reason: reason || null,
+    mutedBy: mutedById ? String(mutedById) : "",
+    createdAt: new Date(now).toISOString(),
+  };
+
+  if (scope === "tier") {
+    muteData.previousTier = rec.tier;
+    if (rec.tier !== "free") {
+      rec.tier = "free";
+      rec.role = "free";
+    }
+  }
+
+  rec.mute = muteData;
+  saveUsers();
+
+  return { rec, until };
+}
+
+const WARN_SOFTBAN_THRESHOLD = 3;
+const WARN_SOFTBAN_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+bot.command("warn", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /warn <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot warn an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings)) rec.warnings = [];
+
+  const warnEntry = {
+    at: new Date().toISOString(),
+    reason: reason || null,
+    by: String(ctx.from?.id || ""),
+  };
+  rec.warnings.push(warnEntry);
+  saveUsers();
+
+  const totalWarnings = rec.warnings.length;
+
+  let ownerMsg = `⚠️ Warning added for user ${targetIdStr}. Total warnings: ${totalWarnings}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Auto softban on repeated warnings if not already banned/muted
+  let autoSoftbanApplied = false;
+  let autoSoftbanUntil = null;
+
+  if (totalWarnings >= WARN_SOFTBAN_THRESHOLD && !rec.banned && !rec.mute) {
+    const autoReason = reason
+      ? `${reason} (auto-temporary mute after ${totalWarnings} warnings)`
+      : `Auto-temporary mute after ${totalWarnings} warnings`;
+
+    const { until } = applyMuteToUser(
+      targetIdStr,
+      WARN_SOFTBAN_DURATION_MS,
+      "all",
+      autoReason,
+      ctx.from?.id
+    );
+    autoSoftbanApplied = true;
+    autoSoftbanUntil = until;
+
+    const humanUntil = new Date(until).toLocaleString();
+    await ctx.reply(
+      `🔇 Auto softban applied to user ${targetIdStr} for 24h (total mute). Ends at: ${humanUntil}.`
+    );
+  }
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const countLine = `\n\n*Total warnings:* ${totalWarnings}`;
+    let extra = "";
+
+    if (autoSoftbanApplied && autoSoftbanUntil) {
+      const softbanUntilStr = new Date(autoSoftbanUntil).toLocaleString();
+      extra =
+        `\n\n🔇 *Temporary mute applied due to repeated warnings.*` +
+        `\n_Mute ends at: ${escapeMarkdown(softbanUntilStr)}_`;
+    }
+
+    const msg =
+      `⚠️ *You have received a warning on StarzAI.*` +
+      reasonLine +
+      countLine +
+      extra;
+
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.command("softban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /softban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot softban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    WARN_SOFTBAN_DURATION_MS,
+    "all",
+    reason || null,
+    ctx.from?.id
+  );
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🚫 Softban applied to user ${targetIdStr} for 24h (total mute).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Ban ends at: ${escapeMarkdown(humanUntil)}_`;
+    const msg =
+      "🚫 *You have received a temporary soft ban on StarzAI.*" +
+      reasonLine +
+      "\n\nYou are temporarily blocked from using the bot." +
+      untilLine;
+
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
 bot.command("mute", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
@@ -3666,28 +3848,13 @@ bot.command("mute", async (ctx) => {
     reason = [scopeOrReason, ...rest].filter(Boolean).join(" ").trim();
   }
 
-  const rec = ensureUser(targetIdStr);
-  const now = Date.now();
-  const until = now + durationMs;
-
-  const muteData = {
-    until,
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    durationMs,
     scope,
-    reason: reason || null,
-    mutedBy: String(ctx.from?.id || ""),
-    createdAt: new Date(now).toISOString(),
-  };
-
-  if (scope === "tier") {
-    muteData.previousTier = rec.tier;
-    if (rec.tier !== "free") {
-      rec.tier = "free";
-      rec.role = "free";
-    }
-  }
-
-  rec.mute = muteData;
-  saveUsers();
+    reason || null,
+    ctx.from?.id
+  );
 
   const humanUntil = new Date(until).toLocaleString();
   let ownerMsg = `🔇 User ${targetIdStr} muted for ${durationRaw} (scope: ${scope}).`;
@@ -8747,6 +8914,19 @@ http
               { command: "whoami", description: "👤 Your profile & stats" },
               { command: "reset", description: "🗑️ Clear chat memory" },
               { command: "status", description: "📊 Bot status & analytics" },
+              { command: "info", description: "🔍 User info (info <userId>)" },
+              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
+              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
+              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
+              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
+              { command: "softban", description: "🚫 Softban user (softban <userId> [reason])" },
+              { command: "warn", description: "⚠️ Warn user (warn <userId> [reason])" },
+              { command: "banlist", description: "📜 List banned users" },
+              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> [scope] [reason])" },
+              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
+              { command: "mutelist", description: "🔇 List muted users" },
+              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
+              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },us", description: "📊 Bot status & analytics" },
               { command: "info", description: "🔍 User info (info <userId>)" },
               { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
               { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
