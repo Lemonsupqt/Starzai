@@ -1574,7 +1574,7 @@ function getTimeResponse(text, messageDate) {
     
     return {
       isTimeQuery: true,
-      response: `🕐 **${timeOnly}** in ${locationName}\n📅 ${dateOnly}`,
+      response: `🕐 <b>${timeOnly}</b> in ${locationName}\n📅 ${dateOnly}`,
       timezone: timezone,
       location: locationName
     };
@@ -4923,7 +4923,7 @@ bot.on("message:text", async (ctx) => {
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
         await ctx.reply(
           `${timeResult.response}\n\n⚡ ${elapsed}s`,
-          { parse_mode: "Markdown", reply_to_message_id: msg.message_id }
+          { parse_mode: "HTML", reply_to_message_id: msg.message_id }
         );
         return;
       }
