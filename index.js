@@ -2059,31 +2059,21 @@ bot.command("default", async (ctx) => {
 function buildCharacterKeyboard(savedChars, activeChar) {
   const keyboard = new InlineKeyboard();
   
-  // Helper to truncate long names for buttons (max 12 chars)
-  const truncateName = (name) => name.length > 12 ? name.slice(0, 11) + "…" : name;
-  
-  // Add saved character buttons (2 per row)
-  for (let i = 0; i < savedChars.length; i += 2) {
-    const char1 = savedChars[i];
-    const isActive1 = activeChar?.name?.toLowerCase() === char1.toLowerCase();
-    keyboard.text(`${isActive1 ? "✅" : "🎭"} ${truncateName(char1)}`, `char_activate:${char1}`);
-    
-    if (savedChars[i + 1]) {
-      const char2 = savedChars[i + 1];
-      const isActive2 = activeChar?.name?.toLowerCase() === char2.toLowerCase();
-      keyboard.text(`${isActive2 ? "✅" : "🎭"} ${truncateName(char2)}`, `char_activate:${char2}`);
-    }
+  // Add saved character buttons (1 per row for full width)
+  for (const char of savedChars) {
+    const isActive = activeChar?.name?.toLowerCase() === char.toLowerCase();
+    keyboard.text(`${isActive ? "✅" : "🎭"} ${char}`, `char_activate:${char}`);
     keyboard.row();
   }
   
   // Add stop button if character is active
   if (activeChar) {
-    keyboard.text("⏹ Stop", "char_stop");
+    keyboard.text("⏹ Stop Character", "char_stop");
     keyboard.row();
   }
   
   // Add back to main menu button
-  keyboard.text("« Back", "menu_back");
+  keyboard.text("« Back to Menu", "menu_back");
   
   return keyboard;
 }
