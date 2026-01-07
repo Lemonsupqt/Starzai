@@ -3999,34 +3999,8 @@ bot.on("inline_query", async (ctx) => {
     console.log("Showing main menu (empty query)");
     const shortModel = model.split("/").pop();
     
-    // WebApp URL for the mini-app - must be HTTPS
-    let webappUrl = null;
-    if (PUBLIC_URL) {
-      let baseUrl = PUBLIC_URL.replace(/\/$/, "");
-      // Ensure https:// prefix
-      if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-        baseUrl = "https://" + baseUrl;
-      } else if (baseUrl.startsWith("http://")) {
-        baseUrl = baseUrl.replace("http://", "https://");
-      }
-      webappUrl = `${baseUrl}/webapp`;
-    }
-    
     // Each mode is a separate floating option - tap to fill prefix in keyboard!
     const results = [
-      // WebApp option at the top for best UX
-      ...(webappUrl ? [{
-        type: "article",
-        id: `webapp_${sessionKey}`,
-        title: "✨ Open StarzAI App",
-        description: "Best experience • Select mode & type query",
-        thumbnail_url: "https://img.icons8.com/fluency/96/stars.png",
-        input_message_content: { 
-          message_text: "✨ *StarzAI Mini App*\n\nTap the button below to open the app!",
-          parse_mode: "Markdown"
-        },
-        reply_markup: new InlineKeyboard().webApp("✨ Open StarzAI", webappUrl),
-      }] : []),
       {
         type: "article",
         id: `quark_${sessionKey}`,
