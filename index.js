@@ -554,6 +554,10 @@ function ensureUser(userId, from = null) {
       },
       // Recent prompts history (max 10)
       history: [],
+      // Saved characters for quick roleplay (max 10)
+      savedCharacters: [],
+      // Active character mode for DM/GC
+      activeCharacter: null,
     };
     saveUsers();
   } else {
@@ -583,6 +587,14 @@ function ensureUser(userId, from = null) {
     // Update username/firstName if provided
     if (from?.username) usersDb.users[id].username = from.username;
     if (from?.first_name) usersDb.users[id].firstName = from.first_name;
+    // migration: add savedCharacters if missing
+    if (!usersDb.users[id].savedCharacters) {
+      usersDb.users[id].savedCharacters = [];
+    }
+    // migration: add activeCharacter if missing
+    if (usersDb.users[id].activeCharacter === undefined) {
+      usersDb.users[id].activeCharacter = null;
+    }
     saveUsers();
   }
   return usersDb.users[id];
@@ -710,6 +722,108 @@ function clearPartnerChat(userId) {
     partner.chatHistory = [];
     savePartners();
   }
+}
+
+// =====================
+// CHARACTER MODE MANAGEMENT
+// =====================
+const characterChatHistory = new Map(); // chatId -> [{role, content}...] - separate history for character mode
+
+function getSavedCharacters(userId) {
+  const u = ensureUser(userId);
+  return u.savedCharacters || [];
+}
+
+function saveCharacter(userId, characterName) {
+  const u = ensureUser(userId);
+  if (!u.savedCharacters) u.savedCharacters = [];
+  
+  // Normalize character name
+  const normalizedName = characterName.trim().toLowerCase();
+  
+  // Check if already saved
+  if (u.savedCharacters.some(c => c.toLowerCase() === normalizedName)) {
+    return { success: false, message: "Character already saved!" };
+  }
+  
+  // Max 10 saved characters
+  if (u.savedCharacters.length >= 10) {
+    return { success: false, message: "Max 10 characters! Remove one first." };
+  }
+  
+  u.savedCharacters.push(characterName.trim());
+  saveUsers();
+  return { success: true, message: `Saved ${characterName}!` };
+}
+
+function removeCharacter(userId, characterName) {
+  const u = ensureUser(userId);
+  if (!u.savedCharacters) return { success: false, message: "No saved characters!" };
+  
+  const normalizedName = characterName.trim().toLowerCase();
+  const index = u.savedCharacters.findIndex(c => c.toLowerCase() === normalizedName);
+  
+  if (index === -1) {
+    return { success: false, message: "Character not found!" };
+  }
+  
+  u.savedCharacters.splice(index, 1);
+  saveUsers();
+  return { success: true, message: `Removed ${characterName}!` };
+}
+
+function setActiveCharacter(userId, chatId, characterName) {
+  const u = ensureUser(userId);
+  const chatKey = String(chatId);
+  
+  if (!u.activeCharacter) u.activeCharacter = {};
+  
+  if (characterName) {
+    u.activeCharacter[chatKey] = {
+      name: characterName,
+      activatedAt: Date.now(),
+    };
+  } else {
+    delete u.activeCharacter[chatKey];
+  }
+  saveUsers();
+}
+
+function getActiveCharacter(userId, chatId) {
+  const u = ensureUser(userId);
+  if (!u.activeCharacter) return null;
+  
+  const chatKey = String(chatId);
+  return u.activeCharacter[chatKey] || null;
+}
+
+function clearActiveCharacter(userId, chatId) {
+  setActiveCharacter(userId, chatId, null);
+  // Also clear character chat history
+  const historyKey = `${userId}_${chatId}`;
+  characterChatHistory.delete(historyKey);
+}
+
+function getCharacterChatHistory(userId, chatId) {
+  const historyKey = `${userId}_${chatId}`;
+  return characterChatHistory.get(historyKey) || [];
+}
+
+function addCharacterMessage(userId, chatId, role, content) {
+  const historyKey = `${userId}_${chatId}`;
+  let history = getCharacterChatHistory(userId, chatId);
+  
+  history.push({ role, content });
+  
+  // Keep last 20 messages for context
+  if (history.length > 20) history = history.slice(-20);
+  
+  characterChatHistory.set(historyKey, history);
+  return history;
+}
+
+function buildCharacterSystemPrompt(characterName) {
+  return `You are roleplaying as ${characterName}. Stay completely in character throughout the entire conversation. Respond to everything as ${characterName} would - use their speech patterns, vocabulary, mannerisms, and personality. Be creative and entertaining while still being helpful. Never break character unless explicitly asked to stop.`;
 }
 
 function buildPartnerSystemPrompt(partner) {
@@ -1029,6 +1143,7 @@ function helpText() {
     "",
     "🌟 *Feature Commands*",
     "• /partner — Create your AI companion",
+    "• /char — Quick character roleplay",
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
     "• /history — Recent prompts",
@@ -1055,10 +1170,61 @@ function helpKeyboard() {
     .text("🤝🏻 Partner", "open_partner")
     .text("📊 Stats", "do_stats")
     .row()
-    .text("👤 Who am I", "do_whoami")
+    .text("🎭 Character", "open_char")
     .text("📝 Register", "do_register")
     .row()
     .switchInline("⚡ Try Inline", "");
+}
+
+// Beautiful inline help card
+function buildInlineHelpCard() {
+  return [
+    "✨ *StarzAI - Your AI Assistant* ✨",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "🌟 *FEATURES*",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "⚡ *AI Modes*",
+    "• ⭐ Quark - Lightning fast answers",
+    "• 🗿🔬 Blackhole - Deep research",
+    "• 💻 Code - Programming help",
+    "• 🧠 Explain - Simple explanations",
+    "• 🎭 Character - Fun roleplay",
+    "• 📝 Summarize - Condense text",
+    "",
+    "🤝🏻 *AI Partner*",
+    "Create your custom AI companion!",
+    "",
+    "🎭 *Character Mode*",
+    "Quick roleplay as any character",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "📖 *HOW TO USE*",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "💬 *DM* - Just send a message!",
+    "👥 *Groups* - Mention @starztechbot",
+    "⌨️ *Inline* - Type @starztechbot anywhere",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "⌨️ *INLINE MODES*",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "`q:` → ⭐ Quark (quick)",
+    "`b:` → 🗿🔬 Blackhole (deep)",
+    "`code:` → 💻 Code help",
+    "`e:` → 🧠 Explain (ELI5)",
+    "`as [char]:` → 🎭 Character",
+    "`sum:` → 📝 Summarize",
+    "`p:` → 🤝🏻 Partner chat",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "💖 *Thank you for using StarzAI!*",
+    "",
+    "📞 *Support:* @supqts | @SoulStarXd",
+  ].join("\n");
 }
 
 // Partner setup helpers
@@ -1621,6 +1787,222 @@ bot.command("partner", async (ctx) => {
   }
 });
 
+// /char - Quick character mode for DM/GC
+bot.command("char", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ctx.from;
+  const chat = ctx.chat;
+  if (!u?.id) return;
+  
+  const args = ctx.message.text.split(" ").slice(1);
+  const subcommand = args[0]?.toLowerCase();
+  const value = args.slice(1).join(" ").trim();
+  
+  const activeChar = getActiveCharacter(u.id, chat.id);
+  const savedChars = getSavedCharacters(u.id);
+  
+  // No subcommand - show character status and help
+  if (!subcommand) {
+    const statusText = activeChar 
+      ? `🎭 *Active Character:* ${activeChar.name}\n\n`
+      : "🎭 *No active character*\n\n";
+    
+    const savedList = savedChars.length > 0
+      ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
+      : "";
+    
+    const helpText = [
+      statusText,
+      savedList,
+      "*Commands:*",
+      "• `/char yoda` - Start as Yoda",
+      "• `/char save yoda` - Save character",
+      "• `/char list` - Show saved",
+      "• `/char remove yoda` - Remove saved",
+      "• `/char stop` - Stop character mode",
+      "",
+      "_Unlike Partner, Character is for quick roleplay as existing characters!_",
+    ].join("\n");
+    
+    return ctx.reply(helpText, { 
+      parse_mode: "Markdown",
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+    });
+  }
+  
+  // Subcommands
+  switch (subcommand) {
+    case "save": {
+      if (!value) return ctx.reply("❌ Please provide a character name: `/char save yoda`", { parse_mode: "Markdown" });
+      const result = saveCharacter(u.id, value);
+      const emoji = result.success ? "✅" : "❌";
+      return ctx.reply(`${emoji} ${result.message}`);
+    }
+    
+    case "list": {
+      if (savedChars.length === 0) {
+        return ctx.reply("💾 *No saved characters yet!*\n\nUse `/char save [name]` to save one.", { parse_mode: "Markdown" });
+      }
+      const listText = [
+        "💾 *Your Saved Characters:*",
+        "",
+        ...savedChars.map((c, i) => `${i + 1}. 🎭 ${c}`),
+        "",
+        "_Tap a button to start chatting!_",
+      ].join("\n");
+      return ctx.reply(listText, { 
+        parse_mode: "Markdown",
+        reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+      });
+    }
+    
+    case "remove":
+    case "delete": {
+      if (!value) return ctx.reply("❌ Please provide a character name: `/char remove yoda`", { parse_mode: "Markdown" });
+      const result = removeCharacter(u.id, value);
+      const emoji = result.success ? "✅" : "❌";
+      return ctx.reply(`${emoji} ${result.message}`);
+    }
+    
+    case "stop": {
+      if (!activeChar) {
+        return ctx.reply("❌ No active character in this chat.");
+      }
+      clearActiveCharacter(u.id, chat.id);
+      return ctx.reply(`⏹ Character mode stopped. ${activeChar.name} has left the chat.\n\n_Normal AI responses resumed._`, { parse_mode: "Markdown" });
+    }
+    
+    default: {
+      // Assume it's a character name to activate
+      const characterName = args.join(" ").trim();
+      if (!characterName) {
+        return ctx.reply("❌ Please provide a character name: `/char yoda`", { parse_mode: "Markdown" });
+      }
+      
+      setActiveCharacter(u.id, chat.id, characterName);
+      
+      const chatType = chat.type === "private" ? "DM" : "group";
+      return ctx.reply(
+        `🎭 *${characterName}* is now active in this ${chatType}!\n\nJust send messages and they'll respond in character.\n\n_Use \`/char stop\` to end._`,
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+});
+
+// Build character selection keyboard
+function buildCharacterKeyboard(savedChars, activeChar) {
+  const keyboard = new InlineKeyboard();
+  
+  // Add saved character buttons (2 per row)
+  for (let i = 0; i < savedChars.length; i += 2) {
+    const char1 = savedChars[i];
+    const isActive1 = activeChar?.name?.toLowerCase() === char1.toLowerCase();
+    keyboard.text(`${isActive1 ? "✅ " : "🎭 "} ${char1}`, `char_activate:${char1}`);
+    
+    if (savedChars[i + 1]) {
+      const char2 = savedChars[i + 1];
+      const isActive2 = activeChar?.name?.toLowerCase() === char2.toLowerCase();
+      keyboard.text(`${isActive2 ? "✅ " : "🎭 "} ${char2}`, `char_activate:${char2}`);
+    }
+    keyboard.row();
+  }
+  
+  // Add stop button if character is active
+  if (activeChar) {
+    keyboard.text("⏹ Stop Character", "char_stop");
+  }
+  
+  return keyboard;
+}
+
+// Character callback handlers
+bot.callbackQuery(/^char_activate:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+  if (!userId || !chatId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const characterName = ctx.callbackQuery.data.split(":")[1];
+  setActiveCharacter(userId, chatId, characterName);
+  
+  await ctx.answerCallbackQuery({ text: `🎭 ${characterName} activated!` });
+  
+  const savedChars = getSavedCharacters(userId);
+  const activeChar = getActiveCharacter(userId, chatId);
+  
+  try {
+    await ctx.editMessageText(
+      `🎭 *${characterName}* is now active!\n\nJust send messages and they'll respond in character.\n\n_Use \`/char stop\` to end._`,
+      { parse_mode: "Markdown", reply_markup: buildCharacterKeyboard(savedChars, activeChar) }
+    );
+  } catch (e) {
+    // Message might be the same
+  }
+});
+
+bot.callbackQuery("char_stop", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+  if (!userId || !chatId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const activeChar = getActiveCharacter(userId, chatId);
+  if (!activeChar) {
+    return ctx.answerCallbackQuery({ text: "No active character!", show_alert: true });
+  }
+  
+  clearActiveCharacter(userId, chatId);
+  
+  await ctx.answerCallbackQuery({ text: "Character stopped!" });
+  
+  const savedChars = getSavedCharacters(userId);
+  
+  try {
+    await ctx.editMessageText(
+      `⏹ *${activeChar.name}* has left the chat.\n\n_Normal AI responses resumed._`,
+      { parse_mode: "Markdown", reply_markup: buildCharacterKeyboard(savedChars, null) }
+    );
+  } catch (e) {
+    // Message might be the same
+  }
+});
+
+bot.callbackQuery("open_char", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  await ctx.answerCallbackQuery();
+  
+  const activeChar = getActiveCharacter(userId, chatId);
+  const savedChars = getSavedCharacters(userId);
+  
+  const statusText = activeChar 
+    ? `🎭 *Active Character:* ${activeChar.name}\n\n`
+    : "🎭 *No active character*\n\n";
+  
+  const savedList = savedChars.length > 0
+    ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
+    : "";
+  
+  const helpText = [
+    statusText,
+    savedList,
+    "*Commands:*",
+    "• `/char yoda` - Start as Yoda",
+    "• `/char save yoda` - Save character",
+    "• `/char list` - Show saved",
+    "• `/char stop` - Stop character mode",
+  ].join("\n");
+  
+  await ctx.reply(helpText, { 
+    parse_mode: "Markdown",
+    reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+  });
+});
+
 // Partner callback handlers - Setup field buttons
 const pendingPartnerInput = new Map(); // userId -> { field, messageId }
 
@@ -2111,9 +2493,13 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• Works in DM and inline (`p:`)",
     "_Use /partner to set up_",
     "",
-    "🎭 *Persona Mode*",
-    "Set a personality for all DM responses",
-    "_Use /persona [personality]_",
+    "🎭 *Character Mode*",
+    "Quick roleplay as existing characters!",
+    "• `/char yoda` - Start as Yoda",
+    "• `/char save yoda` - Save to favorites",
+    "• `/char list` - View saved characters",
+    "• `/char stop` - End character mode",
+    "_Works in DM and group chats_",
     "",
     "📊 *Stats & History*",
     "• /stats - Your usage statistics",
@@ -3113,12 +3499,18 @@ bot.on("message:text", async (ctx) => {
     const partner = getPartner(u.id);
     const isPartnerMode = partner?.active && partner?.name;
     
+    // Check if character mode is active
+    const activeChar = getActiveCharacter(u.id, chat.id);
+    const isCharacterMode = activeChar?.name;
+    
     let systemPrompt;
     let out;
+    let modeLabel = "";
     
     if (isPartnerMode) {
       // Partner mode - use partner's persona and separate chat history
       systemPrompt = buildPartnerSystemPrompt(partner);
+      modeLabel = `🤝🏻 *${partner.name}*\n\n`;
       
       // Add user message to partner history
       addPartnerMessage(u.id, "user", text);
@@ -3139,6 +3531,31 @@ bot.on("message:text", async (ctx) => {
       
       // Add AI response to partner history
       addPartnerMessage(u.id, "assistant", out);
+      
+    } else if (isCharacterMode) {
+      // Character mode - roleplay as existing character
+      systemPrompt = buildCharacterSystemPrompt(activeChar.name);
+      modeLabel = `🎭 *${activeChar.name}*\n\n`;
+      
+      // Add user message to character history
+      addCharacterMessage(u.id, chat.id, "user", text);
+      const charHistory = getCharacterChatHistory(u.id, chat.id);
+      
+      // Build messages array with character history
+      const messages = [
+        { role: "system", content: systemPrompt },
+        ...charHistory.map(m => ({ role: m.role, content: m.content })),
+      ];
+      
+      out = await llmText({
+        model,
+        messages,
+        temperature: 0.9,
+        max_tokens: 500,
+      });
+      
+      // Add AI response to character history
+      addCharacterMessage(u.id, chat.id, "assistant", out);
       
     } else {
       // Normal mode - use persona or default
@@ -3175,9 +3592,8 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    const partnerLabel = isPartnerMode ? `🤝🏻 *${partner.name}*\n\n` : "";
     const outputText = (out && out.trim()) ? out.slice(0, 3600) : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
-    const response = `${partnerLabel}${outputText}\n\n_⚡ ${elapsed}s • ${model}_`;
+    const response = `${modeLabel}${outputText}\n\n_⚡ ${elapsed}s • ${model}_`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
@@ -3352,6 +3768,22 @@ bot.on("inline_query", async (ctx) => {
           parse_mode: "Markdown"
         },
         reply_markup: settingsMainKeyboard(userId),
+      },
+      {
+        type: "article",
+        id: `help_menu_${sessionKey}`,
+        title: "❓ Help",
+        description: "Features • How to use • Support",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: { 
+          message_text: buildInlineHelpCard(),
+          parse_mode: "Markdown"
+        },
+        reply_markup: new InlineKeyboard()
+          .url("💬 Support: @supqts", "https://t.me/supqts")
+          .url("⭐ @SoulStarXd", "https://t.me/SoulStarXd")
+          .row()
+          .switchInlineCurrent("← Back to Menu", ""),
       },
     ];
 
@@ -3660,6 +4092,53 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     }
+  }
+  
+  // "as " - Show saved characters when user types just "as " or "as"
+  if (qLower === "as" || qLower === "as ") {
+    const savedChars = getSavedCharacters(userId);
+    
+    const results = [];
+    
+    // Add saved characters as quick options
+    if (savedChars.length > 0) {
+      savedChars.forEach((char, i) => {
+        results.push({
+          type: "article",
+          id: `as_saved_${i}_${sessionKey}`,
+          title: `🎭 ${char}`,
+          description: `Tap to chat as ${char}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent(`🎭 ${char}`, `as ${char}: `),
+        });
+      });
+    }
+    
+    // Add typing hint
+    results.push({
+      type: "article",
+      id: `as_typing_hint_${sessionKey}`,
+      title: "✍️ Type character name...",
+      description: "Example: as yoda: hello there",
+      thumbnail_url: "https://img.icons8.com/fluency/96/edit.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+    });
+    
+    // Add save hint if no saved characters
+    if (savedChars.length === 0) {
+      results.push({
+        type: "article",
+        id: `as_save_hint_${sessionKey}`,
+        title: "💾 No saved characters",
+        description: "Use /char save [name] to save favorites",
+        thumbnail_url: "https://img.icons8.com/fluency/96/bookmark.png",
+        input_message_content: { message_text: "_" },
+      });
+    }
+    
+    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
   }
   
   // "as:" - Character/Persona mode (as pirate:, as shakespeare:, etc.)
