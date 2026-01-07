@@ -3409,6 +3409,21 @@ bot.command("ban", async (ctx) => {
   let msg = `🚫 User ${targetIdStr} has been banned.`;
   if (reason) msg += ` Reason: ${reason}`;
   await ctx.reply(msg);
+
+  // Notify the banned user (if they have started the bot)
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const contactLine = "\n\nIf you believe this is a mistake, you can contact support at @supqts or @SoulStarXd.";
+    const bannedMsg = [
+      "🚫 *You have been banned from using StarzAI.*",
+      reasonLine,
+      contactLine,
+    ].join("");
+
+    await bot.api.sendMessage(targetIdStr, bannedMsg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore send error
+  }
 });
 
 bot.command("unban", async (ctx) => {
@@ -3432,6 +3447,18 @@ bot.command("unban", async (ctx) => {
   saveUsers();
 
   await ctx.reply(`✅ User ${targetIdStr} has been unbanned.`);
+
+  // Notify the unbanned user
+  try {
+    const unbannedMsg = [
+      "✅ *You have been unbanned on StarzAI.*",
+      "\n\nYou can use the bot again. Please follow the rules to avoid future bans."
+    ].join("");
+
+    await bot.api.sendMessage(targetIdStr, unbannedMsg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // User might not have started the bot; ignore send error
+  }
 });
 
 // =====================
