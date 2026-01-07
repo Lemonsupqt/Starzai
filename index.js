@@ -4415,18 +4415,70 @@ bot.on("inline_query", async (ctx) => {
     const character = asMatch[1].trim();
     const question = asMatch[2].trim();
     
+    // If no question, generate a character intro message
     if (!question) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `as_typing_${sessionKey}`,
-          title: `🎭 ${character} Mode`,
-          description: `Type your question for ${character} to answer`,
-          thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
-          input_message_content: { message_text: "_" },
-          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
-        },
-      ], { cache_time: 0, is_personal: true });
+      try {
+        // Generate character intro
+        const introOut = await llmText({
+          model,
+          messages: [
+            { role: "system", content: `You are ${character}. Introduce yourself in 1-2 sentences in your unique style, personality, and speech patterns. Be creative and stay completely in character. Don't say "I am [name]" directly - show your personality through how you speak.` },
+            { role: "user", content: "Introduce yourself briefly." },
+          ],
+          temperature: 0.9,
+          max_tokens: 150,
+          timeout: 8000,
+          retries: 1,
+        });
+        
+        const intro = (introOut || `*${character} appears*`).slice(0, 500);
+        const introKey = makeId(6);
+        
+        // Cache the intro for replies
+        inlineCache.set(introKey, {
+          prompt: "[Character Introduction]",
+          answer: intro,
+          userId: String(userId),
+          model,
+          character,
+          isIntro: true,
+          createdAt: Date.now(),
+        });
+        setTimeout(() => inlineCache.delete(introKey), 30 * 60 * 1000);
+        
+        const formattedIntro = convertToTelegramHTML(intro);
+        const escapedCharacter = escapeHTML(character);
+        
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `char_intro_${introKey}`,
+            title: `🎭 Meet ${character}`,
+            description: intro.slice(0, 80),
+            thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+            input_message_content: {
+              message_text: `🎭 <b>${escapedCharacter}</b>\n\n${formattedIntro}\n\n<i>Reply to continue chatting! • via StarzAI</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .text("🔄 New Intro", `char_new_intro:${character}`)
+              .switchInlineCurrent(`✉️ Ask ${character.slice(0, 10)}`, `as ${character}: `),
+          },
+        ], { cache_time: 0, is_personal: true });
+      } catch (e) {
+        // Fallback if intro generation fails
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `as_typing_${sessionKey}`,
+            title: `🎭 Chat as ${character}`,
+            description: `Type your message after the colon`,
+            thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+            input_message_content: { message_text: `🎭 <b>${escapeHTML(character)}</b>\n\n<i>*${escapeHTML(character)} is ready to chat*</i>\n\n<i>Reply to start the conversation!</i>`, parse_mode: "HTML" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent(`✉️ Ask ${character.slice(0, 10)}`, `as ${character}: `),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
     }
     
     try {
@@ -6019,6 +6071,22 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
   
+  // Handle Character intro - char_intro_KEY
+  if (resultId.startsWith("char_intro_")) {
+    const charKey = resultId.replace("char_intro_", "");
+    const cached = inlineCache.get(charKey);
+    
+    if (cached && cached.character && inlineMessageId) {
+      // Store the inline message ID so we can handle replies
+      inlineCache.set(`char_msg_${charKey}`, {
+        ...cached,
+        inlineMessageId,
+      });
+      console.log(`Stored character intro inlineMessageId for key=${charKey}, character=${cached.character}`);
+    }
+    return;
+  }
+  
   // Handle Research deferred response - r_start_KEY
   if (resultId.startsWith("r_start_")) {
     const rKey = resultId.replace("r_start_", "");
@@ -6180,6 +6248,59 @@ async function doInlineTransform(ctx, mode) {
 bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"));
 bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
 bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
+
+// Character new intro button
+bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
+  const character = ctx.match[1];
+  const userId = ctx.from?.id;
+  const model = ensureChosenModelValid(userId);
+  const shortModel = model.split("/").pop();
+  
+  await ctx.answerCallbackQuery({ text: `Generating new ${character} intro...` });
+  
+  try {
+    const introOut = await llmText({
+      model,
+      messages: [
+        { role: "system", content: `You are ${character}. Introduce yourself in 1-2 sentences in your unique style, personality, and speech patterns. Be creative and stay completely in character. Don't say "I am [name]" directly - show your personality through how you speak. Make this introduction different from previous ones.` },
+        { role: "user", content: "Introduce yourself briefly." },
+      ],
+      temperature: 1.0,
+      max_tokens: 150,
+    });
+    
+    const intro = (introOut || `*${character} appears*`).slice(0, 500);
+    const newKey = makeId(6);
+    
+    // Cache the new intro
+    inlineCache.set(newKey, {
+      prompt: "[Character Introduction]",
+      answer: intro,
+      userId: String(userId),
+      model,
+      character,
+      isIntro: true,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+    
+    const formattedIntro = convertToTelegramHTML(intro);
+    const escapedCharacter = escapeHTML(character);
+    
+    await ctx.editMessageText(
+      `🎭 <b>${escapedCharacter}</b>\n\n${formattedIntro}\n\n<i>Reply to continue chatting! • via StarzAI</i>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("🔄 New Intro", `char_new_intro:${character}`)
+          .switchInlineCurrent(`✉️ Ask ${character.slice(0, 10)}`, `as ${character}: `),
+      }
+    );
+  } catch (e) {
+    console.error("Failed to generate new intro:", e);
+    await ctx.answerCallbackQuery({ text: "Failed to generate intro. Try again!", show_alert: true });
+  }
+});
 
 // =====================
 // INLINE CACHE TTL CLEANUP
