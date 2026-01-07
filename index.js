@@ -4004,8 +4004,18 @@ bot.on("inline_query", async (ctx) => {
     console.log("Showing main menu (empty query)");
     const shortModel = model.split("/").pop();
     
-    // WebApp URL for the mini-app
-    const webappUrl = PUBLIC_URL ? `${PUBLIC_URL.replace(/\/$/, "")}/webapp` : null;
+    // WebApp URL for the mini-app - must be HTTPS
+    let webappUrl = null;
+    if (PUBLIC_URL) {
+      let baseUrl = PUBLIC_URL.replace(/\/$/, "");
+      // Ensure https:// prefix
+      if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
+        baseUrl = "https://" + baseUrl;
+      } else if (baseUrl.startsWith("http://")) {
+        baseUrl = baseUrl.replace("http://", "https://");
+      }
+      webappUrl = `${baseUrl}/webapp`;
+    }
     
     // Each mode is a separate floating option - tap to fill prefix in keyboard!
     const results = [
