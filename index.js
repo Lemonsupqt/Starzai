@@ -2521,7 +2521,7 @@ bot.command("info", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
   
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 1) return ctx.reply("Usage: /info <userId>");
+  if (args.length < 1) return ctx.reply("Usage: /info &lt;userId&gt;");
   
   const [targetId] = args;
   const user = getUserRecord(targetId);
@@ -2533,31 +2533,32 @@ bot.command("info", async (ctx) => {
   const stats = user.stats || {};
   const inlineSession = inlineSessionsDb.sessions[targetId];
   
+  // Use HTML to avoid Markdown parsing issues with usernames
   const lines = [
-    `👤 *User Info*`,
+    `👤 <b>User Info</b>`,
     ``,
-    `🆔 ID: \`${targetId}\``,
-    `📛 Username: ${user.username ? "@" + user.username : "_not set_"}`,
-    `👋 Name: ${user.firstName || "_not set_"}`,
+    `🆔 ID: <code>${targetId}</code>`,
+    `📛 Username: ${user.username ? "@" + escapeHTML(user.username) : "<i>not set</i>"}`,
+    `👋 Name: ${escapeHTML(user.firstName) || "<i>not set</i>"}`,
     ``,
-    `🎫 *Tier:* ${user.tier?.toUpperCase() || "FREE"}`,
-    `🤖 *Current Model:* \`${user.model || "_default_"}\``,
+    `🎫 <b>Tier:</b> ${user.tier?.toUpperCase() || "FREE"}`,
+    `🤖 <b>Model:</b> <code>${escapeHTML(user.model) || "default"}</code>`,
     ``,
-    `📊 *Usage Stats*`,
-    `• Total messages: ${stats.totalMessages || 0}`,
+    `📊 <b>Usage Stats</b>`,
+    `• Messages: ${stats.totalMessages || 0}`,
     `• Inline queries: ${stats.totalInlineQueries || 0}`,
-    `• Last model used: ${stats.lastModel || "_unknown_"}`,
-    `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "_unknown_"}`,
+    `• Last model: ${escapeHTML(stats.lastModel) || "unknown"}`,
+    `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "unknown"}`,
     ``,
-    `💬 *Inline Session*`,
-    `• History length: ${inlineSession?.history?.length || 0} messages`,
-    `• Session model: ${inlineSession?.model || "_none_"}`,
+    `💬 <b>Inline Session</b>`,
+    `• History: ${inlineSession?.history?.length || 0} messages`,
+    `• Model: ${escapeHTML(inlineSession?.model) || "none"}`,
     ``,
-    `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "_unknown_"}`,
-    `🔑 Allowed models: ${allModelsForTier(user.tier || "free").length} (${user.tier || "free"} tier)`,
+    `📅 Registered: ${user.registeredAt ? new Date(user.registeredAt).toLocaleString() : "unknown"}`,
+    `🔑 Models: ${allModelsForTier(user.tier || "free").length} (${user.tier || "free"} tier)`,
   ];
   
-  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 });
 
 bot.command("grant", async (ctx) => {
