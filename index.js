@@ -4921,19 +4921,10 @@ bot.on("message:animation", async (ctx) => {
   const effectiveCharacter = replyCharacter || activeChar?.name;
   const isCharacterMode = !!effectiveCharacter;
   
+  let statusMsg = null;
+  let tempDir = null;
+  
   try {
-    // Use animation thumbnail
-    let b64 = null;
-    if (animation.thumb) {
-      const thumbFile = await ctx.api.getFile(animation.thumb.file_id);
-      const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
-      b64 = await telegramFileToBase64(thumbUrl);
-    }
-    
-    if (!b64) {
-      return ctx.reply("⚠️ Couldn't get GIF thumbnail.");
-    }
-    
     let modeLabel = "";
     let statusText = `🎬 Analyzing GIF...`;
     
@@ -4942,7 +4933,51 @@ bot.on("message:animation", async (ctx) => {
       statusText = `🎭 ${escapeHTML(effectiveCharacter)} is looking at the GIF...`;
     }
     
-    const statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
+    statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
+    
+    // Download the actual GIF file
+    const file = await ctx.api.getFile(animation.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    
+    // Try to extract frames using ffmpeg
+    let frames = [];
+    let duration = animation.duration || 3;
+    
+    try {
+      const { tempDir: td, videoPath } = await downloadTelegramVideo(fileUrl);
+      tempDir = td;
+      const result = await extractVideoFrames(videoPath, tempDir, 4);
+      frames = result.frames;
+      if (result.duration > 0) duration = result.duration;
+    } catch (dlErr) {
+      console.log("[GIF] Frame extraction failed, trying thumbnail:", dlErr.message);
+    }
+    
+    // Fallback to thumbnail if frame extraction failed
+    if (frames.length === 0 && animation.thumb) {
+      try {
+        const thumbFile = await ctx.api.getFile(animation.thumb.file_id);
+        const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
+        const thumbB64 = await telegramFileToBase64(thumbUrl);
+        frames = [{ timestamp: "0.0", base64: thumbB64 }];
+      } catch (thumbErr) {
+        console.error("[GIF] Thumbnail fallback failed:", thumbErr.message);
+      }
+    }
+    
+    if (frames.length === 0) {
+      return ctx.api.editMessageText(chat.id, statusMsg.message_id, "⚠️ Couldn't extract frames from GIF.", { parse_mode: "HTML" });
+    }
+    
+    // Build image contents for AI
+    const imageContents = frames.map(f => ({
+      type: "image_url",
+      image_url: { url: `data:image/jpeg;base64,${f.base64}` }
+    }));
+    
+    // Context-aware prompt
+    const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
+    let userPrompt = caption || "What's in this GIF? Describe what's happening.";
     
     let out;
     if (isCharacterMode) {
@@ -4955,7 +4990,7 @@ bot.on("message:animation", async (ctx) => {
             role: "user",
             content: [
               { type: "text", text: caption || "React to this GIF" },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }
+              ...imageContents
             ]
           }
         ],
@@ -4963,12 +4998,7 @@ bot.on("message:animation", async (ctx) => {
         max_tokens: 500,
       });
     } else {
-      // Context-aware prompt for GIFs
-      const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
-      let gifPrompt = caption || "What's in this GIF? Describe what's happening.";
-      
-      // Use llmText for better context handling
-      let gifSystemPrompt = "You are analyzing a GIF/animation. ";
+      let gifSystemPrompt = `You are analyzing a ${duration}s GIF/animation through ${frames.length} frame(s). `;
       if (hasQuestion) {
         gifSystemPrompt += "Answer the user's specific question directly and concisely.";
       } else if (caption) {
@@ -4984,8 +5014,8 @@ bot.on("message:animation", async (ctx) => {
           {
             role: "user",
             content: [
-              { type: "text", text: gifPrompt },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }
+              { type: "text", text: userPrompt },
+              ...imageContents
             ]
           }
         ],
@@ -5002,7 +5032,14 @@ bot.on("message:animation", async (ctx) => {
     
   } catch (e) {
     console.error("Animation error:", e.message);
-    await ctx.reply(`❌ Couldn't process GIF: ${escapeHTML(e.message?.slice(0, 50) || "Unknown error")}`, { parse_mode: "HTML" });
+    const errMsg = `❌ Couldn't process GIF: ${escapeHTML(e.message?.slice(0, 50) || "Unknown error")}`;
+    if (statusMsg) {
+      await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" }).catch(() => {});
+    } else {
+      await ctx.reply(errMsg, { parse_mode: "HTML" });
+    }
+  } finally {
+    if (tempDir) cleanupTempDir(tempDir);
   }
 });
 
