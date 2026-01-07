@@ -2657,17 +2657,17 @@ bot.command("feedback", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
 
-  pendingFeedback.set(String(u.id), { createdAt: Date.now() });
+  pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "command" });
   await ctx.reply(
-    "💡 *Feedback Mode*\n\n" +
-      "Please send *one message* with your feedback.\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+    "💡 *Feedback Mode*\\n\\n" +
+      "Please send *one message* with your feedback.\\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
     { parse_mode: "Markdown" }
   );
 });
 
-// Feedback button in main menu
+// Feedback button in main menu or moderation messages
 bot.callbackQuery("menu_feedback", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
@@ -2694,13 +2694,26 @@ bot.callbackQuery("menu_feedback", async (ctx) => {
     return;
   }
 
-  pendingFeedback.set(String(u.id), { createdAt: Date.now() });
+  // Infer context from the message text (ban/mute/softban/warn/general)
+  const msgText = ctx.callbackQuery.message?.text || "";
+  let source = "general";
+  if (msgText.includes("You have been banned from using StarzAI")) {
+    source = "ban";
+  } else if (msgText.includes("You have been muted on StarzAI")) {
+    source = "mute";
+  } else if (msgText.includes("temporary soft ban on StarzAI")) {
+    source = "softban";
+  } else if (msgText.includes("You have received a warning on StarzAI")) {
+    source = "warn";
+  }
+
+  pendingFeedback.set(String(u.id), { createdAt: Date.now(), source });
 
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    "💡 *Feedback Mode*\n\n" +
-      "Please send *one message* with your feedback.\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+    "💡 *Feedback Mode*\\n\\n" +
+      "Please send *one message* with your feedback.\\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
     { parse_mode: "Markdown" }
   );
@@ -3172,7 +3185,8 @@ bot.callbackQuery("open_char", async (ctx) => {
 
 // Partner callback handlers - Setup field buttons
 const pendingPartnerInput = new Map(); // userId -> { field, messageId }
-const pendingFeedback = new Map(); // userId -> { createdAt }
+// pendingFeedback: userId -> { createdAt, source }
+const pendingFeedback = new Map();
 
 bot.callbackQuery("partner_set_name", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -5721,14 +5735,45 @@ bot.on("message:text", async (ctx) => {
     }
 
     const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const rec = getUserRecord(u.id);
+    const tier = (rec?.tier || "free").toUpperCase();
+    const banned = rec?.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec?.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec?.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec?.username || u.username || "";
+    const name = rec?.firstName || rec?.first_name || u.first_name || u.firstName || "";
+
     const metaLines = [
       `📬 *New Feedback*`,
       ``,
       `🆔 *Feedback ID:* \`${feedbackId}\``,
       `👤 *User ID:* \`${u.id}\``,
-      `📛 *Username:* ${u.username ? "@" + u.username : "_none_"}`,
-      `👋 *Name:* ${u.first_name || u.firstName || "_none_"}`,
-      `🎫 *Tier:* ${(getUserRecord(u.id)?.tier || "free").toUpperCase()}`,
+      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
     ].join("\n");
 
     try {
@@ -6042,16 +6087,46 @@ bot.on("message:photo", async (ctx) => {
       return;
     }
 
-    const user = getUserRecord(u.id) || u;
+    const rec = getUserRecord(u.id) || {};
     const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const tier = (rec.tier || "free").toUpperCase();
+    const banned = rec.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec.username || u.username || "";
+    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
     const metaLines = [
       `📬 *New Feedback*`,
       ``,
       `🆔 *Feedback ID:* \`${feedbackId}\``,
       `👤 *User ID:* \`${u.id}\``,
-      `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
-      `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
-      `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
+      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
       ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
     ]
       .filter(Boolean)
@@ -6236,16 +6311,46 @@ bot.on("message:video", async (ctx) => {
       return;
     }
 
-    const user = getUserRecord(u.id) || u;
+    const rec = getUserRecord(u.id) || {};
     const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const tier = (rec.tier || "free").toUpperCase();
+    const banned = rec.banned ? "YES" : "no";
+    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+    let muteInfo = "none";
+    if (rec.mute) {
+      const m = rec.mute;
+      const scope = m.scope || "all";
+      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+      muteInfo = `scope=${scope}, until=${untilStr}`;
+    }
+
+    const sourceTag = pendingFb.source || "general";
+    const sourceMap = {
+      general: "General (menu)",
+      command: "/feedback command",
+      ban: "After ban notice",
+      mute: "After mute notice",
+      softban: "After softban notice",
+      warn: "After warning notice",
+    };
+    const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+    const username = rec.username || u.username || "";
+    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
     const metaLines = [
       `📬 *New Feedback*`,
       ``,
       `🆔 *Feedback ID:* \`${feedbackId}\``,
       `👤 *User ID:* \`${u.id}\``,
-      `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
-      `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
-      `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
+      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+      `🚫 *Banned:* ${banned}`,
+      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+      `⚠️ *Warnings:* ${warningsCount}`,
+      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
       ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
     ]
       .filter(Boolean)
