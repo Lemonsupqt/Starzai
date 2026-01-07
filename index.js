@@ -4,6 +4,9 @@ import OpenAI from "openai";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { exec } from "child_process";
+import { promisify } from "util";
+const execAsync = promisify(exec);
 
 // =====================
 // ENV
@@ -1163,6 +1166,105 @@ async function telegramFileToBase64(fileUrl) {
   const resp = await fetch(fileUrl);
   const buf = await resp.arrayBuffer();
   return Buffer.from(buf).toString("base64");
+}
+
+// =====================
+// VIDEO PROCESSING UTILITIES
+// =====================
+
+// Download video from Telegram and save to temp file
+async function downloadTelegramVideo(fileUrl) {
+  const tempDir = `/tmp/starzai_video_${Date.now()}`;
+  await execAsync(`mkdir -p ${tempDir}`);
+  const videoPath = `${tempDir}/video.mp4`;
+  
+  const resp = await fetch(fileUrl);
+  const buf = await resp.arrayBuffer();
+  fs.writeFileSync(videoPath, Buffer.from(buf));
+  
+  return { tempDir, videoPath };
+}
+
+// Extract key frames from video (5 frames evenly distributed)
+async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
+  try {
+    // Get video duration
+    const { stdout: durationOut } = await execAsync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
+    );
+    const duration = parseFloat(durationOut.trim()) || 10;
+    
+    // Extract frames at intervals
+    const frames = [];
+    const interval = duration / (numFrames + 1);
+    
+    for (let i = 1; i <= numFrames; i++) {
+      const timestamp = interval * i;
+      const framePath = `${tempDir}/frame_${i}.jpg`;
+      
+      await execAsync(
+        `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}" -y 2>/dev/null`
+      );
+      
+      // Read frame as base64
+      if (fs.existsSync(framePath)) {
+        const frameData = fs.readFileSync(framePath);
+        frames.push({
+          timestamp: timestamp.toFixed(1),
+          base64: frameData.toString("base64")
+        });
+      }
+    }
+    
+    return { frames, duration };
+  } catch (e) {
+    console.error("Frame extraction error:", e.message);
+    return { frames: [], duration: 0 };
+  }
+}
+
+// Extract and transcribe audio from video
+async function extractAndTranscribeAudio(videoPath, tempDir) {
+  try {
+    const audioPath = `${tempDir}/audio.mp3`;
+    
+    // Extract audio
+    await execAsync(
+      `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -q:a 4 "${audioPath}" -y 2>/dev/null`
+    );
+    
+    if (!fs.existsSync(audioPath)) {
+      return { transcript: null, hasAudio: false };
+    }
+    
+    // Check if audio file has content (not silent)
+    const stats = fs.statSync(audioPath);
+    if (stats.size < 1000) {
+      return { transcript: null, hasAudio: false };
+    }
+    
+    // Use manus-speech-to-text for transcription
+    try {
+      const { stdout } = await execAsync(`manus-speech-to-text "${audioPath}"`, { timeout: 60000 });
+      const transcript = stdout.trim();
+      return { transcript: transcript || null, hasAudio: true };
+    } catch (e) {
+      console.error("Transcription error:", e.message);
+      return { transcript: null, hasAudio: true };
+    }
+  } catch (e) {
+    console.error("Audio extraction error:", e.message);
+    return { transcript: null, hasAudio: false };
+  }
+}
+
+// Clean up temp directory
+async function cleanupTempDir(tempDir) {
+  try {
+    await execAsync(`rm -rf "${tempDir}"`);
+  } catch (e) {
+    console.error("Cleanup error:", e.message);
+  }
 }
 
 // =====================
@@ -4521,6 +4623,160 @@ bot.on("message:photo", async (ctx) => {
       await ctx.reply(errMsg, { parse_mode: "HTML" });
     }
   }
+});
+
+// =====================
+// VIDEO SUMMARIZATION
+// =====================
+bot.on("message:video", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+
+  const chat = ctx.chat;
+  const u = ctx.from;
+  if (!u?.id) return;
+  if (chat.type !== "private") return; // Videos only in DM for now (processing intensive)
+
+  if (!getUserRecord(u.id)) registerUser(u);
+
+  const model = ensureChosenModelValid(u.id);
+  const startTime = Date.now();
+  let statusMsg = null;
+  let tempDir = null;
+
+  try {
+    // Check video size (limit to 20MB)
+    const video = ctx.message.video;
+    if (video.file_size > 20 * 1024 * 1024) {
+      return ctx.reply("⚠️ Video too large! Please send videos under 20MB.");
+    }
+
+    statusMsg = await ctx.reply(`🎬 <b>Processing video...</b>\n\n⏳ Downloading...`, { parse_mode: "HTML" });
+
+    // Keep typing indicator active
+    const typingInterval = setInterval(() => {
+      ctx.replyWithChatAction("typing").catch(() => {});
+    }, 4000);
+    await ctx.replyWithChatAction("typing");
+
+    // Download video
+    const file = await ctx.api.getFile(video.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const { tempDir: td, videoPath } = await downloadTelegramVideo(fileUrl);
+    tempDir = td;
+
+    // Update status
+    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
+      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n⏳ Extracting frames...`, 
+      { parse_mode: "HTML" }
+    ).catch(() => {});
+
+    // Extract frames
+    const { frames, duration } = await extractVideoFrames(videoPath, tempDir, 5);
+
+    // Update status
+    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
+      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ Extracted ${frames.length} frames\n⏳ Transcribing audio...`, 
+      { parse_mode: "HTML" }
+    ).catch(() => {});
+
+    // Extract and transcribe audio
+    const { transcript, hasAudio } = await extractAndTranscribeAudio(videoPath, tempDir);
+
+    // Update status
+    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
+      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ Extracted ${frames.length} frames\n✅ Audio ${hasAudio ? (transcript ? "transcribed" : "detected (no speech)") : "not found"}\n⏳ Analyzing with AI...`, 
+      { parse_mode: "HTML" }
+    ).catch(() => {});
+
+    // Build prompt for AI
+    const caption = (ctx.message.caption || "").trim();
+    let userPrompt = caption || "Summarize this video. What's happening?";
+    
+    // Add transcript context if available
+    if (transcript) {
+      userPrompt += `\n\n[Audio transcript]: ${transcript.slice(0, 1500)}`;
+    }
+
+    // Build messages with multiple frames
+    const imageContents = frames.map((f, i) => ({
+      type: "image_url",
+      image_url: { url: `data:image/jpeg;base64,${f.base64}` }
+    }));
+
+    const messages = [
+      { 
+        role: "system", 
+        content: `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} key frames extracted at regular intervals. ${transcript ? "An audio transcript is also provided." : ""} Provide a comprehensive summary of what's happening in the video.`
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userPrompt },
+          ...imageContents
+        ]
+      }
+    ];
+
+    const out = await llmText({
+      model,
+      messages,
+      temperature: 0.7,
+      max_tokens: 800,
+    });
+
+    clearInterval(typingInterval);
+
+    // Track usage
+    trackUsage(u.id, "message");
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    // Build response
+    let response = `🎬 <b>Video Summary</b>\n`;
+    response += `<i>${duration.toFixed(1)}s • ${frames.length} frames analyzed</i>\n`;
+    if (hasAudio) {
+      response += `<i>🎙️ Audio: ${transcript ? "transcribed" : "no speech detected"}</i>\n`;
+    }
+    response += `\n${convertToTelegramHTML(out.slice(0, 3500))}`;
+    response += `\n\n<i>⏱️ ${elapsed}s • ${escapeHTML(model)}</i>`;
+
+    await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
+
+  } catch (e) {
+    console.error("Video processing error:", e.message);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    
+    const errMsg = `❌ Couldn't process video after ${elapsed}s.\n\nError: ${escapeHTML(e.message?.slice(0, 100) || "Unknown error")}`;
+    if (statusMsg) {
+      try {
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(errMsg, { parse_mode: "HTML" });
+      }
+    } else {
+      await ctx.reply(errMsg, { parse_mode: "HTML" });
+    }
+  } finally {
+    // Clean up temp files
+    if (tempDir) {
+      cleanupTempDir(tempDir);
+    }
+  }
+});
+
+// Video notes (round videos)
+bot.on("message:video_note", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (ctx.chat.type !== "private") return;
+  
+  // Treat video notes same as regular videos
+  ctx.message.video = {
+    file_id: ctx.message.video_note.file_id,
+    file_size: ctx.message.video_note.file_size || 0,
+  };
+  
+  // Re-emit as video (hacky but works)
+  await ctx.reply("📹 Processing video note... This may take a moment.");
 });
 
 // =====================
