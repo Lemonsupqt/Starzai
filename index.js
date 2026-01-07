@@ -3430,9 +3430,10 @@ bot.command("unban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 1) return ctx.reply("Usage: /unban <userId>");
+  if (args.length < 1) return ctx.reply("Usage: /unban <userId> [reason]");
 
-  const [targetId] = args;
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
   const targetIdStr = String(targetId);
   const rec = ensureUser(targetIdStr);
 
@@ -3446,14 +3447,16 @@ bot.command("unban", async (ctx) => {
   delete rec.banReason;
   saveUsers();
 
-  await ctx.reply(`✅ User ${targetIdStr} has been unbanned.`);
+  let ownerMsg = `✅ User ${targetIdStr} has been unbanned.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
 
   // Notify the unbanned user
   try {
-    const unbannedMsg = [
-      "✅ *You have been unbanned on StarzAI.*",
-      "\n\nYou can use the bot again. Please follow the rules to avoid future bans."
-    ].join("");
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const baseLine = "✅ *You have been unbanned on StarzAI.*";
+    const tailLine = "\n\nYou can use the bot again. Please follow the rules to avoid future bans.";
+    const unbannedMsg = [baseLine, reasonLine, tailLine].join("");
 
     await bot.api.sendMessage(targetIdStr, unbannedMsg, { parse_mode: "Markdown" });
   } catch (e) {
