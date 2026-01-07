@@ -2471,6 +2471,28 @@ bot.command("start", async (ctx) => {
     activateGroup(ctx.chat.id);
   }
   
+  // Check for deep link parameter
+  const startPayload = ctx.message?.text?.split(" ")[1];
+  
+  // Handle feedback deep link
+  if (startPayload === "feedback" && ctx.chat.type === "private") {
+    if (!FEEDBACK_CHAT_ID) {
+      return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+    }
+    
+    const u = ctx.from;
+    if (!u?.id) return;
+    
+    pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
+    return ctx.reply(
+      "💡 *Feedback Mode*\n\n" +
+        "Please send *one message* with your feedback.\n" +
+        "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+        "_You have 2 minutes. After that, feedback mode will expire._",
+      { parse_mode: "Markdown" }
+    );
+  }
+  
   await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
 });
 
@@ -6873,7 +6895,7 @@ bot.on("inline_query", async (ctx) => {
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
-          .url("💬 Feedback", "https://t.me/starztechbot")
+          .url("💬 Feedback", "https://t.me/starztechbot?start=feedback")
           .row()
           .switchInlineCurrent("← Back", ""),
       },
