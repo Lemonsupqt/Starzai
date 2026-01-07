@@ -1129,6 +1129,119 @@ async function telegramFileToBase64(fileUrl) {
 }
 
 // =====================
+// MARKDOWN CONVERTER - AI output to Telegram HTML format
+// =====================
+// AI outputs standard Markdown, but Telegram uses different syntax.
+// We convert to HTML format which is most reliable and supports:
+// - <b>bold</b>
+// - <i>italic</i>
+// - <u>underline</u>
+// - <s>strikethrough</s>
+// - <code>inline code</code>
+// - <pre>code blocks</pre>
+// - <pre><code class="language-xxx">syntax highlighted code</code></pre>
+// - <blockquote>quotes</blockquote>
+// - <a href="url">links</a>
+function convertToTelegramHTML(text) {
+  if (!text) return text;
+  
+  let result = text;
+  
+  // Escape HTML special characters first (but not in code blocks)
+  // We'll handle code blocks separately
+  
+  // Step 1: Protect and convert code blocks with language (```python ... ```)
+  const codeBlocksWithLang = [];
+  result = result.replace(/```(\w+)\n([\s\S]*?)```/g, (match, lang, code) => {
+    // Escape HTML in code
+    const escapedCode = escapeHTML(code.trim());
+    codeBlocksWithLang.push(`<pre><code class="language-${lang}">${escapedCode}</code></pre>`);
+    return `__CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}__`;
+  });
+  
+  // Step 2: Protect and convert code blocks without language (``` ... ```)
+  const codeBlocks = [];
+  result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
+    const escapedCode = escapeHTML(code.trim());
+    codeBlocks.push(`<pre>${escapedCode}</pre>`);
+    return `__CODEBLOCK_${codeBlocks.length - 1}__`;
+  });
+  
+  // Step 3: Protect and convert inline code (`...`)
+  const inlineCode = [];
+  result = result.replace(/`([^`]+)`/g, (match, code) => {
+    const escapedCode = escapeHTML(code);
+    inlineCode.push(`<code>${escapedCode}</code>`);
+    return `__INLINECODE_${inlineCode.length - 1}__`;
+  });
+  
+  // Step 4: Escape remaining HTML special characters
+  result = escapeHTML(result);
+  
+  // Step 5: Convert Markdown to HTML
+  
+  // Headers (# Header) -> bold
+  result = result.replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>');
+  
+  // Bold + Italic (***text*** or ___text___)
+  result = result.replace(/\*\*\*([^*]+)\*\*\*/g, '<b><i>$1</i></b>');
+  result = result.replace(/___([^_]+)___/g, '<b><i>$1</i></b>');
+  
+  // Bold (**text** or __text__)
+  result = result.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  result = result.replace(/__([^_]+)__/g, '<b>$1</b>');
+  
+  // Italic (*text* or _text_)
+  // Be careful with underscores in words like snake_case
+  result = result.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<i>$1</i>');
+  result = result.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<i>$1</i>');
+  
+  // Strikethrough (~~text~~)
+  result = result.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+  
+  // Block quotes (> text)
+  result = result.replace(/^&gt;\s*(.+)$/gm, '<blockquote>$1</blockquote>');
+  // Merge consecutive blockquotes
+  result = result.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+  
+  // Links [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  
+  // Horizontal rules (--- or ***)
+  result = result.replace(/^(---|\*\*\*|___)$/gm, '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+  
+  // Bullet points (- item or * item)
+  result = result.replace(/^[\-\*]\s+(.+)$/gm, '• $1');
+  
+  // Numbered lists (1. item)
+  result = result.replace(/^(\d+)\.\s+(.+)$/gm, '$1. $2');
+  
+  // Step 6: Restore code blocks and inline code
+  inlineCode.forEach((code, i) => {
+    result = result.replace(`__INLINECODE_${i}__`, code);
+  });
+  
+  codeBlocks.forEach((code, i) => {
+    result = result.replace(`__CODEBLOCK_${i}__`, code);
+  });
+  
+  codeBlocksWithLang.forEach((code, i) => {
+    result = result.replace(`__CODEBLOCK_LANG_${i}__`, code);
+  });
+  
+  return result;
+}
+
+// Helper function to escape HTML special characters
+function escapeHTML(text) {
+  if (!text) return text;
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// =====================
 // UI HELPERS
 // =====================
 function helpText() {
@@ -3592,17 +3705,23 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    const outputText = (out && out.trim()) ? out.slice(0, 3600) : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
-    const response = `${modeLabel}${outputText}\n\n_⚡ ${elapsed}s • ${model}_`;
+    // Convert AI output from standard Markdown to Telegram HTML format
+    const rawOutput = (out && out.trim()) ? out.slice(0, 3600) : "<i>I couldn't generate a response. Try rephrasing or switch models with /model</i>";
+    const formattedOutput = convertToTelegramHTML(rawOutput);
+    
+    // Convert mode label to HTML format
+    const htmlModeLabel = modeLabel ? modeLabel.replace(/\*([^*]+)\*/g, '<b>$1</b>').replace(/_([^_]+)_/g, '<i>$1</i>') : '';
+    
+    const response = `${htmlModeLabel}${formattedOutput}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
       try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
       } catch (editErr) {
         // Fallback to new message if edit fails
-        await ctx.reply(response, { parse_mode: "Markdown" });
+        await ctx.reply(response, { parse_mode: "HTML" });
       }
     } else {
-      await ctx.reply(response, { parse_mode: "Markdown" });
+      await ctx.reply(response, { parse_mode: "HTML" });
     }
   } catch (e) {
     console.error(e);
@@ -3614,16 +3733,16 @@ bot.on("message:text", async (ctx) => {
     
     // Edit status message with error (cleaner than delete+send)
     const errMsg = isTimeout 
-      ? `⏱️ Model *${model}* timed out after ${elapsed}s. Try /model to switch, or try again.`
+      ? `⏱️ Model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch, or try again.`
       : `❌ Error after ${elapsed}s. Try again in a moment.`;
     if (statusMsg) {
       try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "Markdown" });
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
       } catch {
-        await ctx.reply(errMsg, { parse_mode: "Markdown" });
+        await ctx.reply(errMsg, { parse_mode: "HTML" });
       }
     } else {
-      await ctx.reply(errMsg, { parse_mode: "Markdown" });
+      await ctx.reply(errMsg, { parse_mode: "HTML" });
     }
   }
 });
@@ -3678,15 +3797,17 @@ bot.on("message:photo", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    const response = `${out.slice(0, 3700)}\n\n_👁️ ${elapsed}s • ${model}_`;
+    // Convert AI output to Telegram HTML format
+    const formattedOutput = convertToTelegramHTML(out.slice(0, 3700));
+    const response = `${formattedOutput}\n\n<i>👁️ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
       try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "Markdown" });
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
       } catch {
-        await ctx.reply(response, { parse_mode: "Markdown" });
+        await ctx.reply(response, { parse_mode: "HTML" });
       }
     } else {
-      await ctx.reply(response, { parse_mode: "Markdown" });
+      await ctx.reply(response, { parse_mode: "HTML" });
     }
   } catch (e) {
     console.error("Vision error:", e.message);
@@ -3695,16 +3816,16 @@ bot.on("message:photo", async (ctx) => {
     // Edit status message with error (cleaner than delete+send)
     const isTimeout = e.message?.includes("timed out");
     const errMsg = isTimeout
-      ? `⏱️ Vision model *${model}* timed out after ${elapsed}s. Try /model to switch.`
+      ? `⏱️ Vision model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch.`
       : `❌ Couldn't process image after ${elapsed}s. Try again or /model to switch.`;
     if (statusMsg) {
       try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "Markdown" });
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
       } catch {
-        await ctx.reply(errMsg, { parse_mode: "Markdown" });
+        await ctx.reply(errMsg, { parse_mode: "HTML" });
       }
     } else {
-      await ctx.reply(errMsg, { parse_mode: "Markdown" });
+      await ctx.reply(errMsg, { parse_mode: "HTML" });
     }
   }
 });
@@ -3844,6 +3965,10 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, question, "quark");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedQuestion = escapeHTML(question);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -3852,8 +3977,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
           input_message_content: {
-            message_text: `⭐ *${question}*\n\n${answer}\n\n_via StarzAI • Quark • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `⭐ <b>${escapedQuestion}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(quarkKey),
         },
@@ -3918,6 +4043,10 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, topic, "blackhole");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedTopic = escapeHTML(topic);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -3926,8 +4055,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
           input_message_content: {
-            message_text: `🗿🔬 *Blackhole Analysis: ${topic}*\n\n${answer}\n\n_via StarzAI • Blackhole • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `🗿🔬 <b>Blackhole Analysis: ${escapedTopic}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(bhKey),
         },
@@ -3992,6 +4121,10 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, codeQ, "code");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedCodeQ = escapeHTML(codeQ);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4000,8 +4133,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80).replace(/```/g, ""),
           thumbnail_url: "https://img.icons8.com/fluency/96/code.png",
           input_message_content: {
-            message_text: `💻 *Code: ${codeQ}*\n\n${answer}\n\n_via StarzAI • Code • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `💻 <b>Code: ${escapedCodeQ}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Code • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(codeKey),
         },
@@ -4066,6 +4199,10 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, concept, "explain");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedConcept = escapeHTML(concept);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4074,8 +4211,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
           input_message_content: {
-            message_text: `🧠 *Explain: ${concept}*\n\n${answer}\n\n_via StarzAI • Explain • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `🧠 <b>Explain: ${escapedConcept}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(expKey),
         },
@@ -4190,6 +4327,11 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, `as ${character}: ${question}`, "character");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedCharacter = escapeHTML(character);
+      const escapedQuestion = escapeHTML(question);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4198,8 +4340,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
           input_message_content: {
-            message_text: `🎭 *${character}*\n\n❓ _${question}_\n\n${answer}\n\n_via StarzAI • Character Mode • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `🎭 <b>${escapedCharacter}</b>\n\n❓ <i>${escapedQuestion}</i>\n\n${formattedAnswer}\n\n<i>via StarzAI • Character Mode • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(asKey),
         },
@@ -4264,6 +4406,9 @@ bot.on("inline_query", async (ctx) => {
       // Track in history
       addToHistory(userId, textToSum.slice(0, 50), "summarize");
       
+      // Convert AI answer to Telegram HTML format
+      const formattedSummary = convertToTelegramHTML(summary);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4272,8 +4417,8 @@ bot.on("inline_query", async (ctx) => {
           description: summary.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/summary.png",
           input_message_content: {
-            message_text: `📝 *Summary*\n\n${summary}\n\n_via StarzAI • Summarize • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `📝 <b>Summary</b>\n\n${formattedSummary}\n\n<i>via StarzAI • Summarize • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: inlineAnswerKeyboard(sumKey),
         },
@@ -4369,6 +4514,10 @@ bot.on("inline_query", async (ctx) => {
       addPartnerMessage(userId, "user", message);
       addPartnerMessage(userId, "assistant", answer);
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPartnerName = escapeHTML(partner.name);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4377,8 +4526,8 @@ bot.on("inline_query", async (ctx) => {
           description: answer.slice(0, 80),
           thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
           input_message_content: {
-            message_text: `🤝🏻 *${partner.name}*\n\n${answer}\n\n_via StarzAI • Partner • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `🤝🏻 <b>${escapedPartnerName}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
           reply_markup: new InlineKeyboard()
             .switchInlineCurrent("💬 Reply", `p: `)
@@ -4433,6 +4582,10 @@ bot.on("inline_query", async (ctx) => {
       
       const answer = (out || "No results").slice(0, 2000);
       
+      // Convert AI answer to Telegram HTML format
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedTopic = escapeHTML(topic);
+      
       return ctx.answerInlineQuery([
         {
           type: "article",
@@ -4441,8 +4594,8 @@ bot.on("inline_query", async (ctx) => {
           description: `🔍 ${answer.slice(0, 80)}...`,
           thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
           input_message_content: {
-            message_text: `🔍 *Research: ${topic}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
-            parse_mode: "Markdown",
+            message_text: `🔍 <b>Research: ${escapedTopic}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${shortModel}</i>`,
+            parse_mode: "HTML",
           },
         },
       ], { cache_time: 0, is_personal: true });
@@ -5330,6 +5483,10 @@ bot.on("inline_query", async (ctx) => {
     // Track in history
     addToHistory(userId, q, "default");
     
+    // Convert AI answer to Telegram HTML format
+    const formattedAnswer = convertToTelegramHTML(answer);
+    const escapedQ = escapeHTML(q);
+    
     await ctx.answerInlineQuery([
       {
         type: "article",
@@ -5338,8 +5495,8 @@ bot.on("inline_query", async (ctx) => {
         description: answer.slice(0, 80),
         thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
         input_message_content: {
-          message_text: `❓ *${q}*\n\n${answer}\n\n_via StarzAI • ${quickShortModel}_`,
-          parse_mode: "Markdown",
+          message_text: `❓ <b>${escapedQ}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${quickShortModel}</i>`,
+          parse_mode: "HTML",
         },
         reply_markup: inlineAnswerKeyboard(quickKey),
       },
@@ -5347,6 +5504,7 @@ bot.on("inline_query", async (ctx) => {
     
   } catch (e) {
     console.error("Quick answer error:", e.message);
+    const escapedQ = escapeHTML(q);
     await ctx.answerInlineQuery([
       {
         type: "article",
@@ -5355,8 +5513,8 @@ bot.on("inline_query", async (ctx) => {
         description: "⚠️ Model is slow. Try again.",
         thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
         input_message_content: {
-          message_text: `❓ *${q}*\n\n⚠️ _Model is slow right now. Please try again._\n\n_via StarzAI_`,
-          parse_mode: "Markdown",
+          message_text: `❓ <b>${escapedQ}</b>\n\n⚠️ <i>Model is slow right now. Please try again.</i>\n\n<i>via StarzAI</i>`,
+          parse_mode: "HTML",
         },
       },
     ], { cache_time: 0, is_personal: true });
