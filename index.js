@@ -5494,28 +5494,27 @@ bot.on("message:text", async (ctx) => {
     let foundChatKey = null;
     let foundSession = null;
     
-    for (const [chatKey, session] of sharedChats.entries()) {
-      // Check if this session was recently active (within 1 hour)
-      const lastActivity = session.history?.length > 0 
-        ? session.history[session.history.length - 1].timestamp 
-        : session.createdAt;
-      
-      if (Date.now() - lastActivity < 60 * 60 * 1000) {
-        // Check if the message looks like a Yap
-        if (yapText.includes("StarzAI Yap")) {
-          foundChatKey = chatKey;
-          foundSession = session;
-          break;
-        }
-      }
+    for (const [chatKey, session] of sharedChatSessions.entries()) {
+  // Check if this session was recently active (within 1 hour)
+  const lastActivity = session.history?.length > 0 
+    ? session.history[session.history.length - 1].timestamp 
+    : session.createdAt;
+  
+  if (Date.now() - lastActivity < 60 * 60 * 1000) {
+    // Check if the message looks like a Yap
+    if (yapText.includes("StarzAI Yap")) {
+      foundChatKey = chatKey;
+      foundSession = session;
+      break;
     }
-    
-    if (foundSession && foundSession.inlineMessageId) {
-      const userName = u.first_name || "User";
-      
-      // Add user message to session
-      addSharedChatMessage(foundChatKey, userName, text);
-      addSharedChatParticipant(foundChatKey, userName);
+  }
+}
+
+if (foundSession && foundSession.inlineMessageId) {
+  const userName = u.first_name || "User";
+  
+  // Add user message to session
+  addToSharedChat(foundChatKey, u.id, userName, "user", text);
       
       // Delete the reply message to keep chat clean (optional)
       try {
@@ -5558,7 +5557,7 @@ bot.on("message:text", async (ctx) => {
         });
         
         // Add AI response to session
-        addSharedChatMessage(foundChatKey, "AI", aiResponse, "assistant");
+        addToSharedChat(foundChatKey, 0, "AI", "assistant", aiResponse);
         
         // Update Yap with response
         const updatedSession = getSharedChat(foundChatKey);
@@ -8415,10 +8414,7 @@ bot.on("chosen_inline_result", async (ctx) => {
     console.log(`Yap message from ${userName}: ${userMessage}`);
     
     // Add user message to session
-    addSharedChatMessage(chatKey, userName, userMessage);
-    
-    // Add user as participant
-    addSharedChatParticipant(chatKey, userName);
+    addToSharedChat(chatKey, userId, userName, "user", userMessage);
     
     // Get the inline message ID for the original Yap
     const yapInlineMessageId = session.inlineMessageId;
@@ -8470,7 +8466,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       });
       
       // Add AI response to session
-      addSharedChatMessage(chatKey, "AI", aiResponse, "assistant");
+      addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
       
       // Update the Yap message with the response
       const updatedSession = getSharedChat(chatKey);
