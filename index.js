@@ -500,7 +500,7 @@ async function enforceRateLimit(ctx) {
   const msg = `Rate limit hit. Try again in ~${r.waitSec}s.`;
 
   if (ctx.inlineQuery) {
-    await ctx.answerInlineQuery(
+    await safeAnswerInline(ctx,
       [
         {
           type: "article",
@@ -3833,6 +3833,22 @@ bot.on("message:photo", async (ctx) => {
 // =====================
 // INLINE MODE - INTERACTIVE CHAT
 // =====================
+
+// Helper to safely answer inline queries (handles expired query errors)
+async function safeAnswerInline(ctx, results, options = {}) {
+  try {
+    return await ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true, ...options });
+  } catch (e) {
+    // Ignore "query is too old" errors - these are normal when AI takes too long
+    if (e.description?.includes("query is too old") || e.description?.includes("query ID is invalid")) {
+      console.log(`Inline query expired (normal for slow responses): ${e.description}`);
+      return; // Silently ignore
+    }
+    // Re-throw other errors
+    throw e;
+  }
+}
+
 bot.on("inline_query", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
 
@@ -3908,7 +3924,7 @@ bot.on("inline_query", async (ctx) => {
       },
     ];
 
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // Filter modes when user types partial text
@@ -3924,7 +3940,7 @@ bot.on("inline_query", async (ctx) => {
     const question = q.slice(2).trim();
     
     if (!question) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `q_typing_${sessionKey}`,
@@ -3969,7 +3985,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedQuestion = escapeHTML(question);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `quark_${quarkKey}`,
@@ -3984,7 +4000,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `q_err_${sessionKey}`,
@@ -4002,7 +4018,7 @@ bot.on("inline_query", async (ctx) => {
     const topic = q.slice(2).trim();
     
     if (!topic) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `b_typing_${sessionKey}`,
@@ -4047,7 +4063,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedTopic = escapeHTML(topic);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `blackhole_${bhKey}`,
@@ -4062,7 +4078,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `b_err_${sessionKey}`,
@@ -4080,7 +4096,7 @@ bot.on("inline_query", async (ctx) => {
     const codeQ = q.slice(5).trim();
     
     if (!codeQ) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `code_typing_${sessionKey}`,
@@ -4125,7 +4141,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedCodeQ = escapeHTML(codeQ);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `code_${codeKey}`,
@@ -4140,7 +4156,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `code_err_${sessionKey}`,
@@ -4158,7 +4174,7 @@ bot.on("inline_query", async (ctx) => {
     const concept = q.slice(2).trim();
     
     if (!concept) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `e_typing_${sessionKey}`,
@@ -4203,7 +4219,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedConcept = escapeHTML(concept);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `explain_${expKey}`,
@@ -4218,7 +4234,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `e_err_${sessionKey}`,
@@ -4275,7 +4291,7 @@ bot.on("inline_query", async (ctx) => {
       });
     }
     
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // "as:" - Character/Persona mode (as pirate:, as shakespeare:, etc.)
@@ -4285,7 +4301,7 @@ bot.on("inline_query", async (ctx) => {
     const question = asMatch[2].trim();
     
     if (!question) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `as_typing_${sessionKey}`,
@@ -4332,7 +4348,7 @@ bot.on("inline_query", async (ctx) => {
       const escapedCharacter = escapeHTML(character);
       const escapedQuestion = escapeHTML(question);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `char_${asKey}`,
@@ -4347,7 +4363,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `as_err_${sessionKey}`,
@@ -4365,7 +4381,7 @@ bot.on("inline_query", async (ctx) => {
     const textToSum = q.slice(4).trim();
     
     if (!textToSum) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `sum_typing_${sessionKey}`,
@@ -4409,7 +4425,7 @@ bot.on("inline_query", async (ctx) => {
       // Convert AI answer to Telegram HTML format
       const formattedSummary = convertToTelegramHTML(summary);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `sum_${sumKey}`,
@@ -4424,7 +4440,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `sum_err_${sessionKey}`,
@@ -4443,7 +4459,7 @@ bot.on("inline_query", async (ctx) => {
     const partner = getPartner(userId);
     
     if (!partner?.name) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `p_nopartner_${sessionKey}`,
@@ -4459,7 +4475,7 @@ bot.on("inline_query", async (ctx) => {
     }
     
     if (!message) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `p_typing_${sessionKey}`,
@@ -4518,7 +4534,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPartnerName = escapeHTML(partner.name);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `partner_${pKey}`,
@@ -4535,7 +4551,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `p_err_${sessionKey}`,
@@ -4553,7 +4569,7 @@ bot.on("inline_query", async (ctx) => {
     const topic = q.slice(2).trim();
     
     if (!topic) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `r_typing_${sessionKey}`,
@@ -4586,7 +4602,7 @@ bot.on("inline_query", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedTopic = escapeHTML(topic);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `r_send_${makeId(6)}`,
@@ -4600,7 +4616,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `r_err_${sessionKey}`,
@@ -4664,7 +4680,7 @@ bot.on("inline_query", async (ctx) => {
       input_message_content: { message_text: "_" },
     });
     
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // "s:free", "s:premium", "s:ultra" - Show models in category
@@ -4679,7 +4695,7 @@ bot.on("inline_query", async (ctx) => {
     else if ((category === "ultra" || category.startsWith("ultra")) && tier === "ultra") models = ULTRA_MODELS;
     
     if (models.length === 0) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `s_noaccess_${sessionKey}`,
@@ -4720,7 +4736,7 @@ bot.on("inline_query", async (ctx) => {
       reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "s "),
     });
     
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // "set:modelname" - Actually set the model
@@ -4738,7 +4754,7 @@ bot.on("inline_query", async (ctx) => {
       
       const newShortModel = newModel.split("/").pop();
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `set_done_${sessionKey}`,
@@ -4750,7 +4766,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } else {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `set_err_${sessionKey}`,
@@ -4774,7 +4790,7 @@ bot.on("inline_query", async (ctx) => {
     const userName = ctx.from?.first_name || "User";
     // Create session immediately so it's ready
     createSharedChat(chatKey, userId, userName, model);
-    return ctx.answerInlineQuery([
+    return safeAnswerInline(ctx, [
       {
         type: "article",
         id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
@@ -4800,7 +4816,7 @@ bot.on("inline_query", async (ctx) => {
     const cached = inlineCache.get(cacheKey);
     
     if (!cached) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `c_expired_${sessionKey}`,
@@ -4815,7 +4831,7 @@ bot.on("inline_query", async (ctx) => {
     
     if (!userMessage) {
       // Show typing hint with context
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `c_typing_${sessionKey}`,
@@ -4880,7 +4896,7 @@ bot.on("inline_query", async (ctx) => {
       // Schedule cleanup
       setTimeout(() => inlineCache.delete(replyKey), 30 * 60 * 1000);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `reply_${replyKey}`,
@@ -4897,7 +4913,7 @@ bot.on("inline_query", async (ctx) => {
       
     } catch (e) {
       console.error("Reply error:", e.message);
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `reply_err_${replyKey}`,
@@ -4922,7 +4938,7 @@ bot.on("inline_query", async (ctx) => {
     const session = getSharedChat(chatKeyPart);
     
     if (!session) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `yap_expired_${sessionKey}`,
@@ -4936,7 +4952,7 @@ bot.on("inline_query", async (ctx) => {
     
     if (!userMessage) {
       // Show typing hint
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `yap_typing_${sessionKey}`,
@@ -4951,7 +4967,7 @@ bot.on("inline_query", async (ctx) => {
     // User has typed a message - show send button
     const userName = ctx.from?.first_name || "User";
     
-    return ctx.answerInlineQuery([
+    return safeAnswerInline(ctx, [
       {
         type: "article",
         id: `yap_send_${chatKeyPart}_${makeId(4)}`,
@@ -5023,7 +5039,7 @@ bot.on("inline_query", async (ctx) => {
       reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
     });
     
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // "settings:category" - show models in category
@@ -5052,7 +5068,7 @@ bot.on("inline_query", async (ctx) => {
     }
     
     if (models.length === 0) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `set_noaccess_${sessionKey}`,
@@ -5094,7 +5110,7 @@ bot.on("inline_query", async (ctx) => {
       reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
     });
     
-    return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
   }
   
   // "set:modelname" - select model (no message sent!)
@@ -5112,7 +5128,7 @@ bot.on("inline_query", async (ctx) => {
       
       const shortModel = newModel.split("/").pop();
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `set_done_${sessionKey}`,
@@ -5124,7 +5140,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } else {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `set_err_${sessionKey}`,
@@ -5148,7 +5164,7 @@ bot.on("inline_query", async (ctx) => {
     
     if (!topic) {
       // Show typing hint - stays in popup
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `research_typing_${sessionKey}`,
@@ -5177,7 +5193,7 @@ bot.on("inline_query", async (ctx) => {
       const answer = (out || "No results").slice(0, 3500);
       const shortModel = model.split("/").pop();
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `research_${makeId(6)}`,
@@ -5200,7 +5216,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `research_err_${sessionKey}`,
@@ -5256,11 +5272,11 @@ bot.on("inline_query", async (ctx) => {
           reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
         });
         
-        return ctx.answerInlineQuery(results, { cache_time: 0, is_personal: true });
+        return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
       }
       
       // Show typing hint
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `translate_typing_${sessionKey}`,
@@ -5292,7 +5308,7 @@ bot.on("inline_query", async (ctx) => {
       const translation = (out || "Translation failed").trim();
       const shortModel = model.split("/").pop();
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `translate_${makeId(6)}`,
@@ -5315,7 +5331,7 @@ bot.on("inline_query", async (ctx) => {
         },
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `translate_err_${sessionKey}`,
@@ -5344,7 +5360,7 @@ bot.on("inline_query", async (ctx) => {
     
     if (!userMessage) {
       // Just show current chat state
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `chatview_${sessionKey}`,
@@ -5364,7 +5380,7 @@ bot.on("inline_query", async (ctx) => {
       const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
       const updatedSession = getInlineSession(userId);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `chatreply_${sessionKey}`,
@@ -5379,7 +5395,7 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
       console.error("Inline chat error:", e);
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `chaterr_${sessionKey}`,
@@ -5399,7 +5415,7 @@ bot.on("inline_query", async (ctx) => {
     const userMessage = q.slice(4).trim();
     
     if (!userMessage) {
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `newchat_${sessionKey}`,
@@ -5419,7 +5435,7 @@ bot.on("inline_query", async (ctx) => {
       const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
       const updatedSession = getInlineSession(userId);
       
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `newreply_${sessionKey}`,
@@ -5434,7 +5450,7 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     } catch (e) {
       console.error("New chat error:", e);
-      return ctx.answerInlineQuery([
+      return safeAnswerInline(ctx, [
         {
           type: "article",
           id: `newerr_${sessionKey}`,
@@ -5487,7 +5503,7 @@ bot.on("inline_query", async (ctx) => {
     const formattedAnswer = convertToTelegramHTML(answer);
     const escapedQ = escapeHTML(q);
     
-    await ctx.answerInlineQuery([
+    await safeAnswerInline(ctx, [
       {
         type: "article",
         id: `answer_${quickKey}`,
@@ -5505,7 +5521,7 @@ bot.on("inline_query", async (ctx) => {
   } catch (e) {
     console.error("Quick answer error:", e.message);
     const escapedQ = escapeHTML(q);
-    await ctx.answerInlineQuery([
+    await safeAnswerInline(ctx, [
       {
         type: "article",
         id: `error_${quickKey}`,
