@@ -2195,7 +2195,9 @@ function inlineAnswerKeyboard(key) {
     .text("🔁 Regen", `inl_regen:${key}`)
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
-    .text("📈 Longer", `inl_long:${key}`);
+    .text("📈 Longer", `inl_long:${key}`)
+    .row()
+    .text("➡️ Continue", `inl_cont:${key}`);
 }
 
 // =====================
@@ -8344,7 +8346,8 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 800,
       });
       
-      const answer = (out || "No results").slice(0, 3000);
+      // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
+      const answer = (out || "No results").slice(0, 3500);
       const newKey = makeId(6);
       
       // Store for Regen/Shorter/Longer buttons
@@ -8898,6 +8901,26 @@ async function doInlineTransform(ctx, mode) {
       });
     }
 
+    if (mode === "cont") {
+      const continuation = await llmText({
+        model: item.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.",
+          },
+          {
+            role: "user",
+            content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 450,
+      });
+      newAnswer = `${item.answer}\n\n${continuation || ""}`;
+    }
+
     const finalText = (newAnswer || "(no output)").trim();
     item.answer = finalText.slice(0, 3500);
     inlineCache.set(key, item);
@@ -8912,6 +8935,7 @@ async function doInlineTransform(ctx, mode) {
 bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"));
 bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
 bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
+bot.callbackQuery(/^inl_cont:/, async (ctx) => doInlineTransform(ctx, "cont"));
 
 // Character new intro button
 bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
