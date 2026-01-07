@@ -739,7 +739,13 @@ bot.use(async (ctx, next) => {
 
       if (ctx.message) {
         if (ctx.chat?.type === "private") {
-          await ctx.reply("🚫 You are banned from using this bot.");
+          const replyMarkup =
+            FEEDBACK_CHAT_ID
+              ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+              : undefined;
+          await ctx.reply("🚫 You are banned from using this bot.", {
+            reply_markup: replyMarkup,
+          });
         }
         return;
       }
@@ -3735,14 +3741,22 @@ bot.command("ban", async (ctx) => {
   try {
     const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
     const contactLine =
-      "\n\nIf you believe this is a mistake, you can share feedback from the bot's menu using the Feedback button.";
+      "\n\nIf you believe this is a mistake, you can share feedback using the button below.";
     const bannedMsg = [
       "🚫 *You have been banned from using StarzAI.*",
       reasonLine,
       contactLine,
     ].join("");
 
-    await bot.api.sendMessage(targetIdStr, bannedMsg, { parse_mode: "Markdown" });
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, bannedMsg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
   } catch (e) {
     // User might not have started the bot; ignore send error
   }
@@ -3898,7 +3912,15 @@ bot.command("warn", async (ctx) => {
       countLine +
       extra;
 
-    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
   } catch (e) {
     // ignore
   }
@@ -3983,7 +4005,15 @@ bot.command("softban", async (ctx) => {
       "\n\nYou are temporarily blocked from using the bot." +
       untilLine;
 
-    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
   } catch (e) {
     // ignore
   }
@@ -4056,7 +4086,15 @@ bot.command("mute", async (ctx) => {
     const baseLine = `🔇 *You have been muted on StarzAI* (${scopeText}).`;
     const mutedMsg = [baseLine, reasonLine, untilLine].join("");
 
-    await bot.api.sendMessage(targetIdStr, mutedMsg, { parse_mode: "Markdown" });
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, mutedMsg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
   } catch (e) {
     // User might not have started the bot; ignore
   }
