@@ -8344,7 +8344,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use bullet points for clarity when appropriate." },
+          {
+            role: "system",
+            content:
+              "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. Format your answer in clean Markdown.",
+          },
           { role: "user", content: `Provide deep analysis on: ${prompt}` },
         ],
         temperature: 0.7,
@@ -8433,7 +8437,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct." },
+          {
+            role: "system",
+            content:
+              "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct, but use Markdown headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways so the answer is easy to scan.",
+          },
           { role: "user", content: `Briefly explain: ${prompt}` },
         ],
         temperature: 0.7,
@@ -8573,14 +8581,18 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are an expert programmer. Provide clear, working code with brief explanations. Use proper code formatting with language tags. Focus on best practices and clean code." },
+          {
+            role: "system",
+            content:
+              "You are an expert programmer. Provide clear, working code with brief explanations. Always format code using fenced code blocks with language tags, like ```python ... ```. Focus on best practices and clean, idiomatic code.",
+          },
           { role: "user", content: prompt },
         ],
         temperature: 0.3,
-        max_tokens: 600,
+        max_tokens: 700,
       });
       
-      const answer = (out || "No code").slice(0, 2500);
+      const answer = (out || "No code").slice(0, 3500);
       const newKey = makeId(6);
       
       inlineCache.set(newKey, {
@@ -8913,21 +8925,29 @@ async function doInlineTransform(ctx, mode) {
     }
 
     if (mode === "cont") {
+      const itemMode = item.mode || "default";
+      const isBlackhole = itemMode === "blackhole";
+      const isCode = itemMode === "code";
+      
+      const systemPrompt = isBlackhole
+        ? "You are a research expert continuing a long, structured deep-dive (Blackhole mode). Continue the previous analysis from where it stopped. Do not repeat large sections. Keep the same structure, tone, and formatting (headings, bullet points, quote blocks, etc.). If it ended mid-sentence, finish it and continue."
+        : isCode
+        ? "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged."
+        : "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.";
+      
+      const maxTokens = isBlackhole ? 700 : isCode ? 600 : 450;
+      
       const continuation = await llmText({
         model: item.model,
         messages: [
-          {
-            role: "system",
-            content:
-              "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.",
-          },
+          { role: "system", content: systemPrompt },
           {
             role: "user",
             content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
           },
         ],
         temperature: 0.7,
-        max_tokens: 450,
+        max_tokens: maxTokens,
       });
       newAnswer = `${item.answer}\n\n${continuation || ""}`;
     }
