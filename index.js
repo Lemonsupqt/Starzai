@@ -2751,27 +2751,39 @@ bot.callbackQuery("menu_stats", async (ctx) => {
   await ctx.answerCallbackQuery();
   
   const u = ctx.from;
-  const userRecord = getUserRecord(u.id);
+  const user = getUserRecord(u.id);
   
-  if (!userRecord) {
+  if (!user) {
     return ctx.answerCallbackQuery({ text: "❌ Not registered yet!", show_alert: true });
   }
   
-  const model = ensureChosenModelValid(u.id);
-  const memberSince = userRecord.createdAt ? new Date(userRecord.createdAt).toLocaleDateString() : "Unknown";
-  const messages = userRecord.messageCount || 0;
-  const queries = userRecord.inlineQueryCount || 0;
+  const userStats = user.stats || { totalMessages: 0, totalInlineQueries: 0, lastActive: null };
+  const shortModel = (user.model || ensureChosenModelValid(u.id)).split("/").pop();
+  
+  // Calculate days since registration
+  const regDate = new Date(user.registeredAt || Date.now());
+  const daysSinceReg = Math.floor((Date.now() - regDate.getTime()) / (1000 * 60 * 60 * 24));
+  
+  // Format last active
+  const lastActive = userStats.lastActive ? new Date(userStats.lastActive).toLocaleDateString() : "Never";
+  
+  const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
   
   const stats = [
-    `📊 *Your Stats*`,
+    `📊 *Your StarzAI Stats*`,
     ``,
-    `👤 *User ID:* \`${u.id}\``,
-    `🌟 *Tier:* ${userRecord.tier?.toUpperCase() || "FREE"}`,
-    `🤖 *Model:* ${model.split("/").pop()}`,
+    `👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})`,
+    `${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}`,
+    `🤖 *Model:* \`${shortModel}\``,
     ``,
-    `💬 *Messages:* ${messages}`,
-    `⌨️ *Inline queries:* ${queries}`,
-    `📅 *Member since:* ${memberSince}`,
+    `💬 *DM Messages:* ${(userStats.totalMessages || 0).toLocaleString()}`,
+    `⚡ *Inline Queries:* ${(userStats.totalInlineQueries || 0).toLocaleString()}`,
+    `📝 *Total Interactions:* ${((userStats.totalMessages || 0) + (userStats.totalInlineQueries || 0)).toLocaleString()}`,
+    ``,
+    `📅 *Member for:* ${daysSinceReg} days`,
+    `🕒 *Last Active:* ${lastActive}`,
+    ``,
+    `_Keep chatting to grow your stats!_`,
   ].join("\n");
   
   const keyboard = new InlineKeyboard()
