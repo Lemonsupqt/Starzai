@@ -4014,6 +4014,7 @@ bot.on("inline_query", async (ctx) => {
   }
   
   // "b:" or "b " - Blackhole mode (deep research & analysis)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("b:") || qLower.startsWith("b ")) {
     const topic = q.slice(2).trim();
     
@@ -4031,64 +4032,34 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use bullet points for clarity when appropriate." },
-          { role: "user", content: `Provide deep analysis on: ${topic}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 800,
-        timeout: 15000,
-        retries: 1,
-      });
-      
-      const answer = (out || "No results").slice(0, 3000);
-      const bhKey = makeId(6);
-      
-      inlineCache.set(bhKey, {
-        prompt: topic,
-        answer,
-        userId: String(userId),
-        model,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(bhKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(userId, topic, "blackhole");
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedTopic = escapeHTML(topic);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `blackhole_${bhKey}`,
-          title: `🗿🔬 ${topic.slice(0, 40)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
-          input_message_content: {
-            message_text: `🗿🔬 <b>Blackhole Analysis: ${escapedTopic}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
-          reply_markup: inlineAnswerKeyboard(bhKey),
+    // Generate a unique key for this request
+    const bhKey = makeId(6);
+    const escapedTopic = escapeHTML(topic);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`bh_pending_${bhKey}`, {
+      type: "blackhole",
+      prompt: topic,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    
+    // Send placeholder immediately - this won't timeout!
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `bh_start_${bhKey}`,
+        title: `🗿🔬 ${topic.slice(0, 40)}`,
+        description: "🔄 Tap to start deep analysis...",
+        thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+        input_message_content: {
+          message_text: `🗿🔬 <b>Blackhole Analysis: ${escapedTopic}</b>\n\n⏳ <i>Analyzing in depth... Please wait...</i>\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `b_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try a simpler topic",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // "code:" - Code mode (programming help)
@@ -4564,7 +4535,8 @@ bot.on("inline_query", async (ctx) => {
     }
   }
   
-  // "r " or "r:" - Research shortcut (legacy, now same as Blackhole)
+  // "r " or "r:" - Research shortcut
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
   if (qLower.startsWith("r ") || qLower.startsWith("r:")) {
     const topic = q.slice(2).trim();
     
@@ -4573,8 +4545,8 @@ bot.on("inline_query", async (ctx) => {
         {
           type: "article",
           id: `r_typing_${sessionKey}`,
-          title: "✍️ Type your research topic...",
-          description: "Example: r quantum computing",
+          title: "🔍 Research",
+          description: "Type your research topic...",
           thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
           input_message_content: { message_text: "_" },
           reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
@@ -4582,51 +4554,34 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Get research answer - must be fast for inline queries (Telegram has ~10s timeout)
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct." },
-          { role: "user", content: `Briefly explain: ${topic}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 400,
-        timeout: 8000,  // Must be fast for inline
-        retries: 0,  // No retries for inline - need speed
-      });
-      
-      const answer = (out || "No results").slice(0, 2000);
-      
-      // Convert AI answer to Telegram HTML format
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedTopic = escapeHTML(topic);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `r_send_${makeId(6)}`,
-          title: `✉️ Send: ${topic.slice(0, 35)}`,
-          description: `🔍 ${answer.slice(0, 80)}...`,
-          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-          input_message_content: {
-            message_text: `🔍 <b>Research: ${escapedTopic}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${shortModel}</i>`,
-            parse_mode: "HTML",
-          },
+    // Generate a unique key for this request
+    const rKey = makeId(6);
+    const escapedTopic = escapeHTML(topic);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`r_pending_${rKey}`, {
+      type: "research",
+      prompt: topic,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    
+    // Send placeholder immediately - this won't timeout!
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `r_start_${rKey}`,
+        title: `🔍 ${topic.slice(0, 40)}`,
+        description: "🔄 Tap to start research...",
+        thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+        input_message_content: {
+          message_text: `🔍 <b>Research: ${escapedTopic}</b>\n\n⏳ <i>Researching... Please wait...</i>\n\n<i>via StarzAI • ${shortModel}</i>`,
+          parse_mode: "HTML",
         },
-      ], { cache_time: 0, is_personal: true });
-    } catch (e) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `r_err_${sessionKey}`,
-          title: "⚠️ Taking too long...",
-          description: "Try a simpler topic",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   
@@ -5843,6 +5798,148 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Clean up pending
     inlineCache.delete(`quick_${quickKey}`);
+    return;
+  }
+  
+  // Handle Blackhole deferred response - bh_start_KEY
+  if (resultId.startsWith("bh_start_")) {
+    const bhKey = resultId.replace("bh_start_", "");
+    const pending = inlineCache.get(`bh_pending_${bhKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Blackhole pending not found or no inlineMessageId: bhKey=${bhKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Blackhole: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use bullet points for clarity when appropriate." },
+          { role: "user", content: `Provide deep analysis on: ${prompt}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+      });
+      
+      const answer = (out || "No results").slice(0, 3000);
+      const newKey = makeId(6);
+      
+      // Store for Regen/Shorter/Longer buttons
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(pending.userId, prompt, "blackhole");
+      
+      // Convert and update
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Blackhole updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Blackhole response:", e.message);
+      const escapedPrompt = escapeHTML(prompt);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    // Clean up pending
+    inlineCache.delete(`bh_pending_${bhKey}`);
+    return;
+  }
+  
+  // Handle Research deferred response - r_start_KEY
+  if (resultId.startsWith("r_start_")) {
+    const rKey = resultId.replace("r_start_", "");
+    const pending = inlineCache.get(`r_pending_${rKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Research pending not found or no inlineMessageId: rKey=${rKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Research: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct." },
+          { role: "user", content: `Briefly explain: ${prompt}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 400,
+      });
+      
+      const answer = (out || "No results").slice(0, 2000);
+      const newKey = makeId(6);
+      
+      // Store for Regen/Shorter/Longer buttons
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(pending.userId, prompt, "research");
+      
+      // Convert and update
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🔍 <b>Research: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey)
+        }
+      );
+      console.log(`Research updated with AI response`);
+      
+    } catch (e) {
+      console.error("Failed to get Research response:", e.message);
+      const escapedPrompt = escapeHTML(prompt);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🔍 <b>Research: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    // Clean up pending
+    inlineCache.delete(`r_pending_${rKey}`);
     return;
   }
   
