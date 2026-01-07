@@ -4297,8 +4297,22 @@ bot.on("message:photo", async (ctx) => {
   let statusMsg = null;
   
   // Check if user has active character
-  const activeChar = getActiveCharacter(u.id, chat.id);
-  const isCharacterMode = !!activeChar?.name;
+  const activeCharForUser = getActiveCharacter(u.id, chat.id);
+  
+  // Check if replying to a character message (like text handler does)
+  let replyCharacter = null;
+  const replyToMsg = ctx.message?.reply_to_message;
+  if (replyToMsg?.from?.id === bot.botInfo.id && replyToMsg?.text) {
+    // Check if the replied message starts with a character label
+    const charMatch = replyToMsg.text.match(/^🎭\s*(.+?)\n/);
+    if (charMatch) {
+      replyCharacter = charMatch[1].trim();
+    }
+  }
+  
+  // Priority: replyCharacter > activeCharForUser
+  const effectiveCharacter = replyCharacter || activeCharForUser?.name;
+  const isCharacterMode = !!effectiveCharacter;
   
   // In groups without character mode, only respond if mentioned in caption
   const caption = (ctx.message.caption || "").trim();
@@ -4310,7 +4324,7 @@ bot.on("message:photo", async (ctx) => {
   try {
     // Send initial processing status for images
     const statusText = isCharacterMode 
-      ? `🎭 <b>${escapeHTML(activeChar.name)}</b> is looking at the image...`
+      ? `🎭 <b>${escapeHTML(effectiveCharacter)}</b> is looking at the image...`
       : `🖼️ Analyzing image with <b>${escapeHTML(model)}</b>...`;
     statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
 
@@ -4331,12 +4345,14 @@ bot.on("message:photo", async (ctx) => {
     
     if (isCharacterMode) {
       // Character mode - respond to image as the character
-      const characterPrompt = buildCharacterSystemPrompt(activeChar.name);
+      const characterPrompt = buildCharacterSystemPrompt(effectiveCharacter);
       const userPrompt = caption || "What do you see in this image? React to it.";
       
-      // Add to character history
-      addCharacterMessage(u.id, chat.id, "user", `[Sent an image] ${userPrompt}`);
-      const charHistory = getCharacterChatHistory(u.id, chat.id);
+      // Add to character history only if it's their active character (not a reply to different char)
+      if (activeCharForUser?.name && !replyCharacter) {
+        addCharacterMessage(u.id, chat.id, "user", `[Sent an image] ${userPrompt}`);
+      }
+      const charHistory = (activeCharForUser?.name && !replyCharacter) ? getCharacterChatHistory(u.id, chat.id) : [];
       
       // Build messages with vision
       const messages = [
@@ -4358,9 +4374,11 @@ bot.on("message:photo", async (ctx) => {
         max_tokens: 500,
       });
       
-      // Add AI response to character history
-      addCharacterMessage(u.id, chat.id, "assistant", out);
-      modeLabel = `🎭 <b>${escapeHTML(activeChar.name)}</b>\n\n`;
+      // Add AI response to character history only if it's their active character
+      if (activeCharForUser?.name && !replyCharacter) {
+        addCharacterMessage(u.id, chat.id, "assistant", out);
+      }
+      modeLabel = `🎭 <b>${escapeHTML(effectiveCharacter)}</b>\n\n`;
       
     } else {
       // Normal vision mode
