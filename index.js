@@ -5922,7 +5922,6 @@ bot.on("message:photo", async (ctx) => {
       `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
       `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
       `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
-      ctx.message.caption ? "",
       ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
     ]
       .filter(Boolean)
@@ -6117,7 +6116,6 @@ bot.on("message:video", async (ctx) => {
       `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
       `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
       `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
-      ctx.message.caption ? "",
       ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
     ]
       .filter(Boolean)
