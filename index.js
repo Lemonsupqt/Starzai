@@ -62,6 +62,8 @@ const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 
+const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
+
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 
@@ -1971,6 +1973,7 @@ function helpText() {
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
     "• /history — Recent prompts",
+    FEEDBACK_CHAT_ID ? "• /feedback — Send feedback to the StarzAI team" : "",
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
     "• `q:` — ⭐ Quark (quick answers)",
@@ -1983,7 +1986,9 @@ function helpText() {
     "",
     "🔧 *Owner commands*",
     "• /status, /info, /grant, /revoke, /ban, /unban, /softban, /warn, /clearwarns, /banlist, /mute, /unmute, /mutelist, /ownerhelp",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 // Main menu message builder
@@ -2015,7 +2020,7 @@ function mainMenuKeyboard(userId) {
   const user = getUserRecord(userId);
   const webSearchIcon = user?.webSearch ? "🌐 Web: ON" : "🔍 Web: OFF";
   
-  return new InlineKeyboard()
+  const kb = new InlineKeyboard()
     .text("🌟 Features", "menu_features")
     .text("⚙️ Model", "menu_model")
     .row()
@@ -2026,6 +2031,12 @@ function mainMenuKeyboard(userId) {
     .text(webSearchIcon, "toggle_websearch")
     .row()
     .switchInline("⚡ Try Inline", "");
+
+  if (FEEDBACK_CHAT_ID) {
+    kb.row().text("💡 Feedback", "menu_feedback");
+  }
+
+  return kb;
 }
 
 // Back button keyboard
@@ -2611,6 +2622,28 @@ bot.command("talk", async (ctx) => {
   await ctx.reply(`✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`, { parse_mode: "HTML" });
 });
 
+// /feedback - entrypoint for feedback flow (DM only)
+bot.command("feedback", async (ctx) => {
+  if (!FEEDBACK_CHAT_ID) {
+    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+  }
+  if (ctx.chat.type !== "private") {
+    return ctx.reply("💡 Please send feedback in a private chat with me.");
+  }
+
+  const u = ctx.from;
+  if (!u?.id) return;
+
+  pendingFeedback.set(String(u.id), { createdAt: Date.now() });
+  await ctx.reply(
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    { parse_mode: "Markdown" }
+  );
+});
+
 // /stats - Show user usage statistics
 bot.command("stats", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -3042,6 +3075,7 @@ bot.callbackQuery("open_char", async (ctx) => {
 
 // Partner callback handlers - Setup field buttons
 const pendingPartnerInput = new Map(); // userId -> { field, messageId }
+const pendingFeedback = new Map(); // userId -> { createdAt }
 
 bot.callbackQuery("partner_set_name", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -3609,7 +3643,8 @@ bot.command("ban", async (ctx) => {
   // Notify the banned user (if they have started the bot)
   try {
     const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
-    const contactLine = "\n\nIf you believe this is a mistake, you can contact support at @supqts or @SoulStarXd.";
+    const contactLine =
+      "\n\nIf you believe this is a mistake, you can share feedback from the bot's menu using the Feedback button.";
     const bannedMsg = [
       "🚫 *You have been banned from using StarzAI.*",
       reasonLine,
@@ -3689,6 +3724,13 @@ function applyMuteToUser(targetIdStr, durationMs, scope, reason, mutedById) {
 
 const WARN_SOFTBAN_THRESHOLD = 3;
 const WARN_SOFTBAN_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function extractUserIdFromFeedbackId(feedbackId) {
+  if (!feedbackId || typeof feedbackId !== "string") return null;
+  const match = feedbackId.match(/^FB-(\d+)-/);
+  if (!match) return null;
+  return match[1];
+}
 
 bot.command("warn", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
@@ -4048,7 +4090,7 @@ bot.command("mutelist", async (ctx) => {
 bot.command("ownerhelp", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
-  const text = [
+  const lines = [
     "📘 *StarzAI Owner Guide (Quick)*",
     "",
     "👤 *User info & status*",
@@ -4073,10 +4115,14 @@ bot.command("ownerhelp", async (ctx) => {
     "• /warn <userId> [reason] — auto softban at 3 warnings",
     "• /clearwarns <userId> [reason] — reset warnings",
     "",
+    FEEDBACK_CHAT_ID ? "💡 *Feedback* \n• /feedback — user-side command (button in menu)\n• /fbreply <feedbackId> <text> — reply to feedback sender" : "",
+    "",
     "_Owners cannot be banned, muted, or warned._",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-  await ctx.reply(text, { parse_mode: "Markdown" });
+  await ctx.reply(lines, { parse_mode: "Markdown" });
 });
 
 // =====================
@@ -5528,6 +5574,50 @@ bot.on("message:text", async (ctx) => {
     }
   }
 
+  // Check if user has pending feedback
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    // 2 minute timeout
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `📛 *Username:* ${u.username ? "@" + u.username : "_none_"}`,
+      `👋 *Name:* ${u.first_name || u.firstName || "_none_"}`,
+      `🎫 *Tier:* ${(getUserRecord(u.id)?.tier || "free").toUpperCase()}`,
+    ].join("\n");
+
+    try {
+      // Forward the original message
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
+      // Send meta info
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
+
   const model = ensureChosenModelValid(u.id);
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
@@ -5808,6 +5898,51 @@ bot.on("message:photo", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
 
+  // Feedback handling for photo + caption
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const user = getUserRecord(u.id) || u;
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
+      `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
+      `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
+      ctx.message.caption ? "",
+      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward (photo) error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
+
   if (!getUserRecord(u.id)) registerUser(u);
 
   const model = ensureChosenModelValid(u.id);
@@ -5958,6 +6093,51 @@ bot.on("message:video", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
   
+  // Feedback handling for video + caption (DM only)
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (pendingFb && chat.type === "private") {
+    pendingFeedback.delete(String(u.id));
+
+    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+      return;
+    }
+    if (!FEEDBACK_CHAT_ID) {
+      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+      return;
+    }
+
+    const user = getUserRecord(u.id) || u;
+    const feedbackId = `FB-${u.id}-${makeId(4)}`;
+    const metaLines = [
+      `📬 *New Feedback*`,
+      ``,
+      `🆔 *Feedback ID:* \`${feedbackId}\``,
+      `👤 *User ID:* \`${u.id}\``,
+      `📛 *Username:* ${user.username ? "@" + user.username : "_none_"}`,
+      `👋 *Name:* ${user.first_name || user.firstName || "_none_"}`,
+      `🎫 *Tier:* ${(user.tier || "free").toUpperCase()}`,
+      ctx.message.caption ? "",
+      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await ctx.reply(
+        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Feedback forward (video) error:", e.message);
+      await ctx.reply("❌ Failed to send feedback. Please try again later.");
+    }
+    return;
+  }
+
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
     const botInfo = await bot.api.getMe();
