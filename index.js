@@ -2659,9 +2659,9 @@ bot.command("feedback", async (ctx) => {
 
   pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "command" });
   await ctx.reply(
-    "💡 *Feedback Mode*\\n\\n" +
-      "Please send *one message* with your feedback.\\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
     { parse_mode: "Markdown" }
   );
@@ -2711,9 +2711,9 @@ bot.callbackQuery("menu_feedback", async (ctx) => {
 
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    "💡 *Feedback Mode*\\n\\n" +
-      "Please send *one message* with your feedback.\\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
     { parse_mode: "Markdown" }
   );
@@ -5767,7 +5767,7 @@ bot.on("message:text", async (ctx) => {
       ``,
       `🆔 *Feedback ID:* \`${feedbackId}\``,
       `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+      `🧾 *Context:* ${sourceLabel}`,
       `🎫 *Tier:* ${escapeMarkdown(tier)}`,
       `🚫 *Banned:* ${banned}`,
       `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
