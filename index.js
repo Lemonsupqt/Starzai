@@ -3716,13 +3716,19 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group: only respond if mentioned
+  // Group: check if user has active character mode
+  const activeCharForGC = getActiveCharacter(u.id, chat.id);
+  
+  // Group: respond if mentioned OR if user has active character
   if (chat.type !== "private") {
     const mentioned =
       text.toLowerCase().includes(`@${botUsername}`) ||
       ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    
+    // Also respond if user has active character in this chat
+    const hasActiveCharacter = !!activeCharForGC?.name;
 
-    if (!mentioned) return;
+    if (!mentioned && !hasActiveCharacter) return;
   }
 
   // Check if user is replying to a specific message
