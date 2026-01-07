@@ -1286,7 +1286,12 @@ function helpKeyboard() {
     .text("🎭 Character", "open_char")
     .text("📝 Register", "do_register")
     .row()
-    .switchInline("⚡ Try Inline", "");
+    // Quick inline mode shortcuts - tap to jump directly into mode
+    .switchInlineCurrent("⚡ Quick", "q: ")
+    .switchInlineCurrent("🗿 Deep", "b: ")
+    .switchInlineCurrent("💻 Code", "code: ")
+    .row()
+    .switchInline("🔍 Use Inline Anywhere", "");
 }
 
 // Beautiful inline help card
