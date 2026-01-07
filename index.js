@@ -584,6 +584,7 @@ function ensureUser(userId, from = null) {
       tier: defaultTier,
       model: defaultModel,
       allowedModels: [],
+      banned: false,
       // Usage stats
       stats: {
         totalMessages: 0,
@@ -637,10 +638,64 @@ function ensureUser(userId, from = null) {
     if (usersDb.users[id].activeCharacter === undefined) {
       usersDb.users[id].activeCharacter = null;
     }
+    // migration: add banned flag if missing
+    if (usersDb.users[id].banned === undefined) {
+      usersDb.users[id].banned = false;
+    }
     saveUsers();
   }
   return usersDb.users[id];
 }
+
+// Check if a user is banned
+function isUserBanned(userId) {
+  const rec = getUserRecord(userId);
+  return !!rec?.banned;
+}
+
+// Global ban middleware - blocks banned users from using the bot
+bot.use(async (ctx, next) => {
+  const fromId = ctx.from?.id;
+  if (!fromId) return next();
+
+  const idStr = String(fromId);
+
+  // Owners are never blocked by ban middleware
+  if (OWNER_IDS.has(idStr)) {
+    return next();
+  }
+
+  const user = getUserRecord(idStr);
+  if (user && user.banned) {
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({
+          text: "🚫 You are banned from using this bot.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      if (ctx.inlineQuery) {
+        await ctx.answerInlineQuery([], { cache_time: 1, is_personal: true });
+        return;
+      }
+
+      if (ctx.message) {
+        if (ctx.chat?.type === "private") {
+          await ctx.reply("🚫 You are banned from using this bot.");
+        }
+        return;
+      }
+    } catch {
+      // Ignore errors from notifying banned users
+      return;
+    }
+    return;
+  }
+
+  return next();
+});
 
 // Track user activity
 function trackUsage(userId, type = "message", tokens = 0) {
@@ -1793,7 +1848,7 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke",
+    "• /status, /info, /grant, /revoke, /ban, /unban",
   ].join("\n");
 }
 
@@ -3194,6 +3249,7 @@ bot.command("info", async (ctx) => {
     ``,
     `🎫 <b>Tier:</b> ${user.tier?.toUpperCase() || "FREE"}`,
     `🤖 <b>Model:</b> <code>${escapeHTML(user.model) || "default"}</code>`,
+    `🚫 <b>Banned:</b> ${user.banned ? "YES" : "no"}`,
     ``,
     `📊 <b>Usage Stats</b>`,
     `• Messages: ${stats.totalMessages || 0}`,
@@ -3323,6 +3379,59 @@ bot.command("deny", async (ctx) => {
   saveUsers();
 
   await ctx.reply(`Denied model ${modelId} for user ${targetId}.`);
+});
+
+bot.command("ban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /ban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const reason = reasonParts.join(" ").trim();
+  const targetIdStr = String(targetId);
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot ban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  rec.banned = true;
+  rec.bannedAt = new Date().toISOString();
+  rec.bannedBy = String(ctx.from?.id || "");
+  rec.banReason = reason || null;
+  saveUsers();
+
+  let msg = `🚫 User ${targetIdStr} has been banned.`;
+  if (reason) msg += ` Reason: ${reason}`;
+  await ctx.reply(msg);
+});
+
+bot.command("unban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /unban <userId>");
+
+  const [targetId] = args;
+  const targetIdStr = String(targetId);
+  const rec = ensureUser(targetIdStr);
+
+  if (!rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is not banned.`);
+  }
+
+  rec.banned = false;
+  delete rec.bannedAt;
+  delete rec.bannedBy;
+  delete rec.banReason;
+  saveUsers();
+
+  await ctx.reply(`✅ User ${targetIdStr} has been unbanned.`);
 });
 
 // =====================
@@ -8238,11 +8347,13 @@ http
               { command: "whoami", description: "👤 Your profile & stats" },
               { command: "reset", description: "🗑️ Clear chat memory" },
               { command: "status", description: "📊 Bot status & analytics" },
-              { command: "info", description: "🔍 User info (info <userId>)" },
-              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
-              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
-              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
-              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
+              { command: "info", description: "🔍 User info (info &lt;userId&gt;)" },
+              { command: "grant", description: "🎁 Grant tier (grant &lt;userId&gt; &lt;tier&gt;)" },
+              { command: "revoke", description: "❌ Revoke to free (revoke &lt;userId&gt;)" },
+              { command: "ban", description: "🚫 Ban user (ban &lt;userId&gt; [reason])" },
+              { command: "unban", description: "✅ Unban user (unban &lt;userId&gt;)" },
+              { command: "allow", description: "✅ Allow model (allow &lt;userId&gt; &lt;model&gt;)" },
+              { command: "deny", description: "🚫 Deny model (deny &lt;userId&gt; &lt;model&gt;)" },
             ],
             { scope: { type: "chat", chat_id: Number(ownerId) } }
           );
