@@ -693,6 +693,8 @@ function isUserBanned(userId) {
 }
 
 // Global ban middleware - blocks banned users from using the bot
+// but still allows feedback (/feedback + Feedback button) so banned
+// users can send an appeal or report an issue.
 bot.use(async (ctx, next) => {
   const fromId = ctx.from?.id;
   if (!fromId) return next();
@@ -706,6 +708,21 @@ bot.use(async (ctx, next) => {
 
   const user = getUserRecord(idStr);
   if (user && user.banned) {
+    // Allow feedback flows even when banned (DM only)
+    const chatType = ctx.chat?.type;
+    const isPrivate = chatType === "private";
+    const text = ctx.message?.text || "";
+
+    const isFeedbackCommand = isPrivate && /^\/feedback\b/i.test(text);
+    const isFeedbackButton =
+      ctx.callbackQuery?.data === "menu_feedback";
+    const isFeedbackActive =
+      isPrivate && pendingFeedback.has(String(idStr));
+
+    if (isFeedbackCommand || isFeedbackButton || isFeedbackActive) {
+      return next();
+    }
+
     try {
       if (ctx.callbackQuery) {
         await ctx.answerCallbackQuery({
@@ -2642,6 +2659,80 @@ bot.command("feedback", async (ctx) => {
       "_You have 2 minutes. After that, feedback mode will expire._",
     { parse_mode: "Markdown" }
   );
+});
+
+// Feedback button in main menu
+bot.callbackQuery("menu_feedback", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+
+  if (!FEEDBACK_CHAT_ID) {
+    await ctx.answerCallbackQuery({
+      text: "Feedback is not configured yet.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  const chatType = ctx.chat?.type;
+  if (chatType !== "private") {
+    await ctx.answerCallbackQuery({
+      text: "Open a private chat with @starztechbot to send feedback.",
+      show_alert: true,
+    });
+    return;
+  }
+
+  const u = ctx.from;
+  if (!u?.id) {
+    await ctx.answerCallbackQuery({ text: "No user ID.", show_alert: true });
+    return;
+  }
+
+  pendingFeedback.set(String(u.id), { createdAt: Date.now() });
+
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Owner command: reply to feedback by feedback ID
+bot.command("fbreply", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /fbreply <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("fbreply send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
 });
 
 // /stats - Show user usage statistics
