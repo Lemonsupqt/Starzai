@@ -4956,7 +4956,7 @@ bot.on("message:animation", async (ctx) => {
         max_tokens: 500,
       });
     } else {
-      out = await llmVision({
+      out = await llmVisionReply({
         chatId: chat.id,
         userText: caption || "What's in this GIF? Describe what's happening.",
         imageBase64: b64,
