@@ -3263,16 +3263,21 @@ bot.command("whoami", async (ctx) => {
   const u = ensureUser(ctx.from.id, ctx.from);
   const model = ensureChosenModelValid(ctx.from.id);
   const stats = u.stats || {};
-  
+
+  const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
+  const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
+  const shortModel = model.split("/").pop();
+  const safeModel = escapeMarkdown(shortModel);
+
   const lines = [
     `👤 *Your Profile*`,
     ``,
     `🆔 User ID: \`${ctx.from.id}\``,
-    `📛 Username: ${u.username ? "@" + u.username : "_not set_"}`,
-    `👋 Name: ${u.firstName || "_not set_"}`,
+    `📛 Username: ${safeUsername}`,
+    `👋 Name: ${safeName}`,
     ``,
     `🎫 *Tier:* ${u.tier.toUpperCase()}`,
-    `🤖 *Model:* \`${model}\``,
+    `🤖 *Model:* \`${safeModel}\``,
     ``,
     `📊 *Usage Stats*`,
     `• Messages: ${stats.totalMessages || 0}`,
@@ -3281,7 +3286,7 @@ bot.command("whoami", async (ctx) => {
     ``,
     `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
   ];
-  
+
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 });
 
