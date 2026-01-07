@@ -1472,9 +1472,128 @@ async function webSearch(query, numResults = 5) {
   };
 }
 
+// Check if a message is asking about time/date
+function isTimeQuery(text) {
+  const lowerText = text.toLowerCase();
+  const timePatterns = [
+    /what('s|\s+is)\s+(the\s+)?time/i,
+    /current\s+time/i,
+    /time\s+(now|right now|in|at)/i,
+    /what\s+time\s+is\s+it/i,
+    /tell\s+(me\s+)?the\s+time/i,
+    /what('s|\s+is)\s+(the\s+)?(date|day)/i,
+    /today('s)?\s+date/i,
+    /what\s+day\s+is\s+(it|today)/i
+  ];
+  return timePatterns.some(pattern => pattern.test(lowerText));
+}
+
+// Extract timezone/location from time query
+function extractTimezone(text) {
+  const lowerText = text.toLowerCase();
+  
+  // Common timezone mappings
+  const timezones = {
+    'india': 'Asia/Kolkata',
+    'ist': 'Asia/Kolkata',
+    'indian': 'Asia/Kolkata',
+    'new york': 'America/New_York',
+    'nyc': 'America/New_York',
+    'est': 'America/New_York',
+    'los angeles': 'America/Los_Angeles',
+    'la': 'America/Los_Angeles',
+    'pst': 'America/Los_Angeles',
+    'london': 'Europe/London',
+    'uk': 'Europe/London',
+    'gmt': 'Europe/London',
+    'tokyo': 'Asia/Tokyo',
+    'japan': 'Asia/Tokyo',
+    'jst': 'Asia/Tokyo',
+    'dubai': 'Asia/Dubai',
+    'uae': 'Asia/Dubai',
+    'singapore': 'Asia/Singapore',
+    'sydney': 'Australia/Sydney',
+    'australia': 'Australia/Sydney',
+    'paris': 'Europe/Paris',
+    'france': 'Europe/Paris',
+    'berlin': 'Europe/Berlin',
+    'germany': 'Europe/Berlin',
+    'moscow': 'Europe/Moscow',
+    'russia': 'Europe/Moscow',
+    'beijing': 'Asia/Shanghai',
+    'china': 'Asia/Shanghai',
+    'hong kong': 'Asia/Hong_Kong',
+    'utc': 'UTC',
+    'cst': 'America/Chicago',
+    'chicago': 'America/Chicago',
+    'toronto': 'America/Toronto',
+    'canada': 'America/Toronto'
+  };
+  
+  for (const [key, tz] of Object.entries(timezones)) {
+    if (lowerText.includes(key)) {
+      return { timezone: tz, location: key.charAt(0).toUpperCase() + key.slice(1) };
+    }
+  }
+  
+  return null;
+}
+
+// Get formatted time response
+function getTimeResponse(text, messageDate) {
+  const tzInfo = extractTimezone(text);
+  const now = messageDate ? new Date(messageDate * 1000) : new Date();
+  
+  let timezone = 'UTC';
+  let locationName = 'UTC';
+  
+  if (tzInfo) {
+    timezone = tzInfo.timezone;
+    locationName = tzInfo.location;
+  }
+  
+  try {
+    const options = {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    };
+    
+    const formatter = new Intl.DateTimeFormat('en-US', options);
+    const formatted = formatter.format(now);
+    
+    // Also get just time and date separately
+    const timeOnly = now.toLocaleTimeString('en-US', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: true });
+    const dateOnly = now.toLocaleDateString('en-US', { timeZone: timezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    
+    return {
+      isTimeQuery: true,
+      response: `🕐 **${timeOnly}** in ${locationName}\n📅 ${dateOnly}`,
+      timezone: timezone,
+      location: locationName
+    };
+  } catch (e) {
+    return {
+      isTimeQuery: true,
+      response: `🕐 Current UTC time: ${now.toUTCString()}`,
+      timezone: 'UTC',
+      location: 'UTC'
+    };
+  }
+}
+
 // Check if a message needs web search (current events, news, real-time info)
 function needsWebSearch(text) {
   const lowerText = text.toLowerCase();
+  
+  // Don't web search for time queries - we handle those directly
+  if (isTimeQuery(text)) return false;
   
   // Keywords that suggest need for current/real-time info
   const searchTriggers = [
@@ -4795,6 +4914,19 @@ bot.on("message:text", async (ctx) => {
       // Normal mode - use persona or default
       const userRecord = getUserRecord(u.id);
       const persona = userRecord?.persona;
+      
+      // Check if it's a time/date query - handle directly without AI
+      if (isTimeQuery(text)) {
+        const timeResult = getTimeResponse(text, msg.date);
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() => {});
+        
+        const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+        await ctx.reply(
+          `${timeResult.response}\n\n⚡ ${elapsed}s`,
+          { parse_mode: "Markdown", reply_to_message_id: msg.message_id }
+        );
+        return;
+      }
       
       // Check if query needs real-time web search
       // Either: user has webSearch toggle ON, or auto-detect triggers
