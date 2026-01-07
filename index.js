@@ -1287,6 +1287,97 @@ async function cleanupTempDir(tempDir) {
 }
 
 // =====================
+// WEB SEARCH - SearXNG Integration
+// =====================
+
+const SEARXNG_INSTANCES = [
+  'https://searx.be',
+  'https://search.sapti.me',
+  'https://searx.tiekoetter.com'
+];
+
+async function webSearch(query, numResults = 5) {
+  const errors = [];
+  
+  for (const instance of SEARXNG_INSTANCES) {
+    try {
+      const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'StarzAI-Bot/1.0',
+          'Accept': 'application/json'
+        },
+        timeout: 10000
+      });
+      
+      if (!response.ok) {
+        errors.push(`${instance}: HTTP ${response.status}`);
+        continue;
+      }
+      
+      const data = await response.json();
+      
+      if (data.results && data.results.length > 0) {
+        // Return top results
+        return {
+          success: true,
+          results: data.results.slice(0, numResults).map(r => ({
+            title: r.title || 'No title',
+            url: r.url || '',
+            content: r.content || r.snippet || 'No description',
+            engine: r.engine || 'unknown'
+          })),
+          query: query,
+          instance: instance
+        };
+      }
+    } catch (e) {
+      errors.push(`${instance}: ${e.message}`);
+    }
+  }
+  
+  return {
+    success: false,
+    error: `All search instances failed: ${errors.join('; ')}`,
+    query: query
+  };
+}
+
+// Check if a message needs web search (current events, news, real-time info)
+function needsWebSearch(text) {
+  const lowerText = text.toLowerCase();
+  
+  // Keywords that suggest need for current/real-time info
+  const searchTriggers = [
+    'latest', 'recent', 'current', 'today', 'yesterday', 'this week', 'this month',
+    'news', 'update', 'happening', 'going on',
+    'price of', 'stock price', 'weather in', 'score of',
+    'who won', 'who is winning', 'election',
+    'released', 'announced', 'launched',
+    '2024', '2025', '2026',
+    'search for', 'look up', 'find out', 'google'
+  ];
+  
+  return searchTriggers.some(trigger => lowerText.includes(trigger));
+}
+
+// Format search results for AI context
+function formatSearchResultsForAI(searchResult) {
+  if (!searchResult.success) {
+    return `[Web search failed: ${searchResult.error}]`;
+  }
+  
+  let context = `[Web Search Results for "${searchResult.query}"]:\n\n`;
+  searchResult.results.forEach((r, i) => {
+    context += `${i + 1}. ${r.title}\n`;
+    context += `   URL: ${r.url}\n`;
+    context += `   ${r.content}\n\n`;
+  });
+  
+  return context;
+}
+
+// =====================
 // MARKDOWN CONVERTER - AI output to Telegram HTML format
 // =====================
 // AI outputs standard Markdown, but Telegram uses different syntax.
@@ -1919,6 +2010,125 @@ bot.command("help", async (ctx) => {
   }
   
   await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
+});
+
+// /search command - Web search
+bot.command("search", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const query = ctx.message.text.replace(/^\/search\s*/i, "").trim();
+  
+  if (!query) {
+    return ctx.reply("🔍 <b>Web Search</b>\n\nUsage: <code>/search your query here</code>\n\nExample: <code>/search latest AI news</code>", { parse_mode: "HTML" });
+  }
+  
+  const statusMsg = await ctx.reply(`🔍 Searching for: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+  
+  try {
+    const searchResult = await webSearch(query, 5);
+    
+    if (!searchResult.success) {
+      return ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+        `❌ Search failed: ${escapeHTML(searchResult.error)}`, 
+        { parse_mode: "HTML" });
+    }
+    
+    // Format results for display
+    let response = `🔍 <b>Search Results for:</b> <i>${escapeHTML(query)}</i>\n\n`;
+    
+    searchResult.results.forEach((r, i) => {
+      response += `<b>${i + 1}. ${escapeHTML(r.title)}</b>\n`;
+      response += `<a href="${r.url}">${escapeHTML(r.url.slice(0, 50))}${r.url.length > 50 ? '...' : ''}</a>\n`;
+      response += `${escapeHTML(r.content.slice(0, 150))}${r.content.length > 150 ? '...' : ''}\n\n`;
+    });
+    
+    response += `<i>🌐 via ${searchResult.instance.replace('https://', '')}</i>`;
+    
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
+      parse_mode: "HTML",
+      disable_web_page_preview: true 
+    });
+    
+    trackUsage(ctx.from.id, "message");
+    
+  } catch (e) {
+    console.error("Search error:", e);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+      `❌ Search error: ${escapeHTML(e.message?.slice(0, 100) || 'Unknown error')}`, 
+      { parse_mode: "HTML" });
+  }
+});
+
+// /websearch command - Search and get AI summary
+bot.command("websearch", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const u = ensureUser(ctx.from.id, ctx.from);
+  
+  const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
+  
+  if (!query) {
+    return ctx.reply("🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>", { parse_mode: "HTML" });
+  }
+  
+  const statusMsg = await ctx.reply(`🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+  
+  try {
+    // Search the web
+    const searchResult = await webSearch(query, 5);
+    
+    if (!searchResult.success) {
+      return ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+        `❌ Search failed: ${escapeHTML(searchResult.error)}`, 
+        { parse_mode: "HTML" });
+    }
+    
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+      `🔍 Found ${searchResult.results.length} results, analyzing with AI...`, 
+      { parse_mode: "HTML" });
+    
+    // Format search results for AI
+    const searchContext = formatSearchResultsForAI(searchResult);
+    
+    // Get AI to summarize
+    const model = u.model || "gpt-4.1-mini";
+    const startTime = Date.now();
+    
+    const aiResponse = await llmText({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: `You are a helpful assistant with access to real-time web search results. Answer the user's question based on the search results provided. Be concise but informative. Always cite your sources by mentioning which result you got the information from. If the search results don't contain relevant information, say so.`
+        },
+        {
+          role: "user",
+          content: `${searchContext}\n\nUser's question: ${query}\n\nPlease answer based on the search results above.`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 1000
+    });
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    
+    let response = `🔍 <b>Web Search:</b> <i>${escapeHTML(query)}</i>\n\n`;
+    response += convertToTelegramHTML(aiResponse.slice(0, 3500));
+    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
+    
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
+      parse_mode: "HTML",
+      disable_web_page_preview: true 
+    });
+    
+    trackUsage(ctx.from.id, "message");
+    
+  } catch (e) {
+    console.error("Websearch error:", e);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+      `❌ Error: ${escapeHTML(e.message?.slice(0, 100) || 'Unknown error')}`, 
+      { parse_mode: "HTML" });
+  }
 });
 
 bot.command("register", async (ctx) => {
@@ -4422,6 +4632,28 @@ bot.on("message:text", async (ctx) => {
       const userRecord = getUserRecord(u.id);
       const persona = userRecord?.persona;
       
+      // Check if query needs real-time web search
+      let searchContext = "";
+      if (needsWebSearch(text)) {
+        try {
+          await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
+            `🔍 Searching the web for current info...`, 
+            { parse_mode: "HTML" }).catch(() => {});
+          
+          const searchResult = await webSearch(text, 3);
+          if (searchResult.success) {
+            searchContext = "\n\n" + formatSearchResultsForAI(searchResult);
+            modeLabel = "🌐 ";
+          }
+          
+          await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
+            `⏳ Processing with <b>${model}</b>...`, 
+            { parse_mode: "HTML" }).catch(() => {});
+        } catch (searchErr) {
+          console.log("Auto-search failed:", searchErr.message);
+        }
+      }
+      
       if (persona) {
         systemPrompt = replyContext
           ? `You are StarzTechBot with the personality of: ${persona}. The user is replying to a specific message. Focus on that context. Stay in character. Answer clearly.`
@@ -4431,8 +4663,13 @@ bot.on("message:text", async (ctx) => {
           ? "You are StarzTechBot, a helpful AI. The user is replying to a specific message in the conversation. Focus your response on that context. Answer clearly. Don't mention system messages."
           : "You are StarzTechBot, a helpful AI. Answer clearly. Don't mention system messages.";
       }
+      
+      // Add search context instruction if we have search results
+      if (searchContext) {
+        systemPrompt += " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
+      }
 
-      const userTextWithContext = replyContext + text;
+      const userTextWithContext = replyContext + text + searchContext;
 
       out = await llmChatReply({
         chatId: chat.id,
