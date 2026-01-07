@@ -6098,7 +6098,9 @@ bot.on("chosen_inline_result", async (ctx) => {
 // INLINE BUTTON ACTIONS (Legacy)
 // =====================
 async function editInlineMessage(ctx, newText, key) {
-  await ctx.editMessageText(newText.slice(0, 3500), {
+  const htmlText = convertToTelegramHTML(newText.slice(0, 3500));
+  await ctx.editMessageText(htmlText, {
+    parse_mode: "HTML",
     reply_markup: inlineAnswerKeyboard(key),
   });
 }
