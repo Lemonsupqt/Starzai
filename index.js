@@ -3871,33 +3871,75 @@ bot.on("inline_query", async (ctx) => {
   const model = session.model || ensureChosenModelValid(userId);
   const sessionKey = makeId(6);
 
-  // Empty query - show main menu with all modes
+  // Empty query - show main menu with all modes as direct floating options
   if (!q || q.length === 0) {
     console.log("Showing main menu (empty query)");
     const shortModel = model.split("/").pop();
     
+    // Each mode is a separate floating option - tap to fill prefix in keyboard!
     const results = [
       {
         type: "article",
-        id: `ask_ai_${sessionKey}`,
-        title: "⚡ Ask AI",
-        description: "Quark • Blackhole • Code • Explain",
-        thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
-        input_message_content: { 
-          message_text: `⚡ *StarzAI - Ask AI Modes*\n\n⭐ *Quark* - Quick answers\n🗿🔬 *Blackhole* - Deep research\n💻 *Code* - Programming help\n🧠 *Explain* - Simple explanations\n🎭 *Character* - Fun personas\n📝 *Summarize* - Condense text\n🤝🏻 *Partner* - Chat with your AI companion\n\n_Tap a button or type directly!_`,
-          parse_mode: "Markdown"
-        },
-        reply_markup: new InlineKeyboard()
-          .switchInlineCurrent("⭐ Quark", "q: ")
-          .switchInlineCurrent("🗿🔬 Blackhole", "b: ")
-          .row()
-          .switchInlineCurrent("💻 Code", "code: ")
-          .switchInlineCurrent("🧠 Explain", "e: ")
-          .row()
-          .switchInlineCurrent("🎭 Character", "as ")
-          .switchInlineCurrent("📝 Summarize", "sum: ")
-          .row()
-          .switchInlineCurrent("🤝🏻 Partner", "p: "),
+        id: `quark_${sessionKey}`,
+        title: "⭐ Quark - Quick Answer",
+        description: "Tap to type your question",
+        thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⭐ Type your question", "q: "),
+      },
+      {
+        type: "article",
+        id: `blackhole_${sessionKey}`,
+        title: "🗿🔬 Blackhole - Deep Research",
+        description: "Tap to type your topic",
+        thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🗿 Type your topic", "b: "),
+      },
+      {
+        type: "article",
+        id: `code_${sessionKey}`,
+        title: "💻 Code - Programming Help",
+        description: "Tap to type your coding question",
+        thumbnail_url: "https://img.icons8.com/fluency/96/source-code.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("💻 Type your question", "code: "),
+      },
+      {
+        type: "article",
+        id: `explain_${sessionKey}`,
+        title: "🧠 Explain - Simple Explanations",
+        description: "Tap to type what to explain",
+        thumbnail_url: "https://img.icons8.com/fluency/96/brain.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🧠 Type topic to explain", "e: "),
+      },
+      {
+        type: "article",
+        id: `character_${sessionKey}`,
+        title: "🎭 Character - Fun Roleplay",
+        description: "Tap to choose a character",
+        thumbnail_url: "https://img.icons8.com/fluency/96/theatre-mask.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🎭 Type character name", "as "),
+      },
+      {
+        type: "article",
+        id: `summarize_${sessionKey}`,
+        title: "📝 Summarize - Condense Text",
+        description: "Tap to paste text to summarize",
+        thumbnail_url: "https://img.icons8.com/fluency/96/summary-list.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("📝 Paste text to summarize", "sum: "),
+      },
+      {
+        type: "article",
+        id: `partner_${sessionKey}`,
+        title: "🤝🏻 Partner - AI Companion",
+        description: "Chat with your custom AI partner",
+        thumbnail_url: "https://img.icons8.com/fluency/96/handshake.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🤝🏻 Type your message", "p: "),
       },
       {
         type: "article",
