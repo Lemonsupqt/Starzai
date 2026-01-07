@@ -1275,18 +1275,53 @@ function helpText() {
   ].join("\n");
 }
 
-function helpKeyboard() {
+// Main menu message builder
+function buildMainMenuMessage(userId) {
+  const u = getUserRecord(userId);
+  const model = ensureChosenModelValid(userId);
+  const tier = u?.tier?.toUpperCase() || "FREE";
+  const shortModel = model.split("/").pop();
+  
+  return [
+    "⚡ *StarzAI* — Your AI Assistant",
+    "",
+    `👤 *Tier:* ${tier}  •  🤖 *Model:* \`${shortModel}\``,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "💬 *DM* — Chat directly with AI",
+    "👥 *Groups* — Mention @starztechbot",
+    "⌨️ *Inline* — Type @starztechbot anywhere",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "_Tap a button below to explore!_",
+  ].join("\n");
+}
+
+// Main menu keyboard
+function mainMenuKeyboard() {
   return new InlineKeyboard()
-    .text("🌟 Features", "help_features")
-    .text("⚙️ Model", "open_model")
+    .text("🌟 Features", "menu_features")
+    .text("⚙️ Model", "menu_model")
     .row()
-    .text("🤝🏻 Partner", "open_partner")
-    .text("📊 Stats", "do_stats")
+    .text("🤝🏻 Partner", "menu_partner")
+    .text("📊 Stats", "menu_stats")
     .row()
-    .text("🎭 Character", "open_char")
-    .text("📝 Register", "do_register")
+    .text("🎭 Character", "menu_char")
+    .text("📝 Register", "menu_register")
     .row()
     .switchInline("⚡ Try Inline", "");
+}
+
+// Back button keyboard
+function backToMainKeyboard() {
+  return new InlineKeyboard().text("« Back to Menu", "menu_back");
+}
+
+// Legacy helpKeyboard for compatibility
+function helpKeyboard() {
+  return mainMenuKeyboard();
 }
 
 // Beautiful inline help card
@@ -1397,7 +1432,11 @@ function buildPartnerKeyboard(partner) {
     kb.text("🗑 Clear Chat", "partner_clearchat");
     kb.row();
     kb.text("❌ Delete Partner", "partner_delete");
+    kb.row();
   }
+  
+  // Add back to main menu button
+  kb.text("« Back to Menu", "menu_back");
   
   return kb;
 }
@@ -1677,16 +1716,14 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 // =====================
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-
-  await ctx.reply(
-    `⚡ *Welcome to StarzAI!*\n\n💬 *DM* - Chat directly with AI\n👥 *Groups* - Mention @starztechbot\n⌨️ *Inline* - Type @starztechbot anywhere\n\n🌟 *Features:*\n• Multiple AI modes (Quark, Blackhole, Code...)\n• 🤝🏻 AI Partner with persistent memory\n• 🎭 Character roleplay\n• 📊 Usage stats & history\n\n_Tap Features below to learn more!_`,
-    { parse_mode: "Markdown", reply_markup: helpKeyboard() }
-  );
+  ensureUser(ctx.from.id, ctx.from);
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
 });
 
 bot.command("help", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  await ctx.reply(helpText(), { parse_mode: "Markdown", reply_markup: helpKeyboard() });
+  ensureUser(ctx.from.id, ctx.from);
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard() });
 });
 
 bot.command("register", async (ctx) => {
@@ -2039,7 +2076,11 @@ function buildCharacterKeyboard(savedChars, activeChar) {
   // Add stop button if character is active
   if (activeChar) {
     keyboard.text("⏹ Stop Character", "char_stop");
+    keyboard.row();
   }
+  
+  // Add back to main menu button
+  keyboard.text("« Back to Menu", "menu_back");
   
   return keyboard;
 }
@@ -2108,29 +2149,37 @@ bot.callbackQuery("open_char", async (ctx) => {
   const savedChars = getSavedCharacters(userId);
   
   const statusText = activeChar 
-    ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
-    : "🎭 <b>No active character</b>\n\n";
+    ? `🎭 *Active Character:* ${activeChar.name}\n\n`
+    : "🎭 *No active character*\n\n";
   
   const savedList = savedChars.length > 0
-    ? `💾 <b>Saved Characters:</b>\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\n")}\n\n`
+    ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
     : "";
   
   const helpText = [
     statusText,
     savedList,
-    "<b>Commands:</b>",
-    "• /char yoda - Start as Yoda",
-    "• /char save yoda - Save character",
-    "• /char list - Show saved",
-    "• /char stop or /default - Stop",
+    "*Commands:*",
+    "• `/char yoda` - Start as Yoda",
+    "• `/char save yoda` - Save character",
+    "• `/char list` - Show saved",
+    "• `/char stop` or `/default` - Stop",
     "",
-    "<i>Tap a character button to start!</i>",
+    "_Tap a character button to start!_",
   ].join("\n");
   
-  await ctx.reply(helpText, { 
-    parse_mode: "HTML",
-    reply_markup: buildCharacterKeyboard(savedChars, activeChar)
-  });
+  try {
+    await ctx.editMessageText(helpText, { 
+      parse_mode: "Markdown",
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+    });
+  } catch (e) {
+    // If edit fails, send as reply
+    await ctx.reply(helpText, { 
+      parse_mode: "Markdown",
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+    });
+  }
 });
 
 // Partner callback handlers - Setup field buttons
@@ -2163,10 +2212,17 @@ bot.callbackQuery("partner_set_style", async (ctx) => {
 bot.callbackQuery("open_partner", async (ctx) => {
   await ctx.answerCallbackQuery();
   const partner = getPartner(ctx.from.id);
-  await ctx.reply(
-    buildPartnerSetupMessage(partner),
-    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-  );
+  try {
+    await ctx.editMessageText(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
+  } catch (e) {
+    await ctx.reply(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
+  }
 });
 
 bot.callbackQuery("do_stats", async (ctx) => {
@@ -2175,7 +2231,7 @@ bot.callbackQuery("do_stats", async (ctx) => {
   const userRecord = getUserRecord(u.id);
   
   if (!userRecord) {
-    return ctx.reply("❌ Not registered yet. Use /register first.");
+    return ctx.answerCallbackQuery({ text: "❌ Not registered yet!", show_alert: true });
   }
   
   const model = ensureChosenModelValid(u.id);
@@ -2195,7 +2251,11 @@ bot.callbackQuery("do_stats", async (ctx) => {
     `📅 *Member since:* ${memberSince}`,
   ].join("\n");
   
-  await ctx.reply(stats, { parse_mode: "Markdown" });
+  try {
+    await ctx.editMessageText(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
+  } catch (e) {
+    await ctx.reply(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
+  }
 });
 
 bot.callbackQuery("partner_chat", async (ctx) => {
@@ -2279,6 +2339,9 @@ function modelCategoryKeyboard(userTier) {
   if (userTier === "ultra") {
     rows.push([{ text: "💎 Ultra Models", callback_data: "model_cat:ultra" }]);
   }
+  
+  // Add back to main menu button
+  rows.push([{ text: "« Back to Menu", callback_data: "menu_back" }]);
   
   return { inline_keyboard: rows };
 }
@@ -2593,7 +2656,207 @@ bot.command("deny", async (ctx) => {
 });
 
 // =====================
-// CALLBACKS: HELP / REGISTER / MODEL
+// CALLBACKS: UNIFIED MENU NAVIGATION
+// =====================
+
+// Back to main menu
+bot.callbackQuery("menu_back", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
+      parse_mode: "Markdown",
+      reply_markup: mainMenuKeyboard()
+    });
+  } catch (e) {
+    // If edit fails (message unchanged), ignore
+  }
+});
+
+// Features menu
+bot.callbackQuery("menu_features", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const featuresText = [
+    "🌟 *StarzAI Features*",
+    "",
+    "⚡ *AI Modes (Inline)*",
+    "• ⭐ *Quark* (`q:`) - Lightning fast answers",
+    "• 🗿🔬 *Blackhole* (`b:`) - Deep research & analysis",
+    "• 💻 *Code* (`code:`) - Programming help & snippets",
+    "• 🧠 *Explain* (`e:`) - Simple ELI5 explanations",
+    "• 🎭 *Character* (`as:`) - Roleplay as any character",
+    "• 📝 *Summarize* (`sum:`) - Condense long text",
+    "",
+    "🤝🏻 *AI Partner*",
+    "Create your personalized AI companion!",
+    "• Custom name, personality, background",
+    "• Persistent chat memory",
+    "• Works in DM and inline (`p:`)",
+    "",
+    "🎭 *Character Mode*",
+    "Quick roleplay as existing characters!",
+    "• `/char yoda` - Start as Yoda",
+    "• `/char save yoda` - Save to favorites",
+    "• `/char stop` - End character mode",
+    "",
+    "📊 *Stats & History*",
+    "• /stats - Your usage statistics",
+    "• /history - Recent prompts",
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(featuresText, {
+      parse_mode: "Markdown",
+      reply_markup: backToMainKeyboard()
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Model menu
+bot.callbackQuery("menu_model", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const current = ensureChosenModelValid(ctx.from.id);
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *Model Selection*\n\n👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\n_Select a category:_`,
+      { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    );
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Partner menu
+bot.callbackQuery("menu_partner", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const partner = getPartner(ctx.from.id);
+  
+  try {
+    await ctx.editMessageText(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Stats menu
+bot.callbackQuery("menu_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const u = ctx.from;
+  const userRecord = getUserRecord(u.id);
+  
+  if (!userRecord) {
+    return ctx.answerCallbackQuery({ text: "❌ Not registered yet!", show_alert: true });
+  }
+  
+  const model = ensureChosenModelValid(u.id);
+  const memberSince = userRecord.createdAt ? new Date(userRecord.createdAt).toLocaleDateString() : "Unknown";
+  const messages = userRecord.messageCount || 0;
+  const queries = userRecord.inlineQueryCount || 0;
+  
+  const stats = [
+    `📊 *Your Stats*`,
+    ``,
+    `👤 *User ID:* \`${u.id}\``,
+    `🌟 *Tier:* ${userRecord.tier?.toUpperCase() || "FREE"}`,
+    `🤖 *Model:* ${model.split("/").pop()}`,
+    ``,
+    `💬 *Messages:* ${messages}`,
+    `⌨️ *Inline queries:* ${queries}`,
+    `📅 *Member since:* ${memberSince}`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(stats, {
+      parse_mode: "Markdown",
+      reply_markup: backToMainKeyboard()
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Character menu
+bot.callbackQuery("menu_char", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+  
+  const activeChar = getActiveCharacter(userId, chatId);
+  const savedChars = getSavedCharacters(userId);
+  
+  const statusText = activeChar 
+    ? `🎭 *Active Character:* ${activeChar.name}\n\n`
+    : "🎭 *No active character*\n\n";
+  
+  const savedList = savedChars.length > 0
+    ? `💾 *Saved Characters:*\n${savedChars.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n\n`
+    : "";
+  
+  const helpText = [
+    statusText,
+    savedList,
+    "*Commands:*",
+    "• `/char yoda` - Start as Yoda",
+    "• `/char save yoda` - Save character",
+    "• `/char list` - Show saved",
+    "• `/char stop` or `/default` - Stop",
+    "",
+    "_Tap a character button to start!_",
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(helpText, { 
+      parse_mode: "Markdown",
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// Register menu
+bot.callbackQuery("menu_register", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return ctx.answerCallbackQuery({ text: "No user id.", show_alert: true });
+  
+  const existing = getUserRecord(u.id);
+  if (!existing) registerUser(u);
+  
+  await ctx.answerCallbackQuery({ text: existing ? "✅ Already registered!" : "✅ Registered!" });
+  
+  // Update the main menu to show new status
+  try {
+    await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
+      parse_mode: "Markdown",
+      reply_markup: mainMenuKeyboard()
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// =====================
+// CALLBACKS: LEGACY (for backwards compatibility)
 // =====================
 
 // Noop callback for tier headers (non-clickable)
@@ -2702,15 +2965,11 @@ bot.callbackQuery(/^model_cat:(free|premium|ultra)$/, async (ctx) => {
   
   try {
     await ctx.editMessageText(
-      `${categoryTitle(category)} Models\n🤖 Current: \`${current}\`\n\nSelect a model:`,
+      `${categoryTitle(category)} *Models*\n\n🤖 Current: \`${current}\`\n\n_Select a model:_`,
       { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier) }
     );
   } catch {
-    // If edit fails, send new message
-    await ctx.reply(
-      `${categoryTitle(category)} Models\n🤖 Current: \`${current}\`\n\nSelect a model:`,
-      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier) }
-    );
+    // If edit fails, ignore
   }
 });
 
@@ -2725,15 +2984,11 @@ bot.callbackQuery("model_back", async (ctx) => {
   
   try {
     await ctx.editMessageText(
-      `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
+      `⚙️ *Model Selection*\n\n👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\n_Select a category:_`,
       { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
     );
   } catch {
-    // If edit fails, send new message
-    await ctx.reply(
-      `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
-      { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
-    );
+    // If edit fails, ignore
   }
 });
 
@@ -2760,13 +3015,16 @@ bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
   await ctx.answerCallbackQuery({ text: `✅ Switched to ${modelId}` });
 
   try {
-    // Show success message with back to categories option
+    // Show success message with back options
     await ctx.editMessageText(
-      `✅ Switched to *${modelId}*\n\n👤 Plan: *${u.tier.toUpperCase()}*`,
+      `✅ *Model Changed*\n\n🤖 Now using: \`${modelId}\`\n👤 Plan: *${u.tier.toUpperCase()}*`,
       { 
         parse_mode: "Markdown", 
         reply_markup: { 
-          inline_keyboard: [[{ text: "← Back to Models", callback_data: "model_back" }]] 
+          inline_keyboard: [
+            [{ text: "← Back to Models", callback_data: "model_back" }],
+            [{ text: "« Back to Menu", callback_data: "menu_back" }]
+          ] 
         } 
       }
     );
