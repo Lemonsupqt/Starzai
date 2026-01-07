@@ -3781,17 +3781,29 @@ bot.on("message:web_app_data", async (ctx) => {
 const processingMessages = new Map(); // chatId:messageId -> timestamp
 
 bot.on("message:text", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-
   const chat = ctx.chat;
   const u = ctx.from;
   const text = (ctx.message?.text || "").trim();
   const messageId = ctx.message?.message_id;
+  
+  // Debug logging
+  console.log(`[MSG] User ${u?.id} in ${chat?.type} (${chat?.id}): "${text?.slice(0, 50)}"`);
+  
+  if (!(await enforceRateLimit(ctx))) {
+    console.log(`[MSG] Rate limited: ${u?.id}`);
+    return;
+  }
 
-  if (!text || !u?.id) return;
+  if (!text || !u?.id) {
+    console.log(`[MSG] Empty text or no user ID`);
+    return;
+  }
 
   // Ignore commands
-  if (text.startsWith("/")) return;
+  if (text.startsWith("/")) {
+    console.log(`[MSG] Ignoring command: ${text}`);
+    return;
+  }
   
   // Deduplicate - prevent processing same message twice
   const dedupeKey = `${chat.id}:${messageId}`;
