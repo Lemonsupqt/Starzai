@@ -4744,7 +4744,9 @@ bot.on("message:video", async (ctx) => {
 
     // Build prompt for AI
     const caption = (ctx.message.caption || "").trim();
-    let userPrompt = caption || "Summarize this video. What's happening?";
+    const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
+    
+    let userPrompt = caption || "What's happening in this video? Describe the content.";
     
     // Add transcript context if available
     if (transcript) {
@@ -4757,11 +4759,21 @@ bot.on("message:video", async (ctx) => {
       image_url: { url: `data:image/jpeg;base64,${f.base64}` }
     }));
 
+    // Context-aware system prompt
+    let systemPrompt = `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} key frame(s). `;
+    if (transcript) {
+      systemPrompt += "An audio transcript is also provided. ";
+    }
+    if (hasQuestion) {
+      systemPrompt += "Answer the user's specific question about this video directly and concisely. Focus on what they're asking about.";
+    } else if (caption) {
+      systemPrompt += "Respond to the user's message in context of what you see in the video.";
+    } else {
+      systemPrompt += "Describe what's happening - identify people, actions, context, and any notable details. Be specific and observant.";
+    }
+
     const messages = [
-      { 
-        role: "system", 
-        content: `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} key frames extracted at regular intervals. ${transcript ? "An audio transcript is also provided." : ""} Provide a comprehensive summary of what's happening in the video.`
-      },
+      { role: "system", content: systemPrompt },
       {
         role: "user",
         content: [
@@ -4785,14 +4797,9 @@ bot.on("message:video", async (ctx) => {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    // Build response
-    let response = `🎬 <b>Video Summary</b>\n`;
-    response += `<i>${duration.toFixed(1)}s • ${frames.length} frames analyzed</i>\n`;
-    if (hasAudio) {
-      response += `<i>🎙️ Audio: ${transcript ? "transcribed" : "no speech detected"}</i>\n`;
-    }
-    response += `\n${convertToTelegramHTML(out.slice(0, 3500))}`;
-    response += `\n\n<i>⏱️ ${elapsed}s • ${escapeHTML(model)}</i>`;
+    // Build response - cleaner format
+    let response = convertToTelegramHTML(out.slice(0, 3500));
+    response += `\n\n<i>🎬 ${elapsed}s • ${escapeHTML(model)}</i>`;
 
     await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
 
@@ -4956,12 +4963,34 @@ bot.on("message:animation", async (ctx) => {
         max_tokens: 500,
       });
     } else {
-      out = await llmVisionReply({
-        chatId: chat.id,
-        userText: caption || "What's in this GIF? Describe what's happening.",
-        imageBase64: b64,
-        mime: "image/jpeg",
+      // Context-aware prompt for GIFs
+      const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
+      let gifPrompt = caption || "What's in this GIF? Describe what's happening.";
+      
+      // Use llmText for better context handling
+      let gifSystemPrompt = "You are analyzing a GIF/animation. ";
+      if (hasQuestion) {
+        gifSystemPrompt += "Answer the user's specific question directly and concisely.";
+      } else if (caption) {
+        gifSystemPrompt += "Respond to the user's message in context of what you see.";
+      } else {
+        gifSystemPrompt += "Describe what's happening - identify people, characters, actions, memes, or jokes. Be specific.";
+      }
+      
+      out = await llmText({
         model,
+        messages: [
+          { role: "system", content: gifSystemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: gifPrompt },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }
+            ]
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 500,
       });
     }
     
