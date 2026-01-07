@@ -66,6 +66,7 @@ Set a custom personality for all DM responses:
 | `/banlist` | List all banned users |
 | `/mute <userId> <duration> [scope] [reason]` | Temporarily mute a user (`scope`: all/dm/group/inline/tier) |
 | `/unmute <userId> [reason]` | Remove active mute from user |
+| `/mutelist` | List all muted users |
 | `/allow <userId> <model>` | Allow specific model |
 | `/deny <userId> <model>` | Deny specific model |
 

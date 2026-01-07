@@ -1973,7 +1973,7 @@ function helpText() {
     "• `p:` — 🤝🏻 Partner chat",
     "",
     "🔧 *Owner commands*",
-    "• /status, /info, /grant, /revoke, /ban, /unban, /banlist, /mute, /unmute",
+    "• /status, /info, /grant, /revoke, /ban, /unban, /banlist, /mute, /unmute, /mutelist",
   ].join("\n");
 }
 
@@ -3780,6 +3780,47 @@ bot.command("banlist", async (ctx) => {
     lines.push(
       `${idx + 1}. <code>${id}</code> – ${username} (${name})`,
       `   ⏰ ${bannedAt} • Reason: ${reasonText}`,
+      ""
+    );
+  });
+
+  if (entries.length > max) {
+    lines.push(
+      `... and ${entries.length - max} more. Use /info &lt;userId&gt; for details.`
+    );
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+});
+
+bot.command("mutelist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const entries = Object.entries(usersDb.users || {}).filter(
+    ([, u]) => u.mute
+  );
+
+  if (entries.length === 0) {
+    return ctx.reply("✅ No muted users currently.");
+  }
+
+  const max = 50;
+  const subset = entries.slice(0, max);
+  const lines = [
+    `🔇 <b>Muted users</b> (${entries.length})`,
+    "",
+  ];
+
+  subset.forEach(([id, u], idx) => {
+    const m = u.mute;
+    const scope = m.scope || "all";
+    const until = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    const reasonText = m.reason ? escapeHTML(m.reason.slice(0, 80)) : "none";
+    const username = u.username ? "@" + escapeHTML(u.username) : "<i>no username</i>";
+    const name = u.firstName ? escapeHTML(u.firstName) : "<i>no name</i>";
+    lines.push(
+      `${idx + 1}. <code>${id}</code> – ${username} (${name})`,
+      `   🎯 Scope: ${escapeHTML(scope)} • Until: ${escapeHTML(until)} • Reason: ${reasonText}`,
       ""
     );
   });
@@ -8706,6 +8747,17 @@ http
               { command: "whoami", description: "👤 Your profile & stats" },
               { command: "reset", description: "🗑️ Clear chat memory" },
               { command: "status", description: "📊 Bot status & analytics" },
+              { command: "info", description: "🔍 User info (info <userId>)" },
+              { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
+              { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
+              { command: "ban", description: "🚫 Ban user (ban <userId> [reason])" },
+              { command: "unban", description: "✅ Unban user (unban <userId> [reason])" },
+              { command: "banlist", description: "📜 List banned users" },
+              { command: "mute", description: "🔇 Mute user (mute <userId> <duration> [scope] [reason])" },
+              { command: "unmute", description: "🔊 Unmute user (unmute <userId> [reason])" },
+              { command: "mutelist", description: "🔇 List muted users" },
+              { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
+              { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },us", description: "📊 Bot status & analytics" },
               { command: "info", description: "🔍 User info (info <userId>)" },
               { command: "grant", description: "🎁 Grant tier (grant <userId> <tier>)" },
               { command: "revoke", description: "❌ Revoke to free (revoke <userId>)" },
