@@ -2774,10 +2774,81 @@ bot.callbackQuery("menu_stats", async (ctx) => {
     `📅 *Member since:* ${memberSince}`,
   ].join("\n");
   
+  const keyboard = new InlineKeyboard()
+    .text("📜 History", "menu_history")
+    .row()
+    .text("« Back to Menu", "menu_back");
+  
   try {
     await ctx.editMessageText(stats, {
       parse_mode: "Markdown",
-      reply_markup: backToMainKeyboard()
+      reply_markup: keyboard
+    });
+  } catch (e) {
+    // If edit fails, ignore
+  }
+});
+
+// History menu (inside stats)
+bot.callbackQuery("menu_history", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const u = ctx.from;
+  const user = getUserRecord(u.id);
+  
+  if (!user || !user.history || user.history.length === 0) {
+    try {
+      await ctx.editMessageText(
+        "📜 *No history yet!*\n\nYour recent inline queries will appear here.\n\n_Try using @starztechbot in any chat!_",
+        { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("← Back to Stats", "menu_stats").row().text("« Back to Menu", "menu_back") }
+      );
+    } catch (e) {}
+    return;
+  }
+  
+  const modeEmojis = {
+    quark: "⭐",
+    blackhole: "🗿🔬",
+    code: "💻",
+    explain: "🧠",
+    character: "🎭",
+    summarize: "📝",
+    default: "⚡",
+  };
+  
+  let historyText = "📜 *Recent Prompts*\n\n";
+  user.history.slice(0, 10).forEach((item, i) => {
+    const emoji = modeEmojis[item.mode] || "⚡";
+    const timeAgo = getTimeAgo(item.timestamp);
+    const promptPreview = item.prompt.length > 30 ? item.prompt.slice(0, 27) + "..." : item.prompt;
+    historyText += `${i + 1}. ${emoji} _${promptPreview}_\n   ⏰ ${timeAgo}\n\n`;
+  });
+  
+  historyText += "_Tap a button to re-use a prompt!_";
+  
+  // Create buttons for quick re-use (first 5)
+  const keyboard = new InlineKeyboard();
+  user.history.slice(0, 5).forEach((item, i) => {
+    const prefix = item.mode === "quark" ? "q: " : 
+                   item.mode === "blackhole" ? "b: " :
+                   item.mode === "code" ? "code: " :
+                   item.mode === "explain" ? "e: " :
+                   item.mode === "summarize" ? "sum: " : "";
+    const btnText = item.prompt.length > 12 ? item.prompt.slice(0, 10) + ".." : item.prompt;
+    keyboard.switchInlineCurrent(`${i + 1}. ${btnText}`, `${prefix}${item.prompt}`);
+    if (i % 2 === 1) keyboard.row();
+  });
+  if (user.history.length % 2 === 1) keyboard.row();
+  
+  keyboard.text("← Back to Stats", "menu_stats");
+  keyboard.row();
+  keyboard.text("« Back to Menu", "menu_back");
+  
+  try {
+    await ctx.editMessageText(historyText, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard
     });
   } catch (e) {
     // If edit fails, ignore
