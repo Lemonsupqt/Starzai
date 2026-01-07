@@ -6873,8 +6873,7 @@ bot.on("inline_query", async (ctx) => {
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
-          .url("💬 @supqts", "https://t.me/supqts")
-          .url("⭐ @SoulStarXd", "https://t.me/SoulStarXd")
+          .url("💬 Feedback", "https://t.me/starztechbot")
           .row()
           .switchInlineCurrent("← Back", ""),
       },
