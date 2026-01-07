@@ -1188,10 +1188,20 @@ async function downloadTelegramVideo(fileUrl) {
 // Extract key frames from video (5 frames evenly distributed)
 async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
   try {
+    // Check if ffprobe exists
+    try {
+      await execAsync('which ffprobe');
+    } catch {
+      console.error("ffprobe not found - ffmpeg not installed");
+      return { frames: [], duration: 0, error: "ffmpeg not installed" };
+    }
+    
     // Get video duration
-    const { stdout: durationOut } = await execAsync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
+    console.log(`[VIDEO] Getting duration for: ${videoPath}`);
+    const { stdout: durationOut, stderr: durationErr } = await execAsync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}" 2>&1`
     );
+    console.log(`[VIDEO] Duration output: ${durationOut}, stderr: ${durationErr}`);
     const duration = parseFloat(durationOut.trim()) || 10;
     
     // Extract frames at intervals
@@ -1202,9 +1212,16 @@ async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
       const timestamp = interval * i;
       const framePath = `${tempDir}/frame_${i}.jpg`;
       
-      await execAsync(
-        `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}" -y 2>/dev/null`
-      );
+      console.log(`[VIDEO] Extracting frame ${i} at ${timestamp}s`);
+      try {
+        await execAsync(
+          `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}" -y 2>&1`,
+          { timeout: 30000 }
+        );
+      } catch (frameErr) {
+        console.error(`[VIDEO] Frame ${i} extraction failed:`, frameErr.message);
+        continue;
+      }
       
       // Read frame as base64
       if (fs.existsSync(framePath)) {
@@ -1213,13 +1230,15 @@ async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
           timestamp: timestamp.toFixed(1),
           base64: frameData.toString("base64")
         });
+        console.log(`[VIDEO] Frame ${i} extracted successfully`);
       }
     }
     
+    console.log(`[VIDEO] Total frames extracted: ${frames.length}`);
     return { frames, duration };
   } catch (e) {
-    console.error("Frame extraction error:", e.message);
-    return { frames: [], duration: 0 };
+    console.error("Frame extraction error:", e.message, e.stack);
+    return { frames: [], duration: 0, error: e.message };
   }
 }
 
@@ -4686,16 +4705,36 @@ bot.on("message:video", async (ctx) => {
     ).catch(() => {});
 
     // Extract frames
-    const { frames, duration } = await extractVideoFrames(videoPath, tempDir, 5);
+    let { frames, duration, error: frameError } = await extractVideoFrames(videoPath, tempDir, 5);
+    
+    // Fallback: use Telegram's video thumbnail if ffmpeg failed
+    if (frames.length === 0 && video.thumb) {
+      console.log("[VIDEO] Using Telegram thumbnail as fallback");
+      try {
+        const thumbFile = await ctx.api.getFile(video.thumb.file_id);
+        const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
+        const thumbB64 = await telegramFileToBase64(thumbUrl);
+        frames = [{ timestamp: "0.0", base64: thumbB64 }];
+        duration = video.duration || 0;
+      } catch (thumbErr) {
+        console.error("[VIDEO] Thumbnail fallback failed:", thumbErr.message);
+      }
+    }
 
     // Update status
     await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ Extracted ${frames.length} frames\n⏳ Transcribing audio...`, 
+      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ ${frames.length > 0 ? `Got ${frames.length} frame(s)` : "No frames (using thumbnail)"}\n⏳ Transcribing audio...`, 
       { parse_mode: "HTML" }
     ).catch(() => {});
 
-    // Extract and transcribe audio
-    const { transcript, hasAudio } = await extractAndTranscribeAudio(videoPath, tempDir);
+    // Extract and transcribe audio (skip if ffmpeg not available)
+    let transcript = null;
+    let hasAudio = false;
+    if (!frameError || !frameError.includes("ffmpeg not installed")) {
+      const audioResult = await extractAndTranscribeAudio(videoPath, tempDir);
+      transcript = audioResult.transcript;
+      hasAudio = audioResult.hasAudio;
+    }
 
     // Update status
     await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
@@ -4779,19 +4818,163 @@ bot.on("message:video", async (ctx) => {
   }
 });
 
-// Video notes (round videos)
+// Video notes (round videos) - treat as photos using thumbnail
 bot.on("message:video_note", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  if (ctx.chat.type !== "private") return;
   
-  // Treat video notes same as regular videos
-  ctx.message.video = {
-    file_id: ctx.message.video_note.file_id,
-    file_size: ctx.message.video_note.file_size || 0,
-  };
+  const chat = ctx.chat;
+  const u = ctx.from;
+  if (!u?.id) return;
   
-  // Re-emit as video (hacky but works)
-  await ctx.reply("📹 Processing video note... This may take a moment.");
+  // In groups: only process if replying to bot or group is active
+  if (chat.type !== "private") {
+    const botInfo = await bot.api.getMe();
+    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const groupActive = isGroupActive(chat.id);
+    const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
+    
+    if (!isReplyToBot && !groupActive && !hasActiveChar) {
+      return;
+    }
+  }
+  
+  // Use the video note thumbnail as an image
+  const videoNote = ctx.message.video_note;
+  if (videoNote.thumb) {
+    try {
+      const thumbFile = await ctx.api.getFile(videoNote.thumb.file_id);
+      const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
+      const b64 = await telegramFileToBase64(thumbUrl);
+      
+      const model = ensureChosenModelValid(u.id);
+      const caption = "What's in this video note?";
+      
+      const statusMsg = await ctx.reply(`📹 Analyzing video note...`, { parse_mode: "HTML" });
+      
+      const out = await llmVision({
+        chatId: chat.id,
+        userText: caption,
+        imageBase64: b64,
+        mime: "image/jpeg",
+        model,
+      });
+      
+      const response = `📹 <b>Video Note</b>\n\n${convertToTelegramHTML(out.slice(0, 3500))}`;
+      await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error("Video note error:", e.message);
+      await ctx.reply("❌ Couldn't process video note.");
+    }
+  }
+});
+
+// Animations/GIFs
+bot.on("message:animation", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const chat = ctx.chat;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // In groups: only process if replying to bot or group is active or has character
+  if (chat.type !== "private") {
+    const botInfo = await bot.api.getMe();
+    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const groupActive = isGroupActive(chat.id);
+    const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
+    
+    if (!isReplyToBot && !groupActive && !hasActiveChar) {
+      return;
+    }
+    
+    if (isReplyToBot) {
+      activateGroup(chat.id);
+    }
+  }
+  
+  if (!getUserRecord(u.id)) registerUser(u);
+  
+  const animation = ctx.message.animation;
+  const caption = (ctx.message.caption || "").trim();
+  const model = ensureChosenModelValid(u.id);
+  const startTime = Date.now();
+  
+  // Check for character mode
+  const activeChar = getActiveCharacter(u.id, chat.id);
+  const replyToMsg = ctx.message?.reply_to_message;
+  let replyCharacter = null;
+  
+  if (replyToMsg?.text) {
+    const charMatch = replyToMsg.text.match(/^🎭 \*?([^*\n]+)\*?\n/);
+    if (charMatch && replyToMsg.from?.is_bot) {
+      replyCharacter = charMatch[1].trim();
+    }
+  }
+  
+  const effectiveCharacter = replyCharacter || activeChar?.name;
+  const isCharacterMode = !!effectiveCharacter;
+  
+  try {
+    // Use animation thumbnail
+    let b64 = null;
+    if (animation.thumb) {
+      const thumbFile = await ctx.api.getFile(animation.thumb.file_id);
+      const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
+      b64 = await telegramFileToBase64(thumbUrl);
+    }
+    
+    if (!b64) {
+      return ctx.reply("⚠️ Couldn't get GIF thumbnail.");
+    }
+    
+    let modeLabel = "";
+    let statusText = `🎬 Analyzing GIF...`;
+    
+    if (isCharacterMode) {
+      modeLabel = `🎭 <b>${escapeHTML(effectiveCharacter)}</b>\n\n`;
+      statusText = `🎭 ${escapeHTML(effectiveCharacter)} is looking at the GIF...`;
+    }
+    
+    const statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
+    
+    let out;
+    if (isCharacterMode) {
+      const systemPrompt = buildCharacterSystemPrompt(effectiveCharacter);
+      out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: caption || "React to this GIF" },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } }
+            ]
+          }
+        ],
+        temperature: 0.85,
+        max_tokens: 500,
+      });
+    } else {
+      out = await llmVision({
+        chatId: chat.id,
+        userText: caption || "What's in this GIF? Describe what's happening.",
+        imageBase64: b64,
+        mime: "image/jpeg",
+        model,
+      });
+    }
+    
+    trackUsage(u.id, "message");
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    
+    const response = `${modeLabel}${convertToTelegramHTML(out.slice(0, 3500))}\n\n<i>🎬 ${elapsed}s • ${escapeHTML(model)}</i>`;
+    await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
+    
+  } catch (e) {
+    console.error("Animation error:", e.message);
+    await ctx.reply(`❌ Couldn't process GIF: ${escapeHTML(e.message?.slice(0, 50) || "Unknown error")}`, { parse_mode: "HTML" });
+  }
 });
 
 // =====================
