@@ -1953,29 +1953,30 @@ function escapeHTML(text) {
     .replace(/>/g, '&gt;');
 }
 
-// Escape special Markdown characters
+// Escape special Markdown characters (for Telegram Markdown)
+// NOTE: This is only used in a few legacy paths; most new flows use HTML via convertToTelegramHTML.
 function escapeMarkdown(text) {
   if (!text) return text;
   return String(text)
-    .replace(/\\\\/g, '\\\\\\\\')
-    .replace(/\\*/g, '\\\\*')
-    .replace(/_/g, '\\\\_/')
-    .replace(/\\[/g, '\\\\[')
-    .replace(/\\]/g, '\\\\]')
-    .replace(/\\(/g, '\\\\(')
-    .replace(/\\)/g, '\\\\)')
-    .replace(/~/g, '\\\\~')
-    .replace(/`/g, '\\\\`')
-    .replace(/>/g, '\\\\>')
-    .replace(/#/g, '\\\\#')
-    .replace(/\\+/g, '\\\\+')
-    .replace(/-/g, '\\\\-')
-    .replace(/=/g, '\\\\=')
-    .replace(/\\|/g, '\\\\|')
-    .replace(/\\{/g, '\\\\{')
-    .replace(/\\}/g, '\\\\}')
-    .replace(/\\./g, '\\\\.')
-    .replace(/!/g, '\\\\!');
+    .replace(/\\/g, '\\\\')
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/~/g, '\\~')
+    .replace(/`/g, '\\`')
+    .replace(/>/g, '\\>')
+    .replace(/#/g, '\\#')
+    .replace(/\+/g, '\\+')
+    .replace(/-/g, '\\-')
+    .replace(/=/g, '\\=')
+    .replace(/\|/g, '\\|')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/\./g, '\\.')
+    .replace(/!/g, '\\!/'); 
 }
 
 // Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
