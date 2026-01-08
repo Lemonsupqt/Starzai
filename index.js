@@ -106,7 +106,7 @@ function writeJson(file, obj) {
 
 // Initialize with local fallback (will be overwritten by Supabase/Telegram data on startup)
 let usersDb = readJson(USERS_FILE, { users: {} });
-let prefsDb = readJson(PREFS_FILE, { userModel: {} });
+let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
 
@@ -383,6 +383,39 @@ const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, use
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
+
+// Ensure prefsDb.groups exists (for group authorization metadata)
+function ensurePrefsGroups() {
+  if (!prefsDb.groups) {
+    prefsDb.groups = {};
+  }
+}
+
+function getGroupRecord(chatId) {
+  ensurePrefsGroups();
+  const id = String(chatId);
+  return prefsDb.groups[id] || null;
+}
+
+function setGroupAuthorization(chatId, allowed, meta = {}) {
+  ensurePrefsGroups();
+  const id = String(chatId);
+  const existing = prefsDb.groups[id] || {};
+  prefsDb.groups[id] = {
+    id,
+    allowed,
+    title: meta.title !== undefined ? meta.title : existing.title || null,
+    addedBy: meta.addedBy !== undefined ? meta.addedBy : existing.addedBy || null,
+    updatedAt: new Date().toISOString(),
+    note: meta.note !== undefined ? meta.note : existing.note || null,
+  };
+  savePrefs();
+}
+
+function isGroupAuthorized(chatId) {
+  const rec = getGroupRecord(chatId);
+  return !!rec?.allowed;
+}
 
 // Active inline message tracking (for editing)
 const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
@@ -2316,7 +2349,7 @@ function buildMainMenuMessage(userId) {
     "━━━━━━━━━━━━━━━━━━━━━━",
     "",
     "💬 *DM* — Chat directly with AI",
-    "👥 *Groups* — Mention @starztechbot",
+    "👥 *Groups* — Say \"Starz\" / \"StarzAI\" or reply to the bot",
     "⌨️ *Inline* — Type @starztechbot anywhere",
     "",
     "━━━━━━━━━━━━━━━━━━━━━━",
@@ -2387,7 +2420,7 @@ function buildInlineHelpCard() {
     "━━━━━━━━━━━━━━━━━━━━━━",
     "",
     "💬 *DM* - Just send a message!",
-    "👥 *Groups* - Mention @starztechbot",
+    "👥 *Groups* - Say \"Starz\" / \"StarzAI\" or reply to the bot",
     "⌨️ *Inline* - Type @starztechbot anywhere",
     "",
     "━━━━━━━━━━━━━━━━━━━━━━",
@@ -2481,32 +2514,107 @@ function inlineAnswerKeyboard(key) {
   const mode = item?.mode || "default";
   const isBlackhole = mode === "blackhole";
   const isQuark = mode === "quark";
-  const isExplain = mode === "explain";
   const isSummarize = mode === "summarize";
+  const isExplain = mode === "explain";
+  const isCode = mode === "code";
   const isCompleted = Boolean(item?.completed);
 
-  const kb = new InlineKeyboard()
-    .switchInlineCurrent("💬 Reply", `c:${key}: `)
-    .text("🔁 Regen", `inl_regen:${key}`)
-    .row()
-    .text("✂️ Shorter", `inl_short:${key}`)
-    .text("📈 Longer", `inl_long:${key}`);
+  const user = item?.userId ? getUserRecord(item.userId) : null;
+  const tier = user?.tier || "free";
+  const isUltraUser = tier === "ultra";
+  const isPremiumUser = tier === "premium";
 
-  // Quark: no Continue at all (answers are intentionally short)
-  // Explain & Summarize: keep them as one-shot answers; use Shorter/Longer instead of Continue.
-  if (isQuark || isExplain || isSummarize) {
+  const originalAnswer = item?.originalAnswer;
+  const hasOriginal = typeof originalAnswer === "string" && originalAnswer.length > 0;
+  const transformed = hasOriginal && item?.answer !== originalAnswer;
+
+  const shortCount = typeof item?.shortCount === "number" ? item.shortCount : 0;
+  const longCount = typeof item?.longCount === "number" ? item.longCount : 0;
+  const transformsUsed = typeof item?.transformsUsed === "number" ? item.transformsUsed : 0;
+  const shortLongLocked = !!item?.shortLongLocked;
+
+  // Regen limits per tier (per answer)
+  const regenCount = typeof item?.regenCount === "number" ? item.regenCount : 0;
+  let maxRegen = 1;
+  if (isUltraUser) maxRegen = 3;
+  else if (isPremiumUser) maxRegen = 2;
+  const canRegen = regenCount < maxRegen;
+
+  let canShort = false;
+  let canLong = false;
+
+  if (isUltraUser) {
+    // Ultra: up to 2 Shorter and 2 Longer per answer
+    canShort = shortCount < 2;
+    canLong = longCount < 2;
+  } else if (isPremiumUser) {
+    // Premium: up to 2 transforms total (any combination)
+    const remaining = Math.max(0, 2 - transformsUsed);
+    canShort = remaining > 0;
+    canLong = remaining > 0;
+  } else {
+    // Free: 1 transform total per answer
+    canShort = !shortLongLocked && transformsUsed === 0;
+    canLong = !shortLongLocked && transformsUsed === 0;
+  }
+
+  const showRevert = hasOriginal && transformed;
+
+  // Ultra Summary results themselves: special, simpler controls
+  if (isSummarize) {
+    const kb = new InlineKeyboard().switchInlineCurrent("💬 Reply", `c:${key}: `);
+    if (canRegen) {
+      kb.text("🔁 Regen", `inl_regen:${key}`);
+    }
+
+    kb.row();
+    if (canShort) kb.text("✂️ More concise", `inl_short:${key}`);
+    if (canLong) kb.text("📚 More detail", `inl_long:${key}`);
+    if (showRevert) {
+      if (!canShort && !canLong) kb.row();
+      kb.text("↩️ Revert", `inl_revert:${key}`);
+    }
     return kb;
   }
 
+  const kb = new InlineKeyboard().switchInlineCurrent("💬 Reply", `c:${key}: `);
+  if (canRegen) {
+    kb.text("🔁 Regen", `inl_regen:${key}`);
+  }
+
+  // Shorter/Longer + Revert row (all non-summary modes)
+  kb.row();
+  if (canShort) kb.text("✂️ Shorter", `inl_short:${key}`);
+  if (canLong) kb.text("📈 Longer", `inl_long:${key}`);
+  if (showRevert) {
+    if (!canShort && !canLong) kb.row();
+    kb.text("↩️ Revert", `inl_revert:${key}`);
+  }
+
+  // Quark: no Continue or Ultra Summary (already one-shot)
+  if (isQuark) {
+    return kb;
+  }
+
+  // Continue / Ultra Summary buttons (mode-dependent)
   if (isBlackhole) {
-    // For Blackhole, use inline mode so continuation becomes a new message.
-    // Hide Continue once the analysis is marked as completed.
+    // For Blackhole, use inline mode so continuation/summary become new messages.
     if (!isCompleted) {
       kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+    } else if (isUltraUser) {
+      // Once full analysis is done, offer Ultra Summary as a new inline message for Ultra users.
+      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
+    }
+  } else if (isExplain || isCode) {
+    // Explain & Code: callback-based continuation while incomplete.
+    if (!isCompleted) {
+      kb.row().text("➡️ Continue", `inl_cont:${key}`);
+    } else if (isUltraUser) {
+      // When fully revealed, provide Ultra Summary as a new inline message for Ultra users.
+      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
     }
   } else {
-    // For other modes, keep callback-based continuation.
-    // Hide Continue once the answer is marked as completed for that item.
+    // Other modes (quick, research, chat, etc.): standard Continue while available.
     if (!isCompleted) {
       kb.row().text("➡️ Continue", `inl_cont:${key}`);
     }
@@ -2782,35 +2890,66 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
-  
+
+  const chatType = ctx.chat.type;
+
+  // Deep-link handling in private chat, e.g. /start group_-100123...
+  if (chatType === "private") {
+    const text = ctx.message.text || "";
+    const args = text.split(" ").slice(1);
+    const param = args[0];
+
+    if (param && param.startsWith("group_")) {
+      const groupId = param.slice("group_".length);
+      const u = ctx.from;
+      if (u?.id) {
+        pendingFeedback.set(String(u.id), {
+          createdAt: Date.now(),
+          source: "group_unauthed",
+          groupId,
+        });
+      }
+
+      await ctx.reply(
+        "💡 *Feedback Mode* (group)\n\n" +
+          `We detected this group ID: \`${groupId}\`.\n\n` +
+          "Please send *one message* describing the problem (for example why you want it authorized).\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+          "_You have 2 minutes. After that, feedback mode will expire._",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Handle feedback deep link
+    if (param === "feedback") {
+      if (!FEEDBACK_CHAT_ID) {
+        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+      }
+      
+      const u = ctx.from;
+      if (!u?.id) return;
+      
+      pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
+      return ctx.reply(
+        "💡 *Feedback Mode*\n\n" +
+          "Please send *one message* with your feedback.\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+          "_You have 2 minutes. After that, feedback mode will expire._",
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+
   // Activate group if used in group chat
-  if (ctx.chat.type !== "private") {
+  if (chatType !== "private") {
     activateGroup(ctx.chat.id);
   }
-  
-  // Check for deep link parameter
-  const startPayload = ctx.message?.text?.split(" ")[1];
-  
-  // Handle feedback deep link
-  if (startPayload === "feedback" && ctx.chat.type === "private") {
-    if (!FEEDBACK_CHAT_ID) {
-      return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
-    }
-    
-    const u = ctx.from;
-    if (!u?.id) return;
-    
-    pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
-    return ctx.reply(
-      "💡 *Feedback Mode*\n\n" +
-        "Please send *one message* with your feedback.\n" +
-        "You can attach *one photo or video* with a caption, or just send text.\n\n" +
-        "_You have 2 minutes. After that, feedback mode will expire._",
-      { parse_mode: "Markdown" }
-    );
-  }
-  
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
+
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), {
+    parse_mode: "Markdown",
+    reply_markup: mainMenuKeyboard(ctx.from.id),
+  });
 });
 
 bot.command("help", async (ctx) => {
@@ -4022,6 +4161,82 @@ bot.command("deny", async (ctx) => {
   await ctx.reply(`Denied model ${modelId} for user ${targetId}.`);
 });
 
+bot.command("allowgroup", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+  }
+
+  const [chatIdRaw, ...noteParts] = args;
+  const chatId = chatIdRaw.trim();
+  const note = noteParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+  }
+
+  setGroupAuthorization(chatId, true, {
+    note,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `✅ Group ${chatId} authorized.` + (note ? `\nNote: ${note}` : "")
+  );
+});
+
+bot.command("denygroup", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+  }
+
+  const [chatIdRaw, ...reasonParts] = args;
+  const chatId = chatIdRaw.trim();
+  const reason = reasonParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+  }
+
+  setGroupAuthorization(chatId, false, {
+    note: reason,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `🚫 Group ${chatId} blocked.` + (reason ? `\nReason: ${reason}` : "")
+  );
+});
+
+bot.command("grouplist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  ensurePrefsGroups();
+  const entries = Object.entries(prefsDb.groups || {});
+  if (entries.length === 0) {
+    return ctx.reply("No groups recorded yet.");
+  }
+
+  const max = 50;
+  const lines = ["🏘 *Groups (first 50)*", ""];
+  for (const [id, g] of entries.slice(0, max)) {
+    const status = g.allowed ? "✅ allowed" : "🚫 blocked";
+    const title = g.title ? escapeMarkdown(g.title) : "_no title_";
+    const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
+    lines.push(`• \`${id}\` – ${title} (${status})${note}`);
+  }
+  if (entries.length > max) {
+    lines.push("", `...and ${entries.length - max} more.`, "");
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
 bot.command("ban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
@@ -4619,13 +4834,66 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• /stats - Your usage statistics",
   ].join("\n");
   
+  const kb = new InlineKeyboard()
+    .text("💳 Plans & Benefits", "menu_plans")
+    .row()
+    .text("« Back to Menu", "menu_back");
+  
   try {
     await ctx.editMessageText(featuresText, {
       parse_mode: "Markdown",
-      reply_markup: backToMainKeyboard()
+      reply_markup: kb
     });
   } catch (e) {
     // If edit fails, ignore
+  }
+});
+
+// Plans & benefits menu
+bot.callbackQuery("menu_plans", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+
+  const user = getUserRecord(ctx.from.id);
+  const tierRaw = user?.tier || "free";
+  const tier = tierRaw.toUpperCase();
+  const tierEmoji = tierRaw === "ultra" ? "💎" : tierRaw === "premium" ? "⭐" : "🆓";
+
+  const msg = [
+    "💳 *StarzAI Plans & Benefits*",
+    "",
+    `Your current plan: ${tierEmoji} *${tier}*`,
+    "",
+    "🆓 *Free*",
+    "• Access to fast free models",
+    "• Inline modes: Quark, Explain, Summarize, Code, Blackhole, etc.",
+    "• Shorter/Longer: 1 transform total per answer (then Revert only)",
+    "• No Ultra Summary button",
+    "",
+    "⭐ *Premium*",
+    "• Everything in Free",
+    "• Access to premium models",
+    "• Shorter/Longer: up to 2 transforms per answer",
+    "• Faster responses and higher quality",
+    "",
+    "💎 *Ultra*",
+    "• Everything in Premium",
+    "• Access to all Ultra models",
+    "• Shorter: 2x and Longer: 2x per answer, with Revert",
+    "• 🧾 Ultra Summary for long Blackhole/Explain/Code answers",
+    "",
+    "_Upgrades are managed manually for now. Contact the owner or support to get Premium/Ultra access._",
+  ].join("\n");
+
+  const kb = new InlineKeyboard()
+    .text("🌟 Features", "menu_features")
+    .row()
+    .text("« Back to Menu", "menu_back");
+
+  try {
+    await ctx.editMessageText(msg, { parse_mode: "Markdown", reply_markup: kb });
+  } catch (e) {
+    await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: kb });
   }
 });
 
@@ -4871,7 +5139,7 @@ bot.callbackQuery("help_features", async (ctx) => {
     "",
     "📡 *Multi-Platform*",
     "• DM - Direct chat with AI",
-    "• Groups - Mention @starztechbot",
+    "• Groups - Say \"Starz\" / \"StarzAI\" or reply to the bot",
     "• Inline - Type @starztechbot anywhere",
   ].join("\n");
   
@@ -5811,6 +6079,7 @@ bot.on("message:text", async (ctx) => {
       mute: "After mute notice",
       softban: "After softban notice",
       warn: "After warning notice",
+      group_unauthed: "Unauthorized group",
     };
     const sourceLabel = sourceMap[sourceTag] || sourceTag;
 
@@ -5829,13 +6098,19 @@ bot.on("message:text", async (ctx) => {
       `⚠️ *Warnings:* ${warningsCount}`,
       `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
       `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-    ].join("\n");
+    ];
+
+    if (pendingFb.groupId) {
+      metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
+    }
+
+    const metaText = metaLines.join("\n");
 
     try {
       // Forward the original message
       await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
       // Send meta info
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, { parse_mode: "Markdown" });
       await ctx.reply(
         "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
           `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
@@ -5852,30 +6127,89 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group chat activation system:
-  // - Bot is dormant by default in groups
-  // - Activates for 2 minutes after mention or reply to bot
-  // - During active window, responds to all messages
-  // - Goes dormant after 2 minutes of no interaction
-  
+  // Group chat authorization + activation system:
+  // - Groups must be explicitly authorized by the owner (/allowgroup <chatId>)
+  // - If not authorized, the bot only responds with an authorization hint
+  //   when explicitly invoked (mention, wake word, reply, or active character)
+  // - When authorized:
+  //   • By default, respond only when:
+  //       - The message mentions the bot username, or
+  //       - The message contains "Starz" / "StarzAI", or
+  //       - The user replies to the bot, or
+  //       - The user has an active character in this chat
+  //   • If `/talk` has activated forced-active mode, respond to all messages
+  //     for a short window.
+
   if (chat.type !== "private") {
-    const isMentioned = text.toLowerCase().includes(`@${botUsername}`);
+    const lower = text.toLowerCase();
+    const hasWakeWord = /\bstarz(ai)?\b/.test(lower);
+    const isMentioned = lower.includes(`@${botUsername}`) || hasWakeWord;
     const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
-    
-    // Check if bot should activate
-    if (isMentioned || isReplyToBot) {
+    const groupForcedActive = isGroupActive(chat.id); // /talk-controlled
+
+    // Track basic group metadata in prefsDb.groups
+    ensurePrefsGroups();
+    const gid = String(chat.id);
+    const currentTitle = chat.title || chat.username || "";
+    const existingGroup = prefsDb.groups[gid];
+    if (!existingGroup) {
+      prefsDb.groups[gid] = {
+        id: gid,
+        allowed: false,
+        title: currentTitle || null,
+        addedBy: null,
+        updatedAt: new Date().toISOString(),
+        note: null,
+      };
+      savePrefs();
+    } else if (currentTitle && existingGroup.title !== currentTitle) {
+      existingGroup.title = currentTitle;
+      existingGroup.updatedAt = new Date().toISOString();
+      savePrefs();
+    }
+
+    const groupAllowed = isGroupAuthorized(chat.id);
+
+    if (!groupAllowed) {
+      // Only show the authorization hint when the bot is explicitly invoked
+      if (isMentioned || isReplyToBot || hasActiveChar) {
+        const lines = [
+          "🚫 *This group is not authorized to use StarzAI yet.*",
+          "",
+          `🆔 *Chat ID:* \`${chat.id}\``,
+          "",
+          "Ask the bot owner to run:",
+          `\`/allowgroup ${chat.id}\``,
+          "in a private chat with the bot.",
+        ];
+
+        let replyMarkup;
+        if (FEEDBACK_CHAT_ID && botInfo.username) {
+          const kb = new InlineKeyboard();
+          kb.url(
+            "💡 Feedback",
+            `https://t.me/${botInfo.username}?start=group_${chat.id}`
+          );
+          replyMarkup = kb;
+        }
+
+        await ctx.reply(lines.join("\n"), {
+          parse_mode: "Markdown",
+          reply_markup: replyMarkup,
+        });
+      }
+      return;
+    }
+
+    if (!groupForcedActive) {
+      // Default anti-spam mode: ignore unless explicitly invoked or character mode is active
+      if (!hasActiveChar && !isMentioned && !isReplyToBot) {
+        return;
+      }
+    } else {
+      // In forced-active mode (/talk), keep refreshing the timer on any message
       activateGroup(chat.id);
-    }
-    
-    // If not active and no active character, ignore the message
-    if (!isGroupActive(chat.id) && !hasActiveChar && !isMentioned && !isReplyToBot) {
-      return; // Bot is dormant, ignore message
-    }
-    
-    // Reset timer on any interaction when active
-    if (isGroupActive(chat.id)) {
-      activateGroup(chat.id); // Refresh the timer
     }
   }
 
@@ -7726,90 +8060,37 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Wait for AI response, then show send button (works in private DMs)
+    // Deferred reply: send placeholder immediately, compute answer after user sends
     const replyKey = makeId(6);
     const replyShortModel = model.split("/").pop();
     
-    try {
-      // Build conversation history
-      const messages = [
-        { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally. Keep responses concise." },
-      ];
-      
-      // Add history if available
-      if (cached.history && cached.history.length > 0) {
-        for (const msg of cached.history.slice(-6)) {
-          messages.push({ role: msg.role, content: msg.content });
-        }
-      } else {
-        // Fallback to prompt/answer
-        messages.push({ role: "user", content: cached.prompt });
-        messages.push({ role: "assistant", content: cached.answer });
-      }
-      
-      // Add new user message
-      messages.push({ role: "user", content: userMessage });
-      
-      const out = await llmText({
-        model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 500,
-        timeout: 15000,
-        retries: 1,
-      });
-      
-      const answer = (out || "I couldn't generate a response.").slice(0, 2000);
-      
-      // Store new conversation state for future replies
-      inlineCache.set(replyKey, {
-        prompt: userMessage,
-        answer,
-        userId: String(userId),
-        model,
-        mode: "chat",
-        history: [
-          ...(cached.history || [{ role: "user", content: cached.prompt }, { role: "assistant", content: cached.answer }]),
-          { role: "user", content: userMessage },
-          { role: "assistant", content: answer },
-        ].slice(-10),  // Keep last 10 messages
-        timestamp: Date.now(),
-      });
-      
-      // Schedule cleanup
-      setTimeout(() => inlineCache.delete(replyKey), 30 * 60 * 1000);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `reply_${replyKey}`,
-          title: `✉️ ${userMessage.slice(0, 40)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-          input_message_content: {
-            message_text: `❓ *${userMessage}*\n\n${answer}\n\n_via StarzAI • ${replyShortModel}_`,
-            parse_mode: "Markdown",
-          },
-          reply_markup: inlineAnswerKeyboard(replyKey),
+    // Store pending payload for chosen_inline_result handler
+    inlineCache.set(`pending_${replyKey}`, {
+      cacheKey,
+      userMessage,
+      model,
+      cached,
+      userId: String(userId),
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`pending_${replyKey}`), 30 * 60 * 1000);
+    
+    const preview = (cached.answer || "").replace(/\s+/g, " ").slice(0, 80);
+    
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `c_reply_${replyKey}`,
+        title: `✉️ ${userMessage.slice(0, 40)}`,
+        description: preview || "Send follow-up reply",
+        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+        input_message_content: {
+          message_text: `❓ *${userMessage}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${replyShortModel}_`,
+          parse_mode: "Markdown",
         },
-      ], { cache_time: 0, is_personal: true });
-      
-    } catch (e) {
-      console.error("Reply error:", e.message);
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `reply_err_${replyKey}`,
-          title: `✉️ ${userMessage.slice(0, 40)}`,
-          description: "⚠️ Model is slow. Try again.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: {
-            message_text: `❓ *${userMessage}*\n\n⚠️ _Model is slow right now. Please try again._\n\n_via StarzAI_`,
-            parse_mode: "Markdown",
-          },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "reply_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // yap:chatKey: message - legacy Yap mode (removed)
@@ -8279,6 +8560,144 @@ bot.on("inline_query", async (ctx) => {
     ], { cache_time: 0, is_personal: true });
   }
 
+  // "ultrasum KEY" - Ultra Summary for Blackhole / Explain / Code as a new inline message
+  if (qLower.startsWith("ultrasum")) {
+    const parts = q.split(/\s+/);
+    const baseKey = (parts[1] || "").trim();
+
+    const userRec = getUserRecord(userId);
+    const tier = userRec?.tier || "free";
+    if (tier !== "ultra") {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_locked_${sessionKey}`,
+          title: "🧾 Ultra Summary (Ultra only)",
+          description: "Upgrade to Ultra to unlock Ultra Summary.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+          input_message_content: {
+            message_text:
+              "💎 *Ultra Summary is an Ultra feature.*\n\n" +
+              "Upgrade to Ultra to unlock:\n" +
+              "• Ultra Summary for long answers\n" +
+              "• Extra Shorter/Longer usage\n" +
+              "• Access to all Ultra models\n\n" +
+              "_Use the Plans button in the menu or /model for details._",
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (!baseKey) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_hint_${sessionKey}`,
+          title: "🧾 Ultra Summary",
+          description: "Tap Ultra Summary under a completed answer to use this.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_expired_${sessionKey}`,
+          title: "⚠️ Session expired",
+          description: "The original answer is no longer available.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (String(userId) !== String(baseItem.userId)) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_denied_${sessionKey}`,
+          title: "🚫 Not your session",
+          description: "Only the original requester can summarize.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const mode = baseItem.mode || "default";
+    const supported = mode === "blackhole" || mode === "explain" || mode === "code";
+    if (!supported || !baseItem.completed) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_incomplete_${sessionKey}`,
+          title: "🧾 Ultra Summary",
+          description: "Finish the answer first, then summarize.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const modelForSum = baseItem.model || ensureChosenModelValid(userId);
+    const shortModel = modelForSum.split("/").pop();
+    const prompt = baseItem.prompt || "";
+
+    const pendingKey = makeId(6);
+    inlineCache.set(`ultrasum_pending_${pendingKey}`, {
+      baseKey,
+      userId: String(userId),
+      mode,
+      model: modelForSum,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`ultrasum_pending_${pendingKey}`), 5 * 60 * 1000);
+
+    const escapedPrompt = escapeHTML(prompt);
+    let headerTitle = "Ultra Summary";
+    if (mode === "blackhole") {
+      const partsCount = baseItem.part || 1;
+      headerTitle = `Ultra Summary of Blackhole (${partsCount} part${partsCount > 1 ? "s" : ""})`;
+    } else if (mode === "code") {
+      headerTitle = "Ultra Summary of Code Answer";
+    } else if (mode === "explain") {
+      headerTitle = "Ultra Summary of Explanation";
+    }
+
+    const icon =
+      mode === "blackhole" ? "🗿🔬" : mode === "code" ? "💻" : mode === "explain" ? "🧠" : "🧾";
+    const thumb =
+      mode === "blackhole"
+        ? "https://img.icons8.com/fluency/96/black-hole.png"
+        : mode === "code"
+        ? "https://img.icons8.com/fluency/96/source-code.png"
+        : mode === "explain"
+        ? "https://img.icons8.com/fluency/96/brain.png"
+        : "https://img.icons8.com/fluency/96/survey.png";
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `ultrasum_start_${pendingKey}`,
+        title: "🧾 Ultra Summary",
+        description: `Summarize: ${prompt.slice(0, 40)}${prompt.length > 40 ? "..." : ""}`,
+        thumbnail_url: thumb,
+        input_message_content: {
+          message_text: `${icon} <b>${headerTitle}: ${escapedPrompt}</b>\n\n⏳ <i>Summarizing all parts... Please wait...</i>\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "ultrasum_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
   // "chat:" prefix - interactive chat mode
   if (q.startsWith("chat:")) {
     const userMessage = q.slice(5).trim();
@@ -8520,14 +8939,27 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Get AI response
     try {
+      const messages = [
+        { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally. Keep responses concise." },
+      ];
+      
+      // Prefer rich history when available
+      if (cached.history && cached.history.length > 0) {
+        for (const msg of cached.history.slice(-6)) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      } else {
+        // Fallback to single-turn prompt/answer
+        if (cached.prompt) messages.push({ role: "user", content: cached.prompt });
+        if (cached.answer) messages.push({ role: "assistant", content: cached.answer });
+      }
+      
+      // Add new user message
+      messages.push({ role: "user", content: userMessage });
+      
       const out = await llmText({
         model,
-        messages: [
-          { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally." },
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-        ],
+        messages,
         temperature: 0.7,
         max_tokens: 500,
       });
@@ -8536,6 +8968,21 @@ bot.on("chosen_inline_result", async (ctx) => {
       const newKey = makeId(6);
       const shortModel = model.split("/").pop();
       
+      // Build updated history (keep last 10 messages)
+      const baseHistory =
+        (cached.history && cached.history.length > 0)
+          ? cached.history
+          : [
+              ...(cached.prompt ? [{ role: "user", content: cached.prompt }] : []),
+              ...(cached.answer ? [{ role: "assistant", content: cached.answer }] : []),
+            ];
+      
+      const newHistory = [
+        ...baseHistory,
+        { role: "user", content: userMessage },
+        { role: "assistant", content: answer },
+      ].slice(-10);
+      
       // Store new conversation state for future replies
       inlineCache.set(newKey, {
         prompt: userMessage,
@@ -8543,12 +8990,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         userId: pending.userId,
         model,
         mode: "chat",
-        history: [
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-          { role: "assistant", content: answer },
-        ],
+        history: newHistory,
         timestamp: Date.now(),
       });
       
@@ -8703,18 +9145,21 @@ bot.on("chosen_inline_result", async (ctx) => {
       }
 
       // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
-      const answer = raw.slice(0, 3500);
+      let answer = raw.slice(0, 3500);
+      // Avoid ending the first chunk mid-word or mid-sentence when possible.
+      answer = trimIncompleteTail(answer);
       const newKey = makeId(6);
       
       // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
-        fullAnswer: answer,
+        fullAnswer: raw,
         userId: pending.userId,
         model,
         mode: "blackhole",
         completed,
+        part: 1,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8725,10 +9170,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       // Convert and update
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
+      const partLabel = completed ? "Part 1 – final" : "Part 1";
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey)
@@ -8806,7 +9252,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Keep the same structure and style as earlier sections: use headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
           },
           {
             role: "user",
@@ -8827,9 +9273,13 @@ bot.on("chosen_inline_result", async (ctx) => {
         continuation += "\n\n---\n_End of Blackhole analysis._";
       }
 
+      // Clean tail of continuation to avoid ending mid-word/mid-sentence when possible.
+      continuation = trimIncompleteTail(continuation);
+
       const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
 
       const newKey = makeId(6);
+      const part = (baseItem.part || 1) + 1;
 
       inlineCache.set(newKey, {
         prompt,
@@ -8839,21 +9289,24 @@ bot.on("chosen_inline_result", async (ctx) => {
         model,
         mode: "blackhole",
         completed,
+        part,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
       // Update base item as well so future continues from any chunk share history
       baseItem.fullAnswer = newFull;
+      baseItem.part = part;
       if (completed) baseItem.completed = true;
       inlineCache.set(baseKey, baseItem);
 
       const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
       const escapedPrompt = escapeHTML(prompt);
+      const partLabel = completed ? `Part ${part} – final` : `Part ${part}`;
 
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey),
@@ -8872,6 +9325,180 @@ bot.on("chosen_inline_result", async (ctx) => {
     }
 
     inlineCache.delete(`bh_cont_pending_${contId}`);
+    return;
+  }
+
+  // Handle Ultra Summary deferred response - ultrasum_start_KEY
+  if (resultId.startsWith("ultrasum_start_")) {
+    const sumId = resultId.replace("ultrasum_start_", "");
+    const pending = inlineCache.get(`ultrasum_pending_${sumId}`);
+
+    if (!pending || !inlineMessageId) {
+      console.log(`Ultra Summary pending not found or no inlineMessageId: sumId=${sumId}`);
+      return;
+    }
+
+    const { baseKey, mode, model, shortModel, userId: ownerId } = pending;
+    const ownerRec = getUserRecord(ownerId);
+    if (ownerRec?.tier !== "ultra") {
+      console.log("Ultra Summary denied: user not Ultra");
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>This feature is only available for Ultra users.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      inlineCache.delete(`ultrasum_pending_${sumId}`);
+      return;
+    }
+
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem) {
+      console.log(`Base item missing for Ultra Summary: baseKey=${baseKey}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Session expired. Run the answer again.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    if (String(ctx.from?.id || "") !== String(ownerId)) {
+      console.log(`Ultra Summary denied: not owner`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Only the original requester can summarize this answer.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    const full = (baseItem.fullAnswer || baseItem.answer || "").trim();
+    if (!full || full.length < 50) {
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Answer is too short to summarize.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      inlineCache.delete(`ultrasum_pending_${sumId}`);
+      return;
+    }
+
+    const summaryInput = full.slice(0, 12000);
+    let systemPrompt =
+      "Summarize the content below into a brief, well-structured overview. Use short bullet points and 1–3 very short paragraphs at most. Keep the whole summary compact (no more than a few hundred words).";
+    let titlePrefix = "Ultra Summary";
+    let icon = "🧾 ";
+    if (mode === "blackhole") {
+      const parts = baseItem.part || 1;
+      systemPrompt =
+        `You are summarizing a multi-part deep-dive answer (Parts 1–${parts}). ` +
+        "Provide 5–9 very short bullet points that capture the main arguments, key evidence, and final conclusions. " +
+        "Avoid long paragraphs, quotes, or code. Keep it tight and scan-friendly.";
+      titlePrefix = `Ultra Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
+      icon = "🗿🔬 ";
+    } else if (mode === "code") {
+      systemPrompt =
+        "Summarize the programming answer in 4–7 concise bullet points. Describe the purpose of the code, the main steps, and how to run/use it. Mention languages and key functions or modules, but do not repeat long code snippets. Keep it short.";
+      titlePrefix = "Ultra Summary of Code Answer";
+      icon = "💻 ";
+    } else if (mode === "explain") {
+      systemPrompt =
+        "Summarize the explanation in 3–6 very short bullet points so it's easy to scan. Each bullet should be 1 short sentence. Focus only on the core ideas.";
+      titlePrefix = "Ultra Summary of Explanation";
+      icon = "🧠 ";
+    }
+
+    try {
+      const summaryOut = await llmText({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
+        ],
+        temperature: 0.4,
+        max_tokens: 260,
+      });
+
+      // Base truncation limit
+      let summary = (summaryOut || "No summary available.").slice(0, 1200);
+
+      // Clean up incomplete tail (mid-word / mid-sentence)
+      summary = trimIncompleteTail(summary, 220);
+
+      // Drop any dangling heading/bullet line at the very end (like "• Recent Discoveries:")
+      const lines = summary.split("\n");
+      while (lines.length > 0) {
+        const last = lines[lines.length - 1].trim();
+        if (!last) {
+          // Drop empty trailing lines
+          lines.pop();
+          continue;
+        }
+        const isHeaderOnly =
+          // Ends with ":" and has no period/question/exclamation afterwards
+          (/[:：]\s*$/.test(last) && !/[.!?]\s*$/.test(last)) ||
+          // Bullet with very short content
+          (/^[•\-*]\s+.+$/.test(last) && last.length < 40);
+        if (isHeaderOnly) {
+          lines.pop();
+          continue;
+        }
+        break;
+      }
+      summary = lines.join("\n").trim();
+
+      const newKey = makeId(6);
+
+      inlineCache.set(newKey, {
+        prompt: baseItem.prompt || "",
+        answer: summary,
+        fullAnswer: summary,
+        userId: ownerId,
+        model,
+        mode: "summarize",
+        completed: true,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      const formatted = convertToTelegramHTML(summary);
+      const escapedPrompt = escapeHTML(baseItem.prompt || "");
+      const title =
+        mode === "blackhole"
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : escapedPrompt
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : titlePrefix;
+
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `${icon} <b>${title}</b>\n\n${formatted}\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log("Ultra Summary updated with AI response");
+    } catch (e) {
+      console.error("Failed to get Ultra Summary response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+
+    inlineCache.delete(`ultrasum_pending_${sumId}`);
     return;
   }
   
@@ -9186,15 +9813,55 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 400,
       });
       
-      const answer = (out || "No explanation").slice(0, 1500);
+      const raw = out || "No explanation";
+      const maxLen = 1500;
+      let visible = raw;
+      let cursor = raw.length;
+      let completed = true;
+
+      if (raw.length > maxLen) {
+        // Prefer to cut at a sentence or word boundary near the limit
+        const slice = raw.slice(0, maxLen);
+        let cutoff = slice.length;
+
+        const windowSize = 200;
+        const windowStart = Math.max(0, cutoff - windowSize);
+        const windowText = slice.slice(windowStart, cutoff);
+
+        let rel = Math.max(
+          windowText.lastIndexOf(". "),
+          windowText.lastIndexOf("! "),
+          windowText.lastIndexOf("? ")
+        );
+        if (rel !== -1) {
+          cutoff = windowStart + rel + 2; // include punctuation + space
+        } else {
+          const spaceRel = windowText.lastIndexOf(" ");
+          if (spaceRel !== -1) {
+            cutoff = windowStart + spaceRel;
+          }
+        }
+
+        visible = slice.slice(0, cutoff).trimEnd();
+        cursor = visible.length;
+        completed = cursor >= raw.length;
+      }
+
+      const answer = visible;
       const newKey = makeId(6);
+      const part = 1;
       
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: raw,
+        cursor,
         userId: pending.userId,
         model,
+        shortModel,
         mode: "explain",
+        part,
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9203,10 +9870,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
+      const headerLabel = completed ? "Full Explanation" : "Explanation (Part 1)";
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🧠 <b>Explain: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
+        `🧠 <b>${headerLabel}: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey)
@@ -9409,6 +10077,44 @@ async function doInlineTransform(ctx, mode) {
     });
   }
 
+  // Revert: restore original answer (if available) without changing tier counts
+  if (mode === "revert") {
+    if (!item.originalAnswer) {
+      return ctx.answerCallbackQuery({
+        text: "Nothing to revert.",
+        show_alert: true,
+      });
+    }
+
+    item.answer = item.originalAnswer;
+    if (item.fullAnswer) {
+      item.fullAnswer = item.originalAnswer;
+    }
+
+    inlineCache.set(key, item);
+    await editInlineMessage(ctx, item.answer, key);
+    await ctx.answerCallbackQuery({ text: "Reverted.", show_alert: false });
+    return;
+  }
+
+  // Regen limit check per tier (per answer)
+  if (mode === "regen") {
+    const userRec = getUserRecord(item.userId);
+    const tier = userRec?.tier || "free";
+    if (typeof item.regenCount !== "number") item.regenCount = 0;
+
+    let maxRegen = 1;
+    if (tier === "ultra") maxRegen = 3;
+    else if (tier === "premium") maxRegen = 2;
+
+    if (item.regenCount >= maxRegen) {
+      return ctx.answerCallbackQuery({
+        text: "Regen limit reached for this answer.",
+        show_alert: true,
+      });
+    }
+  }
+
   await ctx.answerCallbackQuery({ text: "Working..." });
 
   try {
@@ -9424,36 +10130,84 @@ async function doInlineTransform(ctx, mode) {
         temperature: 0.9,
         max_tokens: 260,
       });
+
+      // Reset transform metadata on regen
+      delete item.originalAnswer;
+      item.shortCount = 0;
+      item.longCount = 0;
+      item.transformsUsed = 0;
+      item.shortLongLocked = false;
+
+      item.regenCount = (item.regenCount || 0) + 1;
     }
 
-    if (mode === "short") {
-      newAnswer = await llmText({
-        model: item.model,
-        messages: [
-          { role: "system", content: "Rewrite the answer to be shorter while keeping key details." },
-          { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
-        ],
-        temperature: 0.5,
-        max_tokens: 200,
-      });
-    }
+    if (mode === "short" || mode === "long") {
+      const userRec = getUserRecord(item.userId);
+      const tier = userRec?.tier || "free";
 
-    if (mode === "long") {
-      newAnswer = await llmText({
-        model: item.model,
-        messages: [
-          { role: "system", content: "Expand the answer with more detail, structure, and examples if useful." },
-          { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 420,
-      });
+      // Initialize transform metadata if missing
+      if (!item.originalAnswer) item.originalAnswer = item.answer;
+      if (typeof item.shortCount !== "number") item.shortCount = 0;
+      if (typeof item.longCount !== "number") item.longCount = 0;
+      if (typeof item.transformsUsed !== "number") item.transformsUsed = 0;
+      if (typeof item.shortLongLocked !== "boolean") item.shortLongLocked = false;
+
+      const isShort = mode === "short";
+      let allowed = true;
+
+      if (tier === "ultra") {
+        if (isShort && item.shortCount >= 2) allowed = false;
+        if (!isShort && item.longCount >= 2) allowed = false;
+      } else if (tier === "premium") {
+        if (item.transformsUsed >= 2) allowed = false;
+      } else {
+        // free
+        if (item.shortLongLocked || item.transformsUsed >= 1) allowed = false;
+      }
+
+      if (!allowed) {
+        // Buttons should already be hidden when limits are reached; this is a safeguard.
+        return ctx.answerCallbackQuery({
+          text: "Shorter/Longer limit reached for this answer.",
+          show_alert: true,
+        });
+      }
+
+      if (isShort) {
+        newAnswer = await llmText({
+          model: item.model,
+          messages: [
+            { role: "system", content: "Rewrite the answer to be shorter while keeping key details." },
+            { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
+          ],
+          temperature: 0.5,
+          max_tokens: 200,
+        });
+        item.shortCount = (item.shortCount || 0) + 1;
+      } else {
+        newAnswer = await llmText({
+          model: item.model,
+          messages: [
+            { role: "system", content: "Expand the answer with more detail, structure, and examples if useful." },
+            { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
+          ],
+          temperature: 0.7,
+          max_tokens: 420,
+        });
+        item.longCount = (item.longCount || 0) + 1;
+      }
+
+      item.transformsUsed = (item.transformsUsed || 0) + 1;
+      if (tier === "free") {
+        item.shortLongLocked = true;
+      }
     }
 
     if (mode === "cont") {
       const itemMode = item.mode || "default";
       const isBlackhole = itemMode === "blackhole";
       const isCode = itemMode === "code";
+      const isExplain = itemMode === "explain";
 
       // Blackhole uses its own inline-based continuation (bhcont), so we do nothing here.
       if (isBlackhole) {
@@ -9538,8 +10292,98 @@ async function doInlineTransform(ctx, mode) {
         if (!leftover.length || item.cursor >= full.length) {
           item.completed = true;
         }
+      } else if (isExplain) {
+        // For Explain mode, reveal the rest of the original explanation without
+        // asking the model to rewrite it, cutting at sentence/word boundaries.
+        const full = item.fullAnswer || item.answer || "";
+        if (!full) {
+          await ctx.answerCallbackQuery({ text: "No more explanation to show.", show_alert: true });
+          return;
+        }
+
+        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
+        if (cursor >= full.length) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
+          return;
+        }
+
+        const remaining = full.slice(cursor);
+        if (!remaining.trim()) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
+          return;
+        }
+
+        const maxLen = 3500;
+        let cutoff = Math.min(maxLen, remaining.length);
+
+        if (cutoff < remaining.length) {
+          const windowSize = 200;
+          const windowStart = Math.max(0, cutoff - windowSize);
+          const windowText = remaining.slice(windowStart, cutoff);
+
+          let rel = Math.max(
+            windowText.lastIndexOf(". "),
+            windowText.lastIndexOf("! "),
+            windowText.lastIndexOf("? ")
+          );
+          if (rel !== -1) {
+            cutoff = windowStart + rel + 2; // include punctuation + space
+          } else {
+            const spaceRel = windowText.lastIndexOf(" ");
+            if (spaceRel !== -1) {
+              cutoff = windowStart + spaceRel;
+            }
+          }
+        }
+
+        const addition = remaining.slice(0, cutoff).trimEnd();
+        const leftover = remaining.slice(cutoff).trimStart();
+
+        if (!addition) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "No further explanation to show.", show_alert: true });
+          return;
+        }
+
+        newAnswer = `${item.answer}\n\n${addition}`.trim();
+        item.cursor = cursor + cutoff;
+        if (!leftover.length || item.cursor >= full.length) {
+          item.completed = true;
+        }
+
+        const finalTextExplain = (newAnswer || "(no output)").trim();
+        item.answer = finalTextExplain.slice(0, 3500);
+        const part = (item.part || 1) + 1;
+        item.part = part;
+        inlineCache.set(key, item);
+
+        const formattedExplain = convertToTelegramHTML(item.answer);
+        const escapedPromptExplain = escapeHTML(item.prompt || "");
+        const shortModelExplain = item.shortModel || (item.model || "").split("/").pop() || "";
+        let title;
+        if (item.completed && part === 1) {
+          title = `Full Explanation: ${escapedPromptExplain}`;
+        } else if (item.completed) {
+          title = `Explanation (Part ${part} – final): ${escapedPromptExplain}`;
+        } else {
+          title = `Explanation (Part ${part}): ${escapedPromptExplain}`;
+        }
+
+        await ctx.editMessageText(
+          `🧠 <b>${title}</b>\n\n${formattedExplain}\n\n<i>via StarzAI • Explain${shortModelExplain ? ` • ${shortModelExplain}` : ""}</i>`,
+          {
+            parse_mode: "HTML",
+            reply_markup: inlineAnswerKeyboard(key),
+          }
+        );
+        return;
       } else {
-        // Default (quick, research, explain, summarize, chat, etc.)
+        // Default (quick, research, summarize, chat, etc.)
         const systemPrompt =
           "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue. When there is nothing important left to add, end your answer with a line containing only END_OF_INLINE.";
         const maxTokens = 450;
@@ -9588,6 +10432,7 @@ bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"))
 bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
 bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
 bot.callbackQuery(/^inl_cont:/, async (ctx) => doInlineTransform(ctx, "cont"));
+bot.callbackQuery(/^inl_revert:/, async (ctx) => doInlineTransform(ctx, "revert"));
 
 // Character new intro button
 bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
