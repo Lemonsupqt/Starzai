@@ -9351,24 +9351,26 @@ async function doInlineTransform(ctx, mode) {
 
       const summaryInput = full.slice(0, 12000);
       let systemPrompt =
-        "Summarize the content below into a concise, well-structured overview. Use short paragraphs and bullet points for key ideas. Focus on the most important information.";
+        "Summarize the content below into a brief, well-structured overview. Use short bullet points and 1–3 very short paragraphs at most. Keep the whole summary compact (no more than a few hundred words).";
       let titlePrefix = "Ultra Summary";
       let icon = "🧾 ";
       let headerPrompt = item.prompt || "";
       if (itemMode === "blackhole") {
-        systemPrompt =
-          "You are summarizing a long research-style answer. Provide a concise, structured overview in 6–12 bullet points. Capture main arguments, key evidence, and final conclusions. Avoid repeating long quotes.";
         const parts = item.part || 1;
+        systemPrompt =
+          `You are summarizing a multi-part deep-dive answer (Parts 1–${parts}). ` +
+          "Provide 5–9 very short bullet points that capture the main arguments, key evidence, and final conclusions. " +
+          "Avoid long paragraphs, quotes, or code. Keep it tight and scan-friendly.";
         titlePrefix = `Ultra Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
         icon = "🗿🔬 ";
       } else if (itemMode === "code") {
         systemPrompt =
-          "Summarize the programming answer. Describe the purpose of the code, the main steps, and how to use it. Mention languages and key functions or modules. Do not repeat long code snippets.";
+          "Summarize the programming answer in 4–7 concise bullet points. Describe the purpose of the code, the main steps, and how to run/use it. Mention languages and key functions or modules, but do not repeat long code snippets. Keep it short.";
         titlePrefix = "Ultra Summary of Code Answer";
         icon = "💻 ";
       } else if (itemMode === "explain") {
         systemPrompt =
-          "Summarize the explanation in 3–7 short bullet points so it's easy to scan. Keep it simple and focused on the core ideas.";
+          "Summarize the explanation in 3–6 very short bullet points so it's easy to scan. Each bullet should be 1 short sentence. Focus only on the core ideas.";
         titlePrefix = "Ultra Summary of Explanation";
         icon = "🧠 ";
       }
@@ -9380,10 +9382,10 @@ async function doInlineTransform(ctx, mode) {
           { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
         ],
         temperature: 0.4,
-        max_tokens: 420,
+        max_tokens: 260,
       });
 
-      const summary = (summaryOut || "No summary available.").slice(0, 2000);
+      const summary = (summaryOut || "No summary available.").slice(0, 1200);
       const newKey = makeId(6);
       const shortModel = (item.model || "").split("/").pop() || "";
 
