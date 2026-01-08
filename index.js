@@ -2118,7 +2118,8 @@ function convertToTelegramHTML(text) {
     // Escape HTML in code
     const escapedCode = escapeHTML(code.trim());
     codeBlocksWithLang.push(`<pre><code class="language-${lang}">${escapedCode}</code></pre>`);
-    return `__CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}__`;
+    // Use @@...@@ placeholders so Markdown bold/italic rules don't touch them
+    return `@@CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}@@`;
   });
   
   // Step 2: Protect and convert code blocks without language (``` ... ```)
@@ -2126,7 +2127,7 @@ function convertToTelegramHTML(text) {
   result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
     const escapedCode = escapeHTML(code.trim());
     codeBlocks.push(`<pre>${escapedCode}</pre>`);
-    return `__CODEBLOCK_${codeBlocks.length - 1}__`;
+    return `@@CODEBLOCK_${codeBlocks.length - 1}@@`;
   });
   
   // Step 3: Protect and convert inline code (`...`)
@@ -2134,7 +2135,7 @@ function convertToTelegramHTML(text) {
   result = result.replace(/`([^`]+)`/g, (match, code) => {
     const escapedCode = escapeHTML(code);
     inlineCode.push(`<code>${escapedCode}</code>`);
-    return `__INLINECODE_${inlineCode.length - 1}__`;
+    return `@@INLINECODE_${inlineCode.length - 1}@@`;
   });
   
   // Step 4: Escape remaining HTML special characters
@@ -2180,15 +2181,15 @@ function convertToTelegramHTML(text) {
   
   // Step 6: Restore code blocks and inline code
   inlineCode.forEach((code, i) => {
-    result = result.replace(`__INLINECODE_${i}__`, code);
+    result = result.replace(`@@INLINECODE_${i}@@`, code);
   });
   
   codeBlocks.forEach((code, i) => {
-    result = result.replace(`__CODEBLOCK_${i}__`, code);
+    result = result.replace(`@@CODEBLOCK_${i}@@`, code);
   });
   
   codeBlocksWithLang.forEach((code, i) => {
-    result = result.replace(`__CODEBLOCK_LANG_${i}__`, code);
+    result = result.replace(`@@CODEBLOCK_LANG_${i}@@`, code);
   });
   
   return result;
@@ -2203,7 +2204,8 @@ function escapeHTML(text) {
     .replace(/>/g, '&gt;');
 }
 
-// Escape special Markdown characters
+// Escape special Markdown characters (for Telegram Markdown)
+// NOTE: This is only used in a few legacy paths; most new flows use HTML via convertToTelegramHTML.
 function escapeMarkdown(text) {
   if (!text) return text;
   return String(text)
@@ -2225,7 +2227,42 @@ function escapeMarkdown(text) {
     .replace(/\{/g, '\\{')
     .replace(/\}/g, '\\}')
     .replace(/\./g, '\\.')
-    .replace(/!/g, '\\!');
+    .replace(/!/g, '\\!/'); 
+}
+
+// Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
+// Used for Blackhole continuation so we don't leave broken endings like "so it me"
+function trimIncompleteTail(text, maxTail = 220) {
+  if (!text) return text;
+  const trimmed = text.trimEnd();
+  if (!trimmed) return trimmed;
+
+  const lastChar = trimmed[trimmed.length - 1];
+  // If it already ends with sensible punctuation, leave it
+  if (".?!)]\"'".includes(lastChar)) {
+    return trimmed;
+  }
+
+  const start = Math.max(0, trimmed.length - maxTail);
+  const tail = trimmed.slice(start);
+
+  // Prefer to cut at a sentence boundary within the tail
+  const lastDot = tail.lastIndexOf(".");
+  const lastQ = tail.lastIndexOf("?");
+  const lastEx = tail.lastIndexOf("!");
+  const lastSentenceEnd = Math.max(lastDot, lastQ, lastEx);
+
+  if (lastSentenceEnd !== -1) {
+    return trimmed.slice(0, start + lastSentenceEnd + 1);
+  }
+
+  // Otherwise cut at last space to avoid half-words
+  const lastSpace = tail.lastIndexOf(" ");
+  if (lastSpace !== -1) {
+    return trimmed.slice(0, start + lastSpace);
+  }
+
+  return trimmed;
 }
 
 // =====================
@@ -2440,12 +2477,42 @@ function buildPartnerKeyboard(partner) {
 }
 
 function inlineAnswerKeyboard(key) {
-  return new InlineKeyboard()
+  const item = inlineCache.get(key);
+  const mode = item?.mode || "default";
+  const isBlackhole = mode === "blackhole";
+  const isQuark = mode === "quark";
+  const isExplain = mode === "explain";
+  const isSummarize = mode === "summarize";
+  const isCompleted = Boolean(item?.completed);
+
+  const kb = new InlineKeyboard()
     .switchInlineCurrent("💬 Reply", `c:${key}: `)
     .text("🔁 Regen", `inl_regen:${key}`)
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
     .text("📈 Longer", `inl_long:${key}`);
+
+  // Quark: no Continue at all (answers are intentionally short)
+  // Explain & Summarize: keep them as one-shot answers; use Shorter/Longer instead of Continue.
+  if (isQuark || isExplain || isSummarize) {
+    return kb;
+  }
+
+  if (isBlackhole) {
+    // For Blackhole, use inline mode so continuation becomes a new message.
+    // Hide Continue once the analysis is marked as completed.
+    if (!isCompleted) {
+      kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+    }
+  } else {
+    // For other modes, keep callback-based continuation.
+    // Hide Continue once the answer is marked as completed for that item.
+    if (!isCompleted) {
+      kb.row().text("➡️ Continue", `inl_cont:${key}`);
+    }
+  }
+
+  return kb;
 }
 
 // =====================
@@ -5231,32 +5298,12 @@ bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
 // Now uses switch_inline_query_current_chat - no DM needed!
 // =====================
 
-// Page navigation (doesn't count towards rate limit - it's just navigation)
+// Page navigation (legacy Yap shared chat - now disabled)
 bot.callbackQuery(/^schat_page:(.+):(\d+)$/, async (ctx) => {
-  
-  const parts = ctx.callbackQuery.data.split(":");
-  const chatKey = parts[1];
-  const page = parseInt(parts[2], 10);
-  
-  const session = getSharedChat(chatKey);
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  const totalPages = getSharedChatPageCount(session);
-  await ctx.answerCallbackQuery({ text: `Page ${page}/${totalPages}` });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, page),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, page, totalPages)
-      }
-    );
-  } catch {
-    // Message unchanged
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
+  });
 });
 
 // Noop for page indicator button (doesn't count towards rate limit)
@@ -5264,95 +5311,28 @@ bot.callbackQuery(/^schat_noop$/, async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
-// Ask AI - DM user for input, then update the original inline message
+// Ask AI - legacy Yap input (now disabled)
 bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = getSharedChat(chatKey);
-  const userId = ctx.from?.id;
-  const userName = ctx.from?.first_name || "User";
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  await ctx.answerCallbackQuery({ text: "Check your DM with the bot!" });
-  
-  // Store pending input state
-  pendingSharedInput.set(String(userId), {
-    chatKey,
-    userName,
-    inlineMessageId: session.inlineMessageId,
-    timestamp: Date.now()
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
   });
-  
-  // DM the user
-  try {
-    await bot.api.sendMessage(
-      userId,
-      `💬 *Group Chat Input*\n\nType your message for the Yap chat:\n\n_Your message will appear in the group chat and AI will respond!_`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (e) {
-    console.error("Failed to DM user for schat_ask:", e.message);
-    // User might not have started the bot
-    await ctx.answerCallbackQuery({ 
-      text: "Please start a chat with @starztechbot first!", 
-      show_alert: true 
-    });
-  }
 });
 
-// Refresh shared chat display (shows last page)
+// Refresh shared chat display (legacy Yap - now disabled)
 bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = getSharedChat(chatKey);
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  const totalPages = getSharedChatPageCount(session);
-  await ctx.answerCallbackQuery({ text: "Refreshed! 🔄" });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, -1), // -1 = last page
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-      }
-    );
-  } catch {
-    // Message unchanged
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
 });
 
-// Clear shared chat
+// Clear shared chat (legacy Yap - now disabled)
 bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const chatKey = ctx.callbackQuery.data.split(":")[1];
-  const session = clearSharedChat(chatKey);
-  
-  if (!session) {
-    return ctx.answerCallbackQuery({ text: "Chat expired. Start a new one!", show_alert: true });
-  }
-  
-  await ctx.answerCallbackQuery({ text: "Chat cleared! 🗑️" });
-  
-  try {
-    await ctx.editMessageText(
-      formatSharedChatDisplay(session, 1),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: sharedChatKeyboard(chatKey, 1, 1)
-      }
-    );
-  } catch {
-    // ignore
-  }
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
 });
 
 // =====================
@@ -5661,118 +5641,11 @@ bot.on("message:text", async (ctx) => {
   const activeCharForUser = getActiveCharacter(u.id, chat.id);
   const userHasActiveChar = !!activeCharForUser?.name;
   
-  // Check if this is a reply to a Yap message (via @starztechbot)
-  // But NOT if it's a character message (starts with 🎭) or user has active character
+  // Check if this is a reply to a legacy Yap message (via @starztechbot)
+  // Yap shared chat mode has been removed, so we no longer treat these specially.
   const replyTo = ctx.message?.reply_to_message;
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
-  
-  if (replyTo && replyTo.via_bot?.username === "starztechbot" && !isCharacterMessage && !userHasActiveChar) {
-    // This is a reply to a Yap! Find the session by checking the message content
-    const yapText = replyTo.text || "";
-    
-    // Look for a Yap session that matches this chat
-    // We need to find the chatKey from the inline message
-    // For now, search all sessions for one with matching inlineMessageId or recent activity
-    let foundChatKey = null;
-    let foundSession = null;
-    
-    for (const [chatKey, session] of sharedChats.entries()) {
-      // Check if this session was recently active (within 1 hour)
-      const lastActivity = session.history?.length > 0 
-        ? session.history[session.history.length - 1].timestamp 
-        : session.createdAt;
-      
-      if (Date.now() - lastActivity < 60 * 60 * 1000) {
-        // Check if the message looks like a Yap
-        if (yapText.includes("StarzAI Yap")) {
-          foundChatKey = chatKey;
-          foundSession = session;
-          break;
-        }
-      }
-    }
-    
-    if (foundSession && foundSession.inlineMessageId) {
-      const userName = u.first_name || "User";
-      
-      // Add user message to session
-      addSharedChatMessage(foundChatKey, userName, text);
-      addSharedChatParticipant(foundChatKey, userName);
-      
-      // Delete the reply message to keep chat clean (optional)
-      try {
-        await ctx.deleteMessage();
-      } catch (e) {
-        // Can't delete in some chats, that's ok
-      }
-      
-      // Update Yap with "thinking..."
-      const totalPages = getSharedChatPageCount(foundSession);
-      try {
-        await bot.api.editMessageTextInline(
-          foundSession.inlineMessageId,
-          formatSharedChatDisplay(foundSession, -1) + "\n\n_🤖 AI is thinking..._",
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
-          }
-        );
-      } catch (e) {
-        console.error("Failed to update Yap:", e.message);
-      }
-      
-      // Get AI response
-      try {
-        const yapModel = foundSession.model || ensureChosenModelValid(u.id);
-        const messages = [
-          { role: "system", content: "You are StarzAI in a chat. Be friendly, helpful, and concise." },
-          ...foundSession.history.slice(-10).map(m => ({
-            role: m.role,
-            content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-          }))
-        ];
-        
-        const aiResponse = await llmText({
-          model: yapModel,
-          messages,
-          temperature: 0.7,
-          max_tokens: 500,
-        });
-        
-        // Add AI response to session
-        addSharedChatMessage(foundChatKey, "AI", aiResponse, "assistant");
-        
-        // Update Yap with response
-        const updatedSession = getSharedChat(foundChatKey);
-        const newTotalPages = getSharedChatPageCount(updatedSession);
-        
-        await bot.api.editMessageTextInline(
-          foundSession.inlineMessageId,
-          formatSharedChatDisplay(updatedSession, -1),
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(foundChatKey, -1, newTotalPages)
-          }
-        );
-        
-      } catch (e) {
-        console.error("Yap AI error:", e.message);
-        // Show error in Yap
-        try {
-          await bot.api.editMessageTextInline(
-            foundSession.inlineMessageId,
-            formatSharedChatDisplay(foundSession, -1) + "\n\n_⚠️ AI response failed_",
-            { 
-              parse_mode: "Markdown",
-              reply_markup: sharedChatKeyboard(foundChatKey, -1, totalPages)
-            }
-          );
-        } catch {}
-      }
-      
-      return; // Don't process as regular message
-    }
-  }
+  // (Replies are handled as normal messages below)
   
   // Check if user has pending shared chat input
   const pendingInput = pendingSharedInput.get(String(u.id));
@@ -7431,6 +7304,7 @@ bot.on("inline_query", async (ctx) => {
         userId: String(userId),
         model,
         character,
+        mode: "character",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(asKey), 30 * 60 * 1000);
@@ -7797,24 +7671,19 @@ bot.on("inline_query", async (ctx) => {
   // ORIGINAL HANDLERS
   // =====================
   
-  // "yap" filter - show only yap option (starting new yap)
+  // "yap" filter - legacy shared chat mode (now removed)
   if (qLower === "yap" || (qLower.startsWith("yap ") && !qLower.includes(":"))) {
-    const chatKey = makeId(8);
-    const userName = ctx.from?.first_name || "User";
-    // Create session immediately so it's ready
-    createSharedChat(chatKey, userId, userName, model);
     return safeAnswerInline(ctx, [
       {
         type: "article",
-        id: `yap_start_${chatKey}`,  // IMPORTANT: Must match chosen_inline_result handler
-        title: "👥 Start Yap Session",
-        description: "Anyone in this chat can talk to AI together!",
+        id: `yap_disabled_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Use other inline modes instead (q:, b:, code:, e:, sum:, p:).",
         thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
         input_message_content: {
-          message_text: `🤖 *StarzAI Yap*\n👥 1 participant • 📊 \`${model.split("/").pop()}\`\n━━━━━━━━━━━━━━━\n\n_No messages yet._\n_Reply to this message to chat!_\n\n━━━━━━━━━━━━━━━`,
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
           parse_mode: "Markdown",
         },
-        reply_markup: sharedChatKeyboard(chatKey),
       },
     ], { cache_time: 0, is_personal: true });
   }
@@ -7898,6 +7767,7 @@ bot.on("inline_query", async (ctx) => {
         answer,
         userId: String(userId),
         model,
+        mode: "chat",
         history: [
           ...(cached.history || [{ role: "user", content: cached.prompt }, { role: "assistant", content: cached.answer }]),
           { role: "user", content: userMessage },
@@ -7942,54 +7812,18 @@ bot.on("inline_query", async (ctx) => {
     }
   }
   
-  // yap:chatKey: message - User is typing a message for the Yap
+  // yap:chatKey: message - legacy Yap mode (removed)
   if (qLower.startsWith("yap:") && q.includes(": ")) {
-    const parts = q.split(": ");
-    const chatKeyPart = parts[0].split(":")[1]; // Get chatKey from "yap:chatKey"
-    const userMessage = parts.slice(1).join(": ").trim();
-    
-    const session = getSharedChat(chatKeyPart);
-    
-    if (!session) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `yap_expired_${sessionKey}`,
-          title: "⚠️ Session Expired",
-          description: "Start a new Yap session",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-    
-    if (!userMessage) {
-      // Show typing hint
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `yap_typing_${sessionKey}`,
-          title: "✍️ Type your message...",
-          description: "Your message will be added to the Yap",
-          thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-    
-    // User has typed a message - show send button
-    const userName = ctx.from?.first_name || "User";
-    
     return safeAnswerInline(ctx, [
       {
         type: "article",
-        id: `yap_send_${chatKeyPart}_${makeId(4)}`,
-        title: `✉️ Send: ${userMessage.slice(0, 40)}${userMessage.length > 40 ? "..." : ""}`,
-        description: `Tap to send your message to the Yap`,
-        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-        input_message_content: { 
-          message_text: `💬 *${userName}:* ${userMessage}`,
-          parse_mode: "Markdown"
+        id: `yap_legacy_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Shared Yap chats are no longer supported.",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
+          parse_mode: "Markdown",
         },
       },
     ], { cache_time: 0, is_personal: true });
@@ -8367,6 +8201,84 @@ bot.on("inline_query", async (ctx) => {
     }
   }
 
+  // "bhcont KEY" - Blackhole continuation via inline mode
+  if (qLower.startsWith("bhcont")) {
+    const parts = q.split(/\s+/);
+    const contKey = (parts[1] || "").trim();
+
+    if (!contKey) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_hint_${sessionKey}`,
+          title: "🗿🔬 Continue Blackhole",
+          description: "Tap Continue under a Blackhole answer to use this.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const baseItem = inlineCache.get(contKey);
+    if (!baseItem || baseItem.mode !== "blackhole") {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_expired_${sessionKey}`,
+          title: "⚠️ Session expired",
+          description: "Start a new Blackhole analysis.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (String(userId) !== String(baseItem.userId)) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_denied_${sessionKey}`,
+          title: "🚫 Not your session",
+          description: "Only the original requester can continue.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const model = baseItem.model || ensureChosenModelValid(userId);
+    const shortModel = model.split("/").pop();
+    const prompt = baseItem.prompt || "";
+
+    const pendingKey = makeId(6);
+    inlineCache.set(`bh_cont_pending_${pendingKey}`, {
+      baseKey: contKey,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`bh_cont_pending_${pendingKey}`), 5 * 60 * 1000);
+
+    const escapedPrompt = escapeHTML(prompt);
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `bh_cont_start_${pendingKey}`,
+        title: `🗿🔬 Continue Blackhole`,
+        description: `Continue: ${prompt.slice(0, 40)}${prompt.length > 40 ? "..." : ""}`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+        input_message_content: {
+          message_text: `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n⏳ <i>Continuing in depth... Please wait...</i>\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "bh_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
   // "chat:" prefix - interactive chat mode
   if (q.startsWith("chat:")) {
     const userMessage = q.slice(5).trim();
@@ -8497,12 +8409,13 @@ bot.on("inline_query", async (ctx) => {
     
     const answer = (out || "I couldn't generate a response.").slice(0, 2000);
     
-    // Store for Reply/Regen/Shorter/Longer buttons
+    // Store for Reply/Regen/Shorter/Longer/Continue buttons
     inlineCache.set(quickKey, {
       prompt: q,
       answer,
       userId: String(userId),
       model,
+      mode: "quick",
       createdAt: Date.now(),
     });
     
@@ -8563,141 +8476,31 @@ bot.on("chosen_inline_result", async (ctx) => {
   
   console.log(`chosen_inline_result: resultId=${resultId}, inlineMessageId=${inlineMessageId}`);
   
-  // Store inlineMessageId for yap_start results AND create session
+  // Store inlineMessageId for yap_start results (legacy Yap mode - now disabled)
   if (resultId.startsWith("yap_start_")) {
-    const chatKey = resultId.replace("yap_start_", "");
-    
-    // Create session if it doesn't exist
-    let session = getSharedChat(chatKey);
-    if (!session) {
-      const model = ensureChosenModelValid(userId);
-      session = createSharedChat(chatKey, userId, userName, model);
-      console.log(`Created new Yap session: chatKey=${chatKey}`);
-    }
-    
-    // Store the inline message ID
     if (inlineMessageId) {
-      setSharedChatInlineMessageId(chatKey, inlineMessageId);
-      console.log(`Stored inlineMessageId for chatKey=${chatKey}: ${inlineMessageId}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          "👥 *Yap shared chat mode has been removed.*\n\nUse other inline modes instead:\n\n• `q:`  – Quark (quick answers)\n• `b:`  – Blackhole (deep research)\n• `code:` – Programming help\n• `e:`  – Explain (ELI5)\n• `sum:` – Summarize\n• `p:`  – Partner chat",
+          { parse_mode: "Markdown" }
+        );
+      } catch {}
     }
     return;
   }
   
-  // Handle yap_send - user sent a message to the Yap
+  // Handle yap_send - legacy Yap mode (now disabled)
   if (resultId.startsWith("yap_send_")) {
-    // Extract chatKey from "yap_send_CHATKEY_RANDOM"
-    const parts = resultId.split("_");
-    const chatKey = parts[2]; // yap_send_CHATKEY_xxxx
-    
-    const session = getSharedChat(chatKey);
-    if (!session) {
-      console.log(`Yap session not found for chatKey=${chatKey}`);
-      return;
-    }
-    
-    // Get the user's message from the inline query
-    const query = ctx.chosenInlineResult.query || "";
-    // Query format: "yap:chatKey: message"
-    const messageParts = query.split(": ");
-    const userMessage = messageParts.slice(1).join(": ").trim();
-    
-    if (!userMessage) {
-      console.log("No message found in query");
-      return;
-    }
-    
-    console.log(`Yap message from ${userName}: ${userMessage}`);
-    
-    // Add user message to session
-    addSharedChatMessage(chatKey, userName, userMessage);
-    
-    // Add user as participant
-    addSharedChatParticipant(chatKey, userName);
-    
-    // Get the inline message ID for the original Yap
-    const yapInlineMessageId = session.inlineMessageId;
-    
-    if (!yapInlineMessageId) {
-      console.log("No inlineMessageId stored for Yap");
-      return;
-    }
-    
-    // Update the Yap message to show "Thinking..."
-    try {
-      const totalPages = getSharedChatPageCount(session);
-      await bot.api.editMessageTextInline(
-        yapInlineMessageId,
-        formatSharedChatDisplay(session, -1) + "\n\n_🤖 AI is thinking..._",
-        { 
-          parse_mode: "Markdown",
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-        }
-      );
-    } catch (e) {
-      console.error("Failed to update Yap with thinking:", e.message);
-    }
-    
-    // Get AI response
-    try {
-      const model = session.model || "openrouter/quasar-alpha";
-      
-      // Build conversation history for context
-      const messages = [
-        { role: "system", content: "You are a helpful AI assistant in a group chat. Keep responses concise and friendly. Multiple users may be chatting with you." },
-      ];
-      
-      // Add recent history (last 10 messages)
-      const recentHistory = (session.history || []).slice(-10);
-      for (const msg of recentHistory) {
-        if (msg.role === "user") {
-          messages.push({ role: "user", content: `${msg.userName}: ${msg.content}` });
-        } else {
-          messages.push({ role: "assistant", content: msg.content });
-        }
-      }
-      
-      const aiResponse = await llmText({
-        model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 500,
-      });
-      
-      // Add AI response to session
-      addSharedChatMessage(chatKey, "AI", aiResponse, "assistant");
-      
-      // Update the Yap message with the response
-      const updatedSession = getSharedChat(chatKey);
-      const totalPages = getSharedChatPageCount(updatedSession);
-      
-      await bot.api.editMessageTextInline(
-        yapInlineMessageId,
-        formatSharedChatDisplay(updatedSession, -1),
-        { 
-          parse_mode: "Markdown",
-          reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-        }
-      );
-      
-      console.log(`Yap updated with AI response for chatKey=${chatKey}`);
-      
-    } catch (e) {
-      console.error("Failed to get AI response for Yap:", e.message);
-      
-      // Update Yap to show error
+    if (inlineMessageId) {
       try {
-        const totalPages = getSharedChatPageCount(session);
         await bot.api.editMessageTextInline(
-          yapInlineMessageId,
-          formatSharedChatDisplay(session, -1) + "\n\n_⚠️ AI response failed_",
-          { 
-            parse_mode: "Markdown",
-            reply_markup: sharedChatKeyboard(chatKey, -1, totalPages)
-          }
+          inlineMessageId,
+          "👥 *Yap shared chat mode has been removed.*",
+          { parse_mode: "Markdown" }
         );
       } catch {}
     }
-    
     return;
   }
   
@@ -8739,6 +8542,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "chat",
         history: [
           { role: "user", content: cached.prompt },
           { role: "assistant", content: cached.answer },
@@ -8814,12 +8618,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (out || "I couldn't generate a response.").slice(0, 2000);
       const newKey = makeId(6);
       
-      // Store for Reply/Regen/Shorter/Longer buttons
+      // Store for Reply/Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
         userId: pending.userId,
         model,
+        mode: "quick",
         createdAt: Date.now(),
       });
       
@@ -8876,22 +8681,40 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use bullet points for clarity when appropriate." },
+          {
+            role: "system",
+            content:
+              "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. Format your answer in clean Markdown. When you have fully covered the topic and there is nothing essential left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+          },
           { role: "user", content: `Provide deep analysis on: ${prompt}` },
         ],
         temperature: 0.7,
         max_tokens: 800,
       });
-      
-      const answer = (out || "No results").slice(0, 3000);
+
+      const END_MARK = "END_OF_BLACKHOLE";
+      let raw = out || "No results";
+      let completed = false;
+
+      if (raw.includes(END_MARK)) {
+        completed = true;
+        raw = raw.replace(END_MARK, "").trim();
+        raw += "\n\n---\n_End of Blackhole analysis._";
+      }
+
+      // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
+      const answer = raw.slice(0, 3500);
       const newKey = makeId(6);
       
-      // Store for Regen/Shorter/Longer buttons
+      // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: answer,
         userId: pending.userId,
         model,
+        mode: "blackhole",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8929,6 +8752,128 @@ bot.on("chosen_inline_result", async (ctx) => {
     inlineCache.delete(`bh_pending_${bhKey}`);
     return;
   }
+
+  // Handle Blackhole continuation deferred response - bh_cont_start_KEY
+  if (resultId.startsWith("bh_cont_start_")) {
+    const contId = resultId.replace("bh_cont_start_", "");
+    const pending = inlineCache.get(`bh_cont_pending_${contId}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Blackhole continuation pending not found or no inlineMessageId: contId=${contId}`);
+      return;
+    }
+
+    const { baseKey, model, shortModel, userId: ownerId } = pending;
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem || baseItem.mode !== "blackhole") {
+      console.log(`Base Blackhole item missing for continuation: baseKey=${baseKey}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Session expired. Start a new Blackhole analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    if (String(ctx.from?.id || "") !== String(ownerId)) {
+      console.log(`Blackhole continuation denied: not owner`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Only the original requester can continue this analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    const prompt = baseItem.prompt || "";
+    console.log(`Processing Blackhole continuation for prompt: ${prompt}`);
+
+    try {
+      const MAX_DISPLAY = 3500;
+      const CONTEXT_LEN = 900;
+
+      let fullAnswer = baseItem.fullAnswer || baseItem.answer || "";
+      fullAnswer = trimIncompleteTail(fullAnswer);
+      const context = fullAnswer.slice(-CONTEXT_LEN);
+
+      const out = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+          },
+          {
+            role: "user",
+            content: `TEXT SO FAR:\n${context}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 700,
+      });
+
+      const END_MARK = "END_OF_BLACKHOLE";
+      let continuation = (out || "").trim();
+      let completed = false;
+
+      if (continuation.includes(END_MARK)) {
+        completed = true;
+        continuation = continuation.replace(END_MARK, "").trim();
+        continuation += "\n\n---\n_End of Blackhole analysis._";
+      }
+
+      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
+
+      const newKey = makeId(6);
+
+      inlineCache.set(newKey, {
+        prompt,
+        answer: continuation.slice(0, MAX_DISPLAY),
+        fullAnswer: newFull,
+        userId: ownerId,
+        model,
+        mode: "blackhole",
+        completed,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      // Update base item as well so future continues from any chunk share history
+      baseItem.fullAnswer = newFull;
+      if (completed) baseItem.completed = true;
+      inlineCache.set(baseKey, baseItem);
+
+      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
+      const escapedPrompt = escapeHTML(prompt);
+
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log(`Blackhole continuation updated with AI response`);
+    } catch (e) {
+      console.error("Failed to get Blackhole continuation response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+
+    inlineCache.delete(`bh_cont_pending_${contId}`);
+    return;
+  }
   
   // Handle Character intro - char_intro_KEY
   if (resultId.startsWith("char_intro_")) {
@@ -8963,7 +8908,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct." },
+          {
+            role: "system",
+            content:
+              "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct, but use Markdown headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways so the answer is easy to scan.",
+          },
           { role: "user", content: `Briefly explain: ${prompt}` },
         ],
         temperature: 0.7,
@@ -8973,12 +8922,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (out || "No results").slice(0, 2000);
       const newKey = makeId(6);
       
-      // Store for Regen/Shorter/Longer buttons
+      // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
         userId: pending.userId,
         model,
+        mode: "research",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9049,6 +8999,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "quark",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9063,6 +9014,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
+          // Quark intentionally has no Continue button
           reply_markup: inlineAnswerKeyboard(newKey)
         }
       );
@@ -9084,6 +9036,55 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
   
+  // Helper to avoid cutting code blocks in the middle for Code mode answers.
+  // We try to cut AFTER the last complete fenced block (``` ... ```) that fits
+  // within maxLen. If none, we fall back to cutting at a newline near maxLen.
+  // Returns the visible chunk, remaining text, whether we're done, and the
+  // index in `full` where we cut.
+  function splitCodeAnswerForDisplay(full, maxLen = 3500) {
+    if (!full) return { visible: "", remaining: "", completed: true, cutIndex: 0 };
+    if (full.length <= maxLen) {
+      return { visible: full, remaining: "", completed: true, cutIndex: full.length };
+    }
+
+    const fence = "```";
+    const positions = [];
+    let idx = 0;
+    while (true) {
+      const found = full.indexOf(fence, idx);
+      if (found === -1) break;
+      positions.push(found);
+      idx = found + fence.length;
+    }
+
+    let cutoff = -1;
+
+    if (positions.length >= 2) {
+      // Pair fences as open/close in order and find the last complete block
+      // whose closing fence is within maxLen.
+      for (let i = 0; i + 1 < positions.length; i += 2) {
+        const openIdx = positions[i];
+        const closeIdx = positions[i + 1] + fence.length; // include closing fence
+        if (closeIdx <= maxLen) {
+          cutoff = closeIdx;
+        } else {
+          break;
+        }
+      }
+    }
+
+    // If we didn't find any complete fenced block within maxLen, fall back to
+    // cutting at a newline near maxLen so we don't split mid-line.
+    if (cutoff === -1) {
+      const fallback = full.lastIndexOf("\n", maxLen);
+      cutoff = fallback > 0 ? fallback : maxLen;
+    }
+
+    const visible = full.slice(0, cutoff).trimEnd();
+    const remaining = full.slice(cutoff).trimStart();
+    return { visible, remaining, completed: remaining.length === 0, cutIndex: cutoff };
+  }
+
   // Handle Code deferred response - code_start_KEY
   if (resultId.startsWith("code_start_")) {
     const codeKey = resultId.replace("code_start_", "");
@@ -9101,21 +9102,31 @@ bot.on("chosen_inline_result", async (ctx) => {
       const out = await llmText({
         model,
         messages: [
-          { role: "system", content: "You are an expert programmer. Provide clear, working code with brief explanations. Use proper code formatting with language tags. Focus on best practices and clean code." },
+          {
+            role: "system",
+            content:
+              "You are an expert programmer. Provide clear, working code with brief explanations. Always format code using fenced code blocks with language tags, like ```python ... ```. Focus on best practices and clean, idiomatic code. If the user is asking for multiple sizeable code snippets (e.g., in two different languages), prioritize the first main implementation and be willing to let additional full implementations be shown in a continuation.",
+          },
           { role: "user", content: prompt },
         ],
         temperature: 0.3,
-        max_tokens: 600,
+        max_tokens: 700,
       });
       
-      const answer = (out || "No code").slice(0, 2500);
+      const raw = out || "No code";
+      const { visible, remaining, completed, cutIndex } = splitCodeAnswerForDisplay(raw, 3500);
+      const answer = visible;
       const newKey = makeId(6);
       
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: raw,
+        cursor: cutIndex,
         userId: pending.userId,
         model,
+        mode: "code",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9183,6 +9194,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "explain",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9250,6 +9262,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         answer,
         userId: pending.userId,
         model,
+        mode: "summarize",
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9437,6 +9450,129 @@ async function doInlineTransform(ctx, mode) {
       });
     }
 
+    if (mode === "cont") {
+      const itemMode = item.mode || "default";
+      const isBlackhole = itemMode === "blackhole";
+      const isCode = itemMode === "code";
+
+      // Blackhole uses its own inline-based continuation (bhcont), so we do nothing here.
+      if (isBlackhole) {
+        await ctx.answerCallbackQuery({ text: "Use the inline Continue button for Blackhole.", show_alert: true });
+        return;
+      }
+
+      // Quark never shows Continue, but if somehow triggered, just ignore.
+      if (itemMode === "quark") {
+        await ctx.answerCallbackQuery({ text: "Quark answers are already complete.", show_alert: true });
+        return;
+      }
+
+      if (isCode) {
+        // For Code mode, we don't ask the model to "continue" the answer.
+        // Instead, we reveal the remaining part of the original fullAnswer in
+        // safe chunks, avoiding cuts inside fenced code blocks.
+        const full = item.fullAnswer || item.answer || "";
+        if (!full) {
+          await ctx.answerCallbackQuery({ text: "No more code to show.", show_alert: true });
+          return;
+        }
+
+        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
+        if (cursor >= full.length) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
+          return;
+        }
+
+        const remaining = full.slice(cursor);
+        if (!remaining.trim()) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
+          return;
+        }
+
+        // Local splitter: same logic as in the initial Code handler but applied
+        // to the remaining text only.
+        const maxLen = 3500;
+        const fence = "```";
+        const positions = [];
+        let idxPos = 0;
+        while (true) {
+          const found = remaining.indexOf(fence, idxPos);
+          if (found === -1) break;
+          positions.push(found);
+          idxPos = found + fence.length;
+        }
+
+        let cutoff = -1;
+        if (positions.length >= 2) {
+          for (let i = 0; i + 1 < positions.length; i += 2) {
+            const closeIdx = positions[i + 1] + fence.length;
+            if (closeIdx <= maxLen) {
+              cutoff = closeIdx;
+            } else {
+              break;
+            }
+          }
+        }
+
+        if (cutoff === -1) {
+          const fallback = remaining.lastIndexOf("\n", maxLen);
+          cutoff = fallback > 0 ? fallback : Math.min(maxLen, remaining.length);
+        }
+
+        const addition = remaining.slice(0, cutoff).trimEnd();
+        const leftover = remaining.slice(cutoff).trimStart();
+
+        if (!addition) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "No further code to show.", show_alert: true });
+          return;
+        }
+
+        newAnswer = `${item.answer}\n\n${addition}`.trim();
+        item.cursor = cursor + cutoff;
+        if (!leftover.length || item.cursor >= full.length) {
+          item.completed = true;
+        }
+      } else {
+        // Default (quick, research, explain, summarize, chat, etc.)
+        const systemPrompt =
+          "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue. When there is nothing important left to add, end your answer with a line containing only END_OF_INLINE.";
+        const maxTokens = 450;
+        const END_MARK = "END_OF_INLINE";
+
+        const continuation = await llmText({
+          model: item.model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: maxTokens,
+        });
+
+        let contText = (continuation || "").trim();
+        let completed = false;
+        if (contText.includes(END_MARK)) {
+          completed = true;
+          contText = contText.replace(END_MARK, "").trim();
+          contText += "\n\n---\n_End of answer._";
+        }
+
+        newAnswer = `${item.answer}\n\n${contText || ""}`.trim();
+        if (completed) {
+          item.completed = true;
+        }
+      }
+    }
+
     const finalText = (newAnswer || "(no output)").trim();
     item.answer = finalText.slice(0, 3500);
     inlineCache.set(key, item);
@@ -9451,6 +9587,7 @@ async function doInlineTransform(ctx, mode) {
 bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"));
 bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
 bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
+bot.callbackQuery(/^inl_cont:/, async (ctx) => doInlineTransform(ctx, "cont"));
 
 // Character new intro button
 bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
