@@ -8842,10 +8842,12 @@ bot.on("chosen_inline_result", async (ctx) => {
   // Helper to avoid cutting code blocks in the middle for Code mode answers.
   // We try to cut AFTER the last complete fenced block (``` ... ```) that fits
   // within maxLen. If none, we fall back to cutting at a newline near maxLen.
+  // Returns the visible chunk, remaining text, whether we're done, and the
+  // index in `full` where we cut.
   function splitCodeAnswerForDisplay(full, maxLen = 3500) {
-    if (!full) return { visible: "", remaining: "", completed: true };
+    if (!full) return { visible: "", remaining: "", completed: true, cutIndex: 0 };
     if (full.length <= maxLen) {
-      return { visible: full, remaining: "", completed: true };
+      return { visible: full, remaining: "", completed: true, cutIndex: full.length };
     }
 
     const fence = "```";
@@ -8858,32 +8860,32 @@ bot.on("chosen_inline_result", async (ctx) => {
       idx = found + fence.length;
     }
 
-    let cutoff = maxLen;
+    let cutoff = -1;
 
     if (positions.length >= 2) {
-      // Pair fences as open/close in order.
+      // Pair fences as open/close in order and find the last complete block
+      // whose closing fence is within maxLen.
       for (let i = 0; i + 1 < positions.length; i += 2) {
         const openIdx = positions[i];
         const closeIdx = positions[i + 1] + fence.length; // include closing fence
         if (closeIdx <= maxLen) {
-          cutoff = Math.max(cutoff, closeIdx);
+          cutoff = closeIdx;
         } else {
           break;
         }
       }
     }
 
-    // Fallback: avoid cutting in the middle of a line if we didn't find a good fence.
-    if (cutoff === maxLen) {
-      const lastNewline = full.lastIndexOf("\n", maxLen);
-      if (lastNewline > 0) {
-        cutoff = lastNewline;
-      }
+    // If we didn't find any complete fenced block within maxLen, fall back to
+    // cutting at a newline near maxLen so we don't split mid-line.
+    if (cutoff === -1) {
+      const fallback = full.lastIndexOf("\n", maxLen);
+      cutoff = fallback > 0 ? fallback : maxLen;
     }
 
     const visible = full.slice(0, cutoff).trimEnd();
     const remaining = full.slice(cutoff).trimStart();
-    return { visible, remaining, completed: remaining.length === 0 };
+    return { visible, remaining, completed: remaining.length === 0, cutIndex: cutoff };
   }
 
   // Handle Code deferred response - code_start_KEY
@@ -8915,7 +8917,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       });
       
       const raw = out || "No code";
-      const { visible, remaining, completed } = splitCodeAnswerForDisplay(raw, 3500);
+      const { visible, remaining, completed, cutIndex } = splitCodeAnswerForDisplay(raw, 3500);
       const answer = visible;
       const newKey = makeId(6);
       
@@ -8923,6 +8925,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         prompt,
         answer,
         fullAnswer: raw,
+        cursor: cutIndex,
         userId: pending.userId,
         model,
         mode: "code",
@@ -9268,35 +9271,74 @@ async function doInlineTransform(ctx, mode) {
       }
 
       if (isCode) {
-        // For Code, continue the answer with mode-aware prompt and completion marker.
-        const systemPrompt =
-          "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged. When there is nothing important left to add, end your answer with a line containing only END_OF_CODE.";
-        const maxTokens = 600;
-        const END_MARK = "END_OF_CODE";
-
-        const continuation = await llmText({
-          model: item.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: maxTokens,
-        });
-
-        let contText = (continuation || "").trim();
-        let completed = false;
-        if (contText.includes(END_MARK)) {
-          completed = true;
-          contText = contText.replace(END_MARK, "").trim();
-          contText += "\n\n---\n_End of code answer._";
+        // For Code mode, we don't ask the model to "continue" the answer.
+        // Instead, we reveal the remaining part of the original fullAnswer in
+        // safe chunks, avoiding cuts inside fenced code blocks.
+        const full = item.fullAnswer || item.answer || "";
+        if (!full) {
+          await ctx.answerCallbackQuery({ text: "No more code to show.", show_alert: true });
+          return;
         }
 
-        newAnswer = `${item.answer}\n\n${contText || ""}`.trim();
-        if (completed) {
+        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
+        if (cursor >= full.length) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
+          return;
+        }
+
+        const remaining = full.slice(cursor);
+        if (!remaining.trim()) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
+          return;
+        }
+
+        // Local splitter: same logic as in the initial Code handler but applied
+        // to the remaining text only.
+        const maxLen = 3500;
+        const fence = "```";
+        const positions = [];
+        let idxPos = 0;
+        while (true) {
+          const found = remaining.indexOf(fence, idxPos);
+          if (found === -1) break;
+          positions.push(found);
+          idxPos = found + fence.length;
+        }
+
+        let cutoff = -1;
+        if (positions.length >= 2) {
+          for (let i = 0; i + 1 < positions.length; i += 2) {
+            const closeIdx = positions[i + 1] + fence.length;
+            if (closeIdx <= maxLen) {
+              cutoff = closeIdx;
+            } else {
+              break;
+            }
+          }
+        }
+
+        if (cutoff === -1) {
+          const fallback = remaining.lastIndexOf("\n", maxLen);
+          cutoff = fallback > 0 ? fallback : Math.min(maxLen, remaining.length);
+        }
+
+        const addition = remaining.slice(0, cutoff).trimEnd();
+        const leftover = remaining.slice(cutoff).trimStart();
+
+        if (!addition) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "No further code to show.", show_alert: true });
+          return;
+        }
+
+        newAnswer = `${item.answer}\n\n${addition}`.trim();
+        item.cursor = cursor + cutoff;
+        if (!leftover.length || item.cursor >= full.length) {
           item.completed = true;
         }
       } else {
