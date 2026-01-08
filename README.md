@@ -8,6 +8,7 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 - **DM Chat** - Direct conversation with AI
 - **Group Chat** - Say "Starz" / "StarzAI" or reply to the bot to get responses
 - **Inline Mode** - Type `@starztechbot` anywhere for instant AI
+- **Time & Date** - Ask things like “what's the time in Tokyo?” or “today's date in London”.
 
 ### ⚡ AI Modes (Inline)
 | Mode | Prefix | Description |
@@ -32,9 +33,9 @@ Set a custom personality for all DM responses:
 - `/persona friendly teacher` - Sets AI personality
 - `/persona reset` - Back to default
 
-### 📊 Stats & History
+### 📊 Stats
 - `/stats` - View your usage statistics
-- `/history` - Recent prompts with quick re-use buttons
+- `/history` - (Disabled) Previously showed recent prompts; now returns a notice to avoid database bloat
 
 ## 📋 Commands
 
@@ -52,7 +53,9 @@ Set a custom personality for all DM responses:
 | `/partner` | Manage your AI partner |
 | `/persona` | Set AI personality |
 | `/stats` | Usage statistics |
-| `/history` | Recent prompts |
+| `/history` | (Disabled) Previously showed recent prompts |
+| `/search` | Web search with raw results |
+| `/websearch` | Web search with AI-generated summary |
 
 ### Owner Commands
 | Command | Description |

@@ -72,6 +72,9 @@ if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 // =====================
 const bot = new Bot(BOT_TOKEN);
 
+let BOT_ID = null;
+let BOT_USERNAME = "";
+
 const openai = new OpenAI({
   baseURL: "https://ai.megallm.io/v1",
   apiKey: MEGALLM_API_KEY,
@@ -766,31 +769,29 @@ async function handleSpamDetection(ctx, spamResult, userId) {
   
   // Auto-mute after threshold
   if (record.spamCount >= SPAM_CONFIG.AUTO_MUTE_THRESHOLD) {
-    const muteUntil = nowMs + (SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000);
+    const durationMs = SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000;
+    const autoReason = `${spamResult.reason} (automatic spam detection)`;
     
-    // Add to muted users
-    const muteEntry = {
-      reason: "Automatic spam detection",
-      until: muteUntil,
-      by: "system",
-      scope: "all"
-    };
-    
-    if (!mutedUsers.has(String(userId))) {
-      mutedUsers.set(String(userId), muteEntry);
-    }
+    // Apply a regular mute using the global mute system
+    const { until } = applyMuteToUser(
+      String(userId),
+      durationMs,
+      "all",
+      autoReason,
+      "system"
+    );
     
     // Reset spam count
     record.spamCount = 0;
     
     // Notify user
     try {
-      const untilDate = new Date(muteUntil).toLocaleString();
+      const untilDate = until ? new Date(until).toLocaleString() : "unknown";
       await ctx.reply(
-        `🚫 *Auto-Muted for Spam*\n\n` +
-        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\n\n` +
-        `Reason: ${spamResult.reason}\n` +
-        `Mute expires: ${untilDate}\n\n` +
+        `🚫 *Auto-Muted for Spam*\\n\\n` +
+        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\\n\\n` +
+        `Reason: ${spamResult.reason}\\n` +
+        `Mute expires: ${untilDate}\\n\\n` +
         `_Please avoid spamming to use the bot._`,
         { parse_mode: "Markdown" }
       );
@@ -807,9 +808,9 @@ async function handleSpamDetection(ctx, spamResult, userId) {
     
     try {
       await ctx.reply(
-        `⚠️ *Spam Warning*\n\n` +
-        `${spamResult.reason}\n\n` +
-        `Please slow down or you will be automatically muted.\n` +
+        `⚠️ *Spam Warning*\\n\\n` +
+        `${spamResult.reason}\\n\\n` +
+        `Please slow down or you will be automatically muted.\\n` +
         `(Warning ${record.spamCount}/${SPAM_CONFIG.AUTO_MUTE_THRESHOLD})`,
         { parse_mode: "Markdown" }
       );
@@ -2316,7 +2317,12 @@ function helpText() {
     "• /char — Quick character roleplay",
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
+    "• /search — Web search (raw results)",
+    "• /websearch — AI web search with summary",
     FEEDBACK_CHAT_ID ? "• /feedback — Send feedback to the StarzAI team" : "",
+    "",
+    "🕐 *Time & Date*",
+    "• Ask things like: `what's the time in Tokyo?`, `current date in London`",
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
     "• `q:` — ⭐ Quark (quick answers)",
@@ -3805,15 +3811,17 @@ function modelListKeyboard(category, currentModel, userTier) {
   for (let i = 0; i < models.length; i += 2) {
     const row = [];
     const m1 = models[i];
+    const short1 = m1.split("/").pop();
     row.push({
-      text: `${m1 === currentModel ? "✅ " : ""}${m1}`,
+      text: `${m1 === currentModel ? "✅ " : ""}${short1}`,
       callback_data: `setmodel:${m1}`,
     });
     
     if (models[i + 1]) {
       const m2 = models[i + 1];
+      const short2 = m2.split("/").pop();
       row.push({
-        text: `${m2 === currentModel ? "✅ " : ""}${m2}`,
+        text: `${m2 === currentModel ? "✅ " : ""}${short2}`,
         callback_data: `setmodel:${m2}`,
       });
     }
@@ -6124,11 +6132,11 @@ bot.on("message:text", async (ctx) => {
   }
 
   const model = ensureChosenModelValid(u.id);
-  const botInfo = await bot.api.getMe();
-  const botUsername = botInfo.username?.toLowerCase() || "";
+  const botUsername = BOT_USERNAME || "";
+  const botId = BOT_ID;
 
   // Group chat authorization + activation system:
-  // - Groups must be explicitly authorized by the owner (/allowgroup <chatId>)
+  // - Groups must be explicitly authorized by the owner (/allowgroup &lt;chatId&gt;)
   // - If not authorized, the bot only responds with an authorization hint
   //   when explicitly invoked (mention, wake word, reply, or active character)
   // - When authorized:
@@ -6143,8 +6151,10 @@ bot.on("message:text", async (ctx) => {
   if (chat.type !== "private") {
     const lower = text.toLowerCase();
     const hasWakeWord = /\bstarz(ai)?\b/.test(lower);
-    const isMentioned = lower.includes(`@${botUsername}`) || hasWakeWord;
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isMentioned = botUsername
+      ? lower.includes(`@${botUsername}`) || hasWakeWord
+      : hasWakeWord;
+    const isReplyToBot = botId && ctx.message?.reply_to_message?.from?.id === botId;
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     const groupForcedActive = isGroupActive(chat.id); // /talk-controlled
 
@@ -6185,11 +6195,11 @@ bot.on("message:text", async (ctx) => {
         ];
 
         let replyMarkup;
-        if (FEEDBACK_CHAT_ID && botInfo.username) {
+        if (FEEDBACK_CHAT_ID && BOT_USERNAME) {
           const kb = new InlineKeyboard();
           kb.url(
             "💡 Feedback",
-            `https://t.me/${botInfo.username}?start=group_${chat.id}`
+            `https://t.me/${BOT_USERNAME}?start=group_${chat.id}`
           );
           replyMarkup = kb;
         }
@@ -6326,11 +6336,11 @@ bot.on("message:text", async (ctx) => {
       // Check if it's a time/date query - handle directly without AI
       if (isTimeQuery(text)) {
         const timeResult = getTimeResponse(text, msg.date);
-        await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() => {});
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() =&gt; {});
         
-        const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         await ctx.reply(
-          `${timeResult.response}\n\n⚡ ${elapsed}s`,
+          `${timeResult.response}\\n\\n⚡ ${elapsed}s`,
           { parse_mode: "HTML", reply_to_message_id: msg.message_id }
         );
         return;
@@ -6552,7 +6562,7 @@ bot.on("message:photo", async (ctx) => {
   // Check if replying to a character message (like text handler does)
   let replyCharacter = null;
   const replyToMsg = ctx.message?.reply_to_message;
-  if (replyToMsg?.from?.id === bot.botInfo.id && replyToMsg?.text) {
+  if (replyToMsg?.from?.id === BOT_ID && replyToMsg?.text) {
     // Check if the replied message starts with a character label
     const charMatch = replyToMsg.text.match(/^🎭\s*(.+?)\n/);
     if (charMatch) {
@@ -6769,8 +6779,7 @@ bot.on("message:video", async (ctx) => {
 
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     
     if (!isReplyToBot && !groupActive) {
@@ -6962,8 +6971,7 @@ bot.on("message:video_note", async (ctx) => {
   
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     
@@ -7016,8 +7024,7 @@ bot.on("message:animation", async (ctx) => {
   
   // In groups: only process if replying to bot or group is active or has character
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     
@@ -10552,6 +10559,16 @@ http
   })
   .listen(PORT, async () => {
     console.log("Listening on", PORT);
+
+    // Cache bot info (ID and username) for later use
+    try {
+      const me = await bot.api.getMe();
+      BOT_ID = me.id;
+      BOT_USERNAME = (me.username || "").toLowerCase();
+      console.log(`Bot identity: @${BOT_USERNAME} (id=${BOT_ID})`);
+    } catch (e) {
+      console.error("Failed to fetch bot info:", e.message);
+    }
 
     // Initialize storage - try Supabase first (permanent), then Telegram as fallback
     const supabaseLoaded = await loadFromSupabase();
