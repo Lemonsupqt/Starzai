@@ -1867,7 +1867,8 @@ function convertToTelegramHTML(text) {
     // Escape HTML in code
     const escapedCode = escapeHTML(code.trim());
     codeBlocksWithLang.push(`<pre><code class="language-${lang}">${escapedCode}</code></pre>`);
-    return `__CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}__`;
+    // Use @@...@@ placeholders so Markdown bold/italic rules don't touch them
+    return `@@CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}@@`;
   });
   
   // Step 2: Protect and convert code blocks without language (``` ... ```)
@@ -1875,7 +1876,7 @@ function convertToTelegramHTML(text) {
   result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
     const escapedCode = escapeHTML(code.trim());
     codeBlocks.push(`<pre>${escapedCode}</pre>`);
-    return `__CODEBLOCK_${codeBlocks.length - 1}__`;
+    return `@@CODEBLOCK_${codeBlocks.length - 1}@@`;
   });
   
   // Step 3: Protect and convert inline code (`...`)
@@ -1883,7 +1884,7 @@ function convertToTelegramHTML(text) {
   result = result.replace(/`([^`]+)`/g, (match, code) => {
     const escapedCode = escapeHTML(code);
     inlineCode.push(`<code>${escapedCode}</code>`);
-    return `__INLINECODE_${inlineCode.length - 1}__`;
+    return `@@INLINECODE_${inlineCode.length - 1}@@`;
   });
   
   // Step 4: Escape remaining HTML special characters
@@ -1929,15 +1930,15 @@ function convertToTelegramHTML(text) {
   
   // Step 6: Restore code blocks and inline code
   inlineCode.forEach((code, i) => {
-    result = result.replace(`__INLINECODE_${i}__`, code);
+    result = result.replace(`@@INLINECODE_${i}@@`, code);
   });
   
   codeBlocks.forEach((code, i) => {
-    result = result.replace(`__CODEBLOCK_${i}__`, code);
+    result = result.replace(`@@CODEBLOCK_${i}@@`, code);
   });
   
   codeBlocksWithLang.forEach((code, i) => {
-    result = result.replace(`__CODEBLOCK_LANG_${i}__`, code);
+    result = result.replace(`@@CODEBLOCK_LANG_${i}@@`, code);
   });
   
   return result;
@@ -1956,25 +1957,25 @@ function escapeHTML(text) {
 function escapeMarkdown(text) {
   if (!text) return text;
   return String(text)
-    .replace(/\\/g, '\\\\')
-    .replace(/\*/g, '\\*')
-    .replace(/_/g, '\\_/)
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)')
-    .replace(/~/g, '\\~')
-    .replace(/`/g, '\\`')
-    .replace(/>/g, '\\>')
-    .replace(/#/g, '\\#')
-    .replace(/\+/g, '\\+')
-    .replace(/-/g, '\\-')
-    .replace(/=/g, '\\=')
-    .replace(/\|/g, '\\|')
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\./g, '\\.')
-    .replace(/!/g, '\\!');
+    .replace(/\\\\/g, '\\\\\\\\')
+    .replace(/\\*/g, '\\\\*')
+    .replace(/_/g, '\\\\_/')
+    .replace(/\\[/g, '\\\\[')
+    .replace(/\\]/g, '\\\\]')
+    .replace(/\\(/g, '\\\\(')
+    .replace(/\\)/g, '\\\\)')
+    .replace(/~/g, '\\\\~')
+    .replace(/`/g, '\\\\`')
+    .replace(/>/g, '\\\\>')
+    .replace(/#/g, '\\\\#')
+    .replace(/\\+/g, '\\\\+')
+    .replace(/-/g, '\\\\-')
+    .replace(/=/g, '\\\\=')
+    .replace(/\\|/g, '\\\\|')
+    .replace(/\\{/g, '\\\\{')
+    .replace(/\\}/g, '\\\\}')
+    .replace(/\\./g, '\\\\.')
+    .replace(/!/g, '\\\\!');
 }
 
 // Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
