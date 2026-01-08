@@ -3903,6 +3903,34 @@ bot.command("whoami", async (ctx) => {
   const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
   const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
   const shortModel = model.split("/").pop();
+  // Show model as-is inside code block to avoid ugly backslashes like grok\-4\.1
+  const safeModel = shortModel;
+
+  const isOwnerUser = OWNER_IDS.has(String(ctx.from.id));
+  const tierLabel = isOwnerUser
+    ? `${u.tier.toUpperCase()} (OWNER)`
+    : u.tier.toUpperCase();
+
+  const lines = [
+    `👤 *Your Profile*`,
+    ``,
+    `🆔 User ID: \`${ctx.from.id}\``,
+    `📛 Username: ${safeUsername}`,
+    `👋 Name: ${safeName}`,
+    ``,
+    `🎫 *Tier:* ${tierLabel}`,
+    `🤖 *Model:* \`${safeModel}\``,
+    ``,oami", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const model = ensureChosenModelValid(ctx.from.id);
+  const stats = u.stats || {};
+
+  const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
+  const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
+  const shortModel = model.split("/").pop();
   const safeModel = escapeMarkdown(shortModel);
 
   const lines = [
