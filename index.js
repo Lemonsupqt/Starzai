@@ -2631,13 +2631,47 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
-  
+
+  const chatType = ctx.chat.type;
+
+  // Deep-link handling in private chat, e.g. /start group_-100123...
+  if (chatType === "private") {
+    const text = ctx.message.text || "";
+    const args = text.split(" ").slice(1);
+    const param = args[0];
+
+    if (param && param.startsWith("group_")) {
+      const groupId = param.slice("group_".length);
+      const u = ctx.from;
+      if (u?.id) {
+        pendingFeedback.set(String(u.id), {
+          createdAt: Date.now(),
+          source: "group_unauthed",
+          groupId,
+        });
+      }
+
+      await ctx.reply(
+        "💡 *Feedback Mode* (group)\n\n" +
+          `We detected this group ID: \`${groupId}\`.\n\n` +
+          "Please send *one message* describing the problem (for example why you want it authorized).\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+          "_You have 2 minutes. After that, feedback mode will expire._",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+  }
+
   // Activate group if used in group chat
-  if (ctx.chat.type !== "private") {
+  if (chatType !== "private") {
     activateGroup(ctx.chat.id);
   }
-  
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
+
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), {
+    parse_mode: "Markdown",
+    reply_markup: mainMenuKeyboard(ctx.from.id),
+  });
 });
 
 bot.command("help", async (ctx) => {
@@ -5857,6 +5891,7 @@ bot.on("message:text", async (ctx) => {
       mute: "After mute notice",
       softban: "After softban notice",
       warn: "After warning notice",
+      group_unauthed: "Unauthorized group",
     };
     const sourceLabel = sourceMap[sourceTag] || sourceTag;
 
@@ -5875,13 +5910,19 @@ bot.on("message:text", async (ctx) => {
       `⚠️ *Warnings:* ${warningsCount}`,
       `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
       `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-    ].join("\n");
+    ];
+
+    if (pendingFb.groupId) {
+      metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
+    }
+
+    const metaText = metaLines.join("\n");
 
     try {
       // Forward the original message
       await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
       // Send meta info
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
+      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, { parse_mode: "Markdown" });
       await ctx.reply(
         "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
           `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
@@ -5955,9 +5996,15 @@ bot.on("message:text", async (ctx) => {
           "in a private chat with the bot.",
         ];
 
-        const replyMarkup = FEEDBACK_CHAT_ID
-          ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
-          : undefined;
+        let replyMarkup;
+        if (FEEDBACK_CHAT_ID && botInfo.username) {
+          const kb = new InlineKeyboard();
+          kb.url(
+            "💡 Feedback",
+            `https://t.me/${botInfo.username}?start=group_${chat.id}`
+          );
+          replyMarkup = kb;
+        }
 
         await ctx.reply(lines.join("\n"), {
           parse_mode: "Markdown",
