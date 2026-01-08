@@ -5113,57 +5113,56 @@ bot.command("mutelist", async (ctx) => {
 bot.command("ownerhelp", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
-  const lines = [
-    "📘 *StarzAI Owner Guide*",
+  const text = [
+    "📘 StarzAI Owner Guide (Quick)",
     "",
-    "👤 *User Info & Status*",
-    "• `/info &lt;userId&gt;` – full user profile (tier, bans, mutes, warnings, stats)",
-    "• `/gstat` – global bot status & metrics",
+    "👤 User info & status",
+    "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
+    "• /gstat — global bot stats",
     "",
-    "🎫 *Tiers & Access*",
-    "• `/grant &lt;userId&gt; &lt;tier&gt;` – set tier (`free`, `premium`, `ultra`)",
-    "• `/revoke &lt;userId&gt;` – reset to `free`",
-    "• `/allow &lt;userId&gt; &lt;model&gt;` – allow extra model",
-    "• `/deny &lt;userId&gt; &lt;model&gt;` – remove allowed model",
+    "🎫 Tiers & access",
+    "• /grant <userId> <tier>, /revoke <userId>",
+    "• /allow <userId> <model>, /deny <userId> <model>",
     "",
-    "🏘 *Group Authorization*",
-    "• `/add &lt;chatId&gt; &lt;note&gt;` – authorize a group to use the bot",
-    "• `/rem &lt;chatId&gt; &lt;reason&gt;` – block a group from using the bot",
-    "• `/glist` – list known groups and their auth status",
+    "🏘 Group authorization",
+    "• /add <chatId> <note> — authorize a group to use the bot",
+    "• /rem <chatId> <reason> — block a group from using the bot",
+    "• /glist — list known groups and their auth status",
     "",
-    "⏱ *Command Cooldowns*",
-    "• Free: *60s* between slash commands (e.g. `/start`, `/model`, `/stats`, `/search`)",
-    "• Premium: *30s* between commands",
-    "• Ultra: *10s* between commands",
-    "• Owners: *no* command cooldown or global rate limit",
+    "⏱ Command cooldowns",
+    "• Free: 60s between slash commands (e.g. /start, /model, /stats, /search)",
+    "• Premium: 30s between commands",
+    "• Ultra: 10s between commands",
+    "• Owners: no command cooldown or global rate limit",
     "",
-    "🚫 *Bans*",
-    "• `/ban &lt;userId&gt; &lt;reason&gt;` – permanent ban",
-    "• `/unban &lt;userId&gt; &lt;reason&gt;` – remove ban",
-    "• `/softban &lt;userId&gt; &lt;reason&gt;` – 24h total mute (all scopes)",
-    "• `/banlist` – list banned users",
+    "🚫 Bans",
+    "• /ban <userId> <reason> — permanent ban",
+    "• /unban <userId> <reason> — remove ban",
+    "• /softban <userId> <reason> — 24h total mute (all scopes)",
+    "• /banlist — list banned users",
     "",
-    "🔇 *Mutes*",
-    "• `/mute &lt;userId&gt; &lt;duration&gt; &lt;scope&gt; &lt;reason&gt;`",
-    "   – `duration`: e.g. `10m`, `2h`, `1d`",
-    "   – `scope`: `all`, `dm`, `group`, `inline`, `tier`",
-    "• `/unmute &lt;userId&gt; &lt;reason&gt;`",
-    "• `/mutelist` – list active mutes",
+    "🔇 Mutes",
+    "• /mute <userId> <duration> <scope> <reason>",
+    "   duration: e.g. 10m, 2h, 1d",
+    "   scope: all, dm, group, inline, tier",
+    "• /unmute <userId> <reason>",
+    "• /mutelist — list active mutes",
     "",
-    "⚠️ *Warnings*",
-    "• `/warn &lt;userId&gt; &lt;reason&gt;` – auto softban at *3* warnings",
-    "• `/clearwarns &lt;userId&gt; &lt;reason&gt;` – reset warnings",
+    "⚠️ Warnings",
+    "• /warn <userId> <reason> — auto softban at 3 warnings",
+    "• /clearwarns <userId> <reason> — reset warnings",
     "",
     FEEDBACK_CHAT_ID
-      ? "💡 *Feedback*\n• `/feedback` – user-side command (button in menu)\n• `/f &lt;feedbackId&gt; &lt;text&gt;` – reply to feedback sender"
+      ? "💡 Feedback\n• /feedback — user-side command (button in menu)\n• /f <feedbackId> <text> — reply to feedback sender"
       : "",
     "",
-    "_Owners cannot be banned, muted, or warned._",
+    "Owners cannot be banned, muted, or warned.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  await ctx.reply(lines, { parse_mode: "Markdown" });
+  await ctx.reply(text);
+});
 });
 
 // =====================
