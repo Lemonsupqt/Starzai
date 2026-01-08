@@ -592,6 +592,267 @@ async function enforceRateLimit(ctx) {
 }
 
 // =====================
+// ANTI-SPAM SYSTEM
+// =====================
+const spamTracking = new Map(); // userId -> { messages: [], lastWarning: timestamp }
+
+const SPAM_CONFIG = {
+  // Message frequency limits
+  MAX_MESSAGES_PER_10_SEC: 5,
+  MAX_MESSAGES_PER_MINUTE: 15,
+  
+  // Content-based detection
+  MAX_REPEATED_MESSAGES: 3,
+  MIN_MESSAGE_INTERVAL_MS: 500, // Minimum time between messages
+  
+  // Similarity detection
+  SIMILARITY_THRESHOLD: 0.8, // 80% similar = spam
+  
+  // Penalties
+  WARNING_COOLDOWN_MS: 60_000, // 1 minute between warnings
+  AUTO_MUTE_DURATION_MINUTES: 10,
+  AUTO_MUTE_THRESHOLD: 3, // Mute after 3 spam detections
+};
+
+function getSpamRecord(userId) {
+  const key = String(userId);
+  if (!spamTracking.has(key)) {
+    spamTracking.set(key, {
+      messages: [],
+      spamCount: 0,
+      lastWarning: 0,
+    });
+  }
+  return spamTracking.get(key);
+}
+
+function cleanOldMessages(record, nowMs) {
+  // Keep only messages from last minute
+  record.messages = record.messages.filter(m => nowMs - m.timestamp < 60_000);
+}
+
+function calculateSimilarity(str1, str2) {
+  if (!str1 || !str2) return 0;
+  
+  const s1 = str1.toLowerCase().trim();
+  const s2 = str2.toLowerCase().trim();
+  
+  if (s1 === s2) return 1;
+  
+  // Simple character-based similarity
+  const longer = s1.length > s2.length ? s1 : s2;
+  const shorter = s1.length > s2.length ? s2 : s1;
+  
+  if (longer.length === 0) return 1;
+  
+  let matches = 0;
+  for (let i = 0; i < shorter.length; i++) {
+    if (longer.includes(shorter[i])) matches++;
+  }
+  
+  return matches / longer.length;
+}
+
+function detectSpam(userId, messageText) {
+  const record = getSpamRecord(userId);
+  const nowMs = Date.now();
+  
+  cleanOldMessages(record, nowMs);
+  
+  const recentMessages = record.messages;
+  const last10Sec = recentMessages.filter(m => nowMs - m.timestamp < 10_000);
+  const lastMinute = recentMessages.filter(m => nowMs - m.timestamp < 60_000);
+  
+  // Check 1: Too many messages in 10 seconds
+  if (last10Sec.length >= SPAM_CONFIG.MAX_MESSAGES_PER_10_SEC) {
+    return {
+      isSpam: true,
+      reason: "Too many messages in 10 seconds",
+      severity: "high"
+    };
+  }
+  
+  // Check 2: Too many messages per minute
+  if (lastMinute.length >= SPAM_CONFIG.MAX_MESSAGES_PER_MINUTE) {
+    return {
+      isSpam: true,
+      reason: "Too many messages per minute",
+      severity: "medium"
+    };
+  }
+  
+  // Check 3: Messages sent too quickly
+  if (recentMessages.length > 0) {
+    const lastMsg = recentMessages[recentMessages.length - 1];
+    if (nowMs - lastMsg.timestamp < SPAM_CONFIG.MIN_MESSAGE_INTERVAL_MS) {
+      return {
+        isSpam: true,
+        reason: "Messages sent too quickly",
+        severity: "medium"
+      };
+    }
+  }
+  
+  // Check 4: Repeated identical or similar messages
+  if (messageText && messageText.length > 5) {
+    let identicalCount = 0;
+    let similarCount = 0;
+    
+    for (const msg of recentMessages) {
+      if (msg.text === messageText) {
+        identicalCount++;
+      } else {
+        const similarity = calculateSimilarity(msg.text, messageText);
+        if (similarity >= SPAM_CONFIG.SIMILARITY_THRESHOLD) {
+          similarCount++;
+        }
+      }
+    }
+    
+    if (identicalCount >= SPAM_CONFIG.MAX_REPEATED_MESSAGES) {
+      return {
+        isSpam: true,
+        reason: "Repeated identical messages",
+        severity: "high"
+      };
+    }
+    
+    if (similarCount >= SPAM_CONFIG.MAX_REPEATED_MESSAGES) {
+      return {
+        isSpam: true,
+        reason: "Repeated similar messages",
+        severity: "medium"
+      };
+    }
+  }
+  
+  // Check 5: Suspicious patterns (URLs, mentions, etc.)
+  if (messageText) {
+    const urlCount = (messageText.match(/https?:\/\//gi) || []).length;
+    const mentionCount = (messageText.match(/@\w+/g) || []).length;
+    
+    if (urlCount > 3 || mentionCount > 5) {
+      return {
+        isSpam: true,
+        reason: "Suspicious content pattern",
+        severity: "low"
+      };
+    }
+  }
+  
+  return { isSpam: false };
+}
+
+function trackMessage(userId, messageText) {
+  const record = getSpamRecord(userId);
+  const nowMs = Date.now();
+  
+  record.messages.push({
+    text: messageText || "",
+    timestamp: nowMs
+  });
+  
+  cleanOldMessages(record, nowMs);
+}
+
+async function handleSpamDetection(ctx, spamResult, userId) {
+  const record = getSpamRecord(userId);
+  const nowMs = Date.now();
+  
+  record.spamCount = (record.spamCount || 0) + 1;
+  
+  // Log spam detection
+  console.log(`[SPAM] User ${userId}: ${spamResult.reason} (severity: ${spamResult.severity}, count: ${record.spamCount})`);
+  
+  // Auto-mute after threshold
+  if (record.spamCount >= SPAM_CONFIG.AUTO_MUTE_THRESHOLD) {
+    const muteUntil = nowMs + (SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000);
+    
+    // Add to muted users
+    const muteEntry = {
+      reason: "Automatic spam detection",
+      until: muteUntil,
+      by: "system",
+      scope: "all"
+    };
+    
+    if (!mutedUsers.has(String(userId))) {
+      mutedUsers.set(String(userId), muteEntry);
+    }
+    
+    // Reset spam count
+    record.spamCount = 0;
+    
+    // Notify user
+    try {
+      const untilDate = new Date(muteUntil).toLocaleString();
+      await ctx.reply(
+        `🚫 *Auto-Muted for Spam*\n\n` +
+        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\n\n` +
+        `Reason: ${spamResult.reason}\n` +
+        `Mute expires: ${untilDate}\n\n` +
+        `_Please avoid spamming to use the bot._`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Failed to notify muted user:", e);
+    }
+    
+    return true; // Muted
+  }
+  
+  // Send warning (with cooldown)
+  if (nowMs - record.lastWarning > SPAM_CONFIG.WARNING_COOLDOWN_MS) {
+    record.lastWarning = nowMs;
+    
+    try {
+      await ctx.reply(
+        `⚠️ *Spam Warning*\n\n` +
+        `${spamResult.reason}\n\n` +
+        `Please slow down or you will be automatically muted.\n` +
+        `(Warning ${record.spamCount}/${SPAM_CONFIG.AUTO_MUTE_THRESHOLD})`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Failed to send spam warning:", e);
+    }
+  }
+  
+  return false; // Not muted yet
+}
+
+async function checkAntiSpam(ctx, messageText) {
+  const userId = ctx.from?.id;
+  if (!userId) return true; // Allow if no user ID
+  
+  // Skip spam check for owners
+  if (OWNER_IDS.has(String(userId))) return true;
+  
+  // Detect spam
+  const spamResult = detectSpam(userId, messageText);
+  
+  if (spamResult.isSpam) {
+    const wasMuted = await handleSpamDetection(ctx, spamResult, userId);
+    if (wasMuted) {
+      return false; // Block message
+    }
+    
+    // For high severity, block immediately
+    if (spamResult.severity === "high") {
+      return false;
+    }
+  }
+  
+  // Track this message
+  trackMessage(userId, messageText);
+  
+  return true; // Allow message
+}
+
+// =====================
+// ANTI-SPAM SYSTEM
+// =====================
+// =====================
 // GROUP ACTIVATION SYSTEM
 // =====================
 // Bot is dormant by default in groups. Activates for 2 minutes after command/mention.
@@ -659,8 +920,8 @@ function ensureUser(userId, from = null) {
         lastActive: new Date().toISOString(),
         lastModel: defaultModel,
       },
-      // Recent prompts history (max 10)
-      history: [],
+      // Recent prompts history (DISABLED to prevent database bloat)
+      // history: [],
       // Saved characters for quick roleplay (max 10)
       savedCharacters: [],
       // Active character mode for DM/GC
@@ -908,20 +1169,10 @@ function trackUsage(userId, type = "message", tokens = 0) {
 }
 
 // Add prompt to user's history (max 10 recent)
+// DISABLED: History tracking removed to prevent database bloat
 function addToHistory(userId, prompt, mode = "default") {
-  const u = ensureUser(userId);
-  if (!u.history) u.history = [];
-  
-  // Add to beginning (most recent first)
-  u.history.unshift({
-    prompt: prompt.slice(0, 100),
-    mode,
-    timestamp: Date.now(),
-  });
-  
-  // Keep only last 10
-  if (u.history.length > 10) u.history = u.history.slice(0, 10);
-  saveUsers();
+  // History tracking disabled
+  return;
 }
 
 function registerUser(from) {
@@ -2065,7 +2316,6 @@ function helpText() {
     "• /char — Quick character roleplay",
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
-    "• /history — Recent prompts",
     FEEDBACK_CHAT_ID ? "• /feedback — Send feedback to the StarzAI team" : "",
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
@@ -2670,6 +2920,25 @@ bot.command("start", async (ctx) => {
       );
       return;
     }
+
+    // Handle feedback deep link
+    if (param === "feedback") {
+      if (!FEEDBACK_CHAT_ID) {
+        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+      }
+      
+      const u = ctx.from;
+      if (!u?.id) return;
+      
+      pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
+      return ctx.reply(
+        "💡 *Feedback Mode*\n\n" +
+          "Please send *one message* with your feedback.\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+          "_You have 2 minutes. After that, feedback mode will expire._",
+        { parse_mode: "Markdown" }
+      );
+    }
   }
 
   // Activate group if used in group chat
@@ -3035,49 +3304,10 @@ bot.command("persona", async (ctx) => {
   await ctx.reply(`✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`, { parse_mode: "Markdown" });
 });
 
-// /history - Show recent prompts and allow quick re-use
+// /history - DISABLED: History feature removed to prevent database bloat
 bot.command("history", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = getUserRecord(u.id);
-  if (!user || !user.history || user.history.length === 0) {
-    return ctx.reply("📜 *No history yet!*\n\nYour recent inline queries will appear here.\n\n_Try using @starztechbot in any chat!_", { parse_mode: "Markdown" });
-  }
-  
-  const modeEmojis = {
-    quark: "⭐",
-    blackhole: "🗿🔬",
-    code: "💻",
-    explain: "🧠",
-    character: "🎭",
-    summarize: "📝",
-    default: "⚡",
-  };
-  
-  let historyText = "📜 *Recent Prompts*\n\n";
-  user.history.forEach((item, i) => {
-    const emoji = modeEmojis[item.mode] || "⚡";
-    const timeAgo = getTimeAgo(item.timestamp);
-    historyText += `${i + 1}. ${emoji} _${item.prompt}_\n   ⏰ ${timeAgo}\n\n`;
-  });
-  
-  historyText += "_Tap a button to re-use a prompt!_";
-  
-  // Create buttons for quick re-use (first 5)
-  const keyboard = new InlineKeyboard();
-  user.history.slice(0, 5).forEach((item, i) => {
-    const prefix = item.mode === "quark" ? "q: " : 
-                   item.mode === "blackhole" ? "b: " :
-                   item.mode === "code" ? "code: " :
-                   item.mode === "explain" ? "e: " :
-                   item.mode === "summarize" ? "sum: " : "";
-    keyboard.switchInlineCurrent(`${i + 1}. ${item.prompt.slice(0, 15)}...`, `${prefix}${item.prompt}`);
-    if (i % 2 === 1) keyboard.row();
-  });
-  
-  await ctx.reply(historyText, { parse_mode: "Markdown", reply_markup: keyboard });
+  return ctx.reply("⚠️ *History feature has been disabled*\n\nThis feature has been removed to optimize database performance and reduce storage costs.\n\n_You can still use inline mode by typing @starztechbot in any chat!_", { parse_mode: "Markdown" });
 });
 
 // /partner - Manage your AI partner
@@ -4600,9 +4830,8 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• `/char save yoda` - Save to favorites",
     "• `/char stop` - End character mode",
     "",
-    "📊 *Stats & History*",
+    "📊 *Stats*",
     "• /stats - Your usage statistics",
-    "• /history - Recent prompts",
   ].join("\n");
   
   const kb = new InlineKeyboard()
@@ -4745,8 +4974,6 @@ bot.callbackQuery("menu_stats", async (ctx) => {
   ].join("\n");
   
   const keyboard = new InlineKeyboard()
-    .text("📜 History", "menu_history")
-    .row()
     .text("« Back to Menu", "menu_back");
   
   try {
@@ -4759,70 +4986,17 @@ bot.callbackQuery("menu_stats", async (ctx) => {
   }
 });
 
-// History menu (inside stats)
+// History menu (inside stats) - DISABLED
 bot.callbackQuery("menu_history", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const u = ctx.from;
-  const user = getUserRecord(u.id);
-  
-  if (!user || !user.history || user.history.length === 0) {
-    try {
-      await ctx.editMessageText(
-        "📜 *No history yet!*\n\nYour recent inline queries will appear here.\n\n_Try using @starztechbot in any chat!_",
-        { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("← Back to Stats", "menu_stats").row().text("« Back to Menu", "menu_back") }
-      );
-    } catch (e) {}
-    return;
-  }
-  
-  const modeEmojis = {
-    quark: "⭐",
-    blackhole: "🗿🔬",
-    code: "💻",
-    explain: "🧠",
-    character: "🎭",
-    summarize: "📝",
-    default: "⚡",
-  };
-  
-  let historyText = "📜 *Recent Prompts*\n\n";
-  user.history.slice(0, 10).forEach((item, i) => {
-    const emoji = modeEmojis[item.mode] || "⚡";
-    const timeAgo = getTimeAgo(item.timestamp);
-    const promptPreview = item.prompt.length > 30 ? item.prompt.slice(0, 27) + "..." : item.prompt;
-    historyText += `${i + 1}. ${emoji} _${promptPreview}_\n   ⏰ ${timeAgo}\n\n`;
-  });
-  
-  historyText += "_Tap a button to re-use a prompt!_";
-  
-  // Create buttons for quick re-use (first 5)
-  const keyboard = new InlineKeyboard();
-  user.history.slice(0, 5).forEach((item, i) => {
-    const prefix = item.mode === "quark" ? "q: " : 
-                   item.mode === "blackhole" ? "b: " :
-                   item.mode === "code" ? "code: " :
-                   item.mode === "explain" ? "e: " :
-                   item.mode === "summarize" ? "sum: " : "";
-    const btnText = item.prompt.length > 12 ? item.prompt.slice(0, 10) + ".." : item.prompt;
-    keyboard.switchInlineCurrent(`${i + 1}. ${btnText}`, `${prefix}${item.prompt}`);
-    if (i % 2 === 1) keyboard.row();
-  });
-  if (user.history.length % 2 === 1) keyboard.row();
-  
-  keyboard.text("← Back to Stats", "menu_stats");
-  keyboard.row();
-  keyboard.text("« Back to Menu", "menu_back");
+  await ctx.answerCallbackQuery({ text: "History feature has been disabled to optimize database performance.", show_alert: true });
   
   try {
-    await ctx.editMessageText(historyText, {
-      parse_mode: "Markdown",
-      reply_markup: keyboard
-    });
-  } catch (e) {
-    // If edit fails, ignore
-  }
+    await ctx.editMessageText(
+      "⚠️ *History feature has been disabled*\n\nThis feature has been removed to optimize database performance and reduce storage costs.\n\n_You can still use inline mode by typing @starztechbot in any chat!_",
+      { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("← Back to Stats", "menu_stats").row().text("« Back to Menu", "menu_back") }
+    );
+  } catch (e) {}
 });
 
 // Character menu
@@ -4960,9 +5134,8 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• `/char stop` - End character mode",
     "_Works in DM and group chats_",
     "",
-    "📊 *Stats & History*",
+    "📊 *Stats*",
     "• /stats - Your usage statistics",
-    "• /history - Recent prompts with quick re-use",
     "",
     "📡 *Multi-Platform*",
     "• DM - Direct chat with AI",
@@ -5702,6 +5875,12 @@ bot.on("message:text", async (ctx) => {
     console.log(`[MSG] Empty text or no user ID`);
     return;
   }
+  
+  // Anti-spam check
+  if (!(await checkAntiSpam(ctx, text))) {
+    console.log(`[MSG] Spam detected: ${u?.id}`);
+    return;
+  }
 
   // Ignore commands
   if (text.startsWith("/")) {
@@ -6278,10 +6457,14 @@ bot.on("message:text", async (ctx) => {
 // =====================
 bot.on("message:photo", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-
+  
   const chat = ctx.chat;
   const u = ctx.from;
   if (!u?.id) return;
+  
+  // Anti-spam check
+  const caption = ctx.message?.caption || "";
+  if (!(await checkAntiSpam(ctx, caption))) return;
 
   // Feedback handling for photo + caption
   const pendingFb = pendingFeedback.get(String(u.id));
@@ -6382,7 +6565,6 @@ bot.on("message:photo", async (ctx) => {
   const isCharacterMode = !!effectiveCharacter;
   
   // In groups without character mode, only respond if mentioned in caption
-  const caption = (ctx.message.caption || "").trim();
   if (chat.type !== "private" && !isCharacterMode) {
     // Skip group photos unless character is active
     return;
@@ -6502,10 +6684,14 @@ bot.on("message:photo", async (ctx) => {
 // =====================
 bot.on("message:video", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-
+  
   const chat = ctx.chat;
   const u = ctx.from;
   if (!u?.id) return;
+  
+  // Anti-spam check
+  const caption = ctx.message?.caption || "";
+  if (!(await checkAntiSpam(ctx, caption))) return;
   
   // Feedback handling for video + caption (DM only)
   const pendingFb = pendingFeedback.get(String(u.id));
@@ -6771,6 +6957,9 @@ bot.on("message:video_note", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
   
+  // Anti-spam check
+  if (!(await checkAntiSpam(ctx, "video_note"))) return;
+  
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
     const botInfo = await bot.api.getMe();
@@ -6821,6 +7010,10 @@ bot.on("message:animation", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
   
+  // Anti-spam check
+  const caption = ctx.message?.caption || "";
+  if (!(await checkAntiSpam(ctx, caption))) return;
+  
   // In groups: only process if replying to bot or group is active or has character
   if (chat.type !== "private") {
     const botInfo = await bot.api.getMe();
@@ -6840,7 +7033,6 @@ bot.on("message:animation", async (ctx) => {
   if (!getUserRecord(u.id)) registerUser(u);
   
   const animation = ctx.message.animation;
-  const caption = (ctx.message.caption || "").trim();
   const model = ensureChosenModelValid(u.id);
   const startTime = Date.now();
   
@@ -7083,8 +7275,7 @@ bot.on("inline_query", async (ctx) => {
           parse_mode: "Markdown"
         },
         reply_markup: new InlineKeyboard()
-          .url("💬 @supqts", "https://t.me/supqts")
-          .url("⭐ @SoulStarXd", "https://t.me/SoulStarXd")
+          .url("💬 Feedback", "https://t.me/starztechbot?start=feedback")
           .row()
           .switchInlineCurrent("← Back", ""),
       },
