@@ -7552,90 +7552,37 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // Wait for AI response, then show send button (works in private DMs)
+    // Deferred reply: send placeholder immediately, compute answer after user sends
     const replyKey = makeId(6);
     const replyShortModel = model.split("/").pop();
     
-    try {
-      // Build conversation history
-      const messages = [
-        { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally. Keep responses concise." },
-      ];
-      
-      // Add history if available
-      if (cached.history && cached.history.length > 0) {
-        for (const msg of cached.history.slice(-6)) {
-          messages.push({ role: msg.role, content: msg.content });
-        }
-      } else {
-        // Fallback to prompt/answer
-        messages.push({ role: "user", content: cached.prompt });
-        messages.push({ role: "assistant", content: cached.answer });
-      }
-      
-      // Add new user message
-      messages.push({ role: "user", content: userMessage });
-      
-      const out = await llmText({
-        model,
-        messages,
-        temperature: 0.7,
-        max_tokens: 500,
-        timeout: 15000,
-        retries: 1,
-      });
-      
-      const answer = (out || "I couldn't generate a response.").slice(0, 2000);
-      
-      // Store new conversation state for future replies
-      inlineCache.set(replyKey, {
-        prompt: userMessage,
-        answer,
-        userId: String(userId),
-        model,
-        mode: "chat",
-        history: [
-          ...(cached.history || [{ role: "user", content: cached.prompt }, { role: "assistant", content: cached.answer }]),
-          { role: "user", content: userMessage },
-          { role: "assistant", content: answer },
-        ].slice(-10),  // Keep last 10 messages
-        timestamp: Date.now(),
-      });
-      
-      // Schedule cleanup
-      setTimeout(() => inlineCache.delete(replyKey), 30 * 60 * 1000);
-      
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `reply_${replyKey}`,
-          title: `✉️ ${userMessage.slice(0, 40)}`,
-          description: answer.slice(0, 80),
-          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
-          input_message_content: {
-            message_text: `❓ *${userMessage}*\n\n${answer}\n\n_via StarzAI • ${replyShortModel}_`,
-            parse_mode: "Markdown",
-          },
-          reply_markup: inlineAnswerKeyboard(replyKey),
+    // Store pending payload for chosen_inline_result handler
+    inlineCache.set(`pending_${replyKey}`, {
+      cacheKey,
+      userMessage,
+      model,
+      cached,
+      userId: String(userId),
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`pending_${replyKey}`), 30 * 60 * 1000);
+    
+    const preview = (cached.answer || "").replace(/\s+/g, " ").slice(0, 80);
+    
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `c_reply_${replyKey}`,
+        title: `✉️ ${userMessage.slice(0, 40)}`,
+        description: preview || "Send follow-up reply",
+        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+        input_message_content: {
+          message_text: `❓ *${userMessage}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${replyShortModel}_`,
+          parse_mode: "Markdown",
         },
-      ], { cache_time: 0, is_personal: true });
-      
-    } catch (e) {
-      console.error("Reply error:", e.message);
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `reply_err_${replyKey}`,
-          title: `✉️ ${userMessage.slice(0, 40)}`,
-          description: "⚠️ Model is slow. Try again.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: {
-            message_text: `❓ *${userMessage}*\n\n⚠️ _Model is slow right now. Please try again._\n\n_via StarzAI_`,
-            parse_mode: "Markdown",
-          },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "reply_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
   }
   
   // yap:chatKey: message - legacy Yap mode (removed)
@@ -8460,14 +8407,27 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Get AI response
     try {
+      const messages = [
+        { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally. Keep responses concise." },
+      ];
+      
+      // Prefer rich history when available
+      if (cached.history && cached.history.length > 0) {
+        for (const msg of cached.history.slice(-6)) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      } else {
+        // Fallback to single-turn prompt/answer
+        if (cached.prompt) messages.push({ role: "user", content: cached.prompt });
+        if (cached.answer) messages.push({ role: "assistant", content: cached.answer });
+      }
+      
+      // Add new user message
+      messages.push({ role: "user", content: userMessage });
+      
       const out = await llmText({
         model,
-        messages: [
-          { role: "system", content: "You are a helpful AI assistant. Continue the conversation naturally." },
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-        ],
+        messages,
         temperature: 0.7,
         max_tokens: 500,
       });
@@ -8476,6 +8436,21 @@ bot.on("chosen_inline_result", async (ctx) => {
       const newKey = makeId(6);
       const shortModel = model.split("/").pop();
       
+      // Build updated history (keep last 10 messages)
+      const baseHistory =
+        (cached.history && cached.history.length > 0)
+          ? cached.history
+          : [
+              ...(cached.prompt ? [{ role: "user", content: cached.prompt }] : []),
+              ...(cached.answer ? [{ role: "assistant", content: cached.answer }] : []),
+            ];
+      
+      const newHistory = [
+        ...baseHistory,
+        { role: "user", content: userMessage },
+        { role: "assistant", content: answer },
+      ].slice(-10);
+      
       // Store new conversation state for future replies
       inlineCache.set(newKey, {
         prompt: userMessage,
@@ -8483,12 +8458,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         userId: pending.userId,
         model,
         mode: "chat",
-        history: [
-          { role: "user", content: cached.prompt },
-          { role: "assistant", content: cached.answer },
-          { role: "user", content: userMessage },
-          { role: "assistant", content: answer },
-        ],
+        history: newHistory,
         timestamp: Date.now(),
       });
       
