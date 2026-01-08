@@ -5945,7 +5945,6 @@ bot.on("message:text", async (ctx) => {
     if (!groupAllowed) {
       // Only show the authorization hint when the bot is explicitly invoked
       if (isMentioned || isReplyToBot || hasActiveChar) {
-        const ownersList = [...OWNER_IDS].join(", ");
         const lines = [
           "🚫 *This group is not authorized to use StarzAI yet.*",
           "",
@@ -5955,10 +5954,15 @@ bot.on("message:text", async (ctx) => {
           `\`/allowgroup ${chat.id}\``,
           "in a private chat with the bot.",
         ];
-        if (ownersList) {
-          lines.push("", `Current owners: \`${ownersList}\``);
-        }
-        await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+
+        const replyMarkup = FEEDBACK_CHAT_ID
+          ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+          : undefined;
+
+        await ctx.reply(lines.join("\n"), {
+          parse_mode: "Markdown",
+          reply_markup: replyMarkup,
+        });
       }
       return;
     }
