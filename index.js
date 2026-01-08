@@ -1958,7 +1958,7 @@ function escapeMarkdown(text) {
   return String(text)
     .replace(/\\/g, '\\\\')
     .replace(/\*/g, '\\*')
-    .replace(/_/g, '\\_')
+    .replace(/_/g, '\\_/)
     .replace(/\[/g, '\\[')
     .replace(/\]/g, '\\]')
     .replace(/\(/g, '\\(')
@@ -1975,6 +1975,41 @@ function escapeMarkdown(text) {
     .replace(/\}/g, '\\}')
     .replace(/\./g, '\\.')
     .replace(/!/g, '\\!');
+}
+
+// Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
+// Used for Blackhole continuation so we don't leave broken endings like "so it me"
+function trimIncompleteTail(text, maxTail = 220) {
+  if (!text) return text;
+  const trimmed = text.trimEnd();
+  if (!trimmed) return trimmed;
+
+  const lastChar = trimmed[trimmed.length - 1];
+  // If it already ends with sensible punctuation, leave it
+  if (".?!)]\"'".includes(lastChar)) {
+    return trimmed;
+  }
+
+  const start = Math.max(0, trimmed.length - maxTail);
+  const tail = trimmed.slice(start);
+
+  // Prefer to cut at a sentence boundary within the tail
+  const lastDot = tail.lastIndexOf(".");
+  const lastQ = tail.lastIndexOf("?");
+  const lastEx = tail.lastIndexOf("!");
+  const lastSentenceEnd = Math.max(lastDot, lastQ, lastEx);
+
+  if (lastSentenceEnd !== -1) {
+    return trimmed.slice(0, start + lastSentenceEnd + 1);
+  }
+
+  // Otherwise cut at last space to avoid half-words
+  const lastSpace = tail.lastIndexOf(" ");
+  if (lastSpace !== -1) {
+    return trimmed.slice(0, start + lastSpace);
+  }
+
+  return trimmed;
 }
 
 // =====================
@@ -8363,6 +8398,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: answer,
         userId: pending.userId,
         model,
         mode: "blackhole",
@@ -8928,28 +8964,69 @@ async function doInlineTransform(ctx, mode) {
       const itemMode = item.mode || "default";
       const isBlackhole = itemMode === "blackhole";
       const isCode = itemMode === "code";
-      
-      const systemPrompt = isBlackhole
-        ? "You are a research expert continuing a long, structured deep-dive (Blackhole mode). Continue the previous analysis from where it stopped. Do not repeat large sections. Keep the same structure, tone, and formatting (headings, bullet points, quote blocks, etc.). If it ended mid-sentence, finish it and continue."
-        : isCode
-        ? "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged."
-        : "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.";
-      
-      const maxTokens = isBlackhole ? 700 : isCode ? 600 : 450;
-      
-      const continuation = await llmText({
-        model: item.model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: maxTokens,
-      });
-      newAnswer = `${item.answer}\n\n${continuation || ""}`;
+
+      if (isBlackhole) {
+        // For Blackhole, keep a separate fullAnswer so we can continue beyond
+        // what fits in a single Telegram message, while only displaying the tail.
+        const MAX_DISPLAY = 3500;
+        const CONTEXT_LEN = 900;
+
+        let fullAnswer = item.fullAnswer || item.answer || "";
+        // Clean up any broken tail like "so it me" before continuing
+        fullAnswer = trimIncompleteTail(fullAnswer);
+
+        const context = fullAnswer.slice(-CONTEXT_LEN);
+
+        const continuation = await llmText({
+          model: item.model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end.",
+            },
+            {
+              role: "user",
+              content: `TEXT SO FAR:\n${context}`,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: 700,
+        });
+
+        const contClean = (continuation || "").trim();
+        const newFull = (fullAnswer + (contClean ? "\n\n" + contClean : "")).trim();
+
+        item.fullAnswer = newFull;
+
+        // For display, keep only the tail within Telegram's limit
+        let display = newFull;
+        if (display.length > MAX_DISPLAY) {
+          const tail = display.slice(-(MAX_DISPLAY - 120)); // reserve room for prefix
+          display = "… (earlier sections omitted due to Telegram limits)\n\n" + tail;
+        }
+        newAnswer = display;
+      } else {
+        const systemPrompt = isCode
+          ? "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged."
+          : "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.";
+
+        const maxTokens = isCode ? 600 : 450;
+
+        const continuation = await llmText({
+          model: item.model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: maxTokens,
+        });
+        newAnswer = `${item.answer}\n\n${continuation || ""}`;
+      }
     }
 
     const finalText = (newAnswer || "(no output)").trim();
