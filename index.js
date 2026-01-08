@@ -2231,7 +2231,6 @@ function inlineAnswerKeyboard(key) {
   const mode = item?.mode || "default";
   const isBlackhole = mode === "blackhole";
   const isQuark = mode === "quark";
-  const isExplain = mode === "explain";
   const isSummarize = mode === "summarize";
   const isCompleted = Boolean(item?.completed);
 
@@ -2250,15 +2249,19 @@ function inlineAnswerKeyboard(key) {
 
   if (isBlackhole) {
     // For Blackhole, use inline mode so continuation becomes a new message.
-    // Hide Continue once the analysis is marked as completed.
     if (!isCompleted) {
       kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+    } else {
+      // Once full analysis is done, offer a one-shot summary of all parts.
+      kb.row().text("📝 Summary", `inl_sum:${key}`);
     }
   } else {
     // For other modes (quick, explain, research, code, chat), keep callback-based continuation.
-    // Hide Continue once the answer is marked as completed for that item.
     if (!isCompleted) {
       kb.row().text("➡️ Continue", `inl_cont:${key}`);
+    } else if (mode === "explain" || mode === "code") {
+      // For Explain and Code, offer a summary only after the full answer is done.
+      kb.row().text("📝 Summary", `inl_sum:${key}`);
     }
   }
 
@@ -9039,6 +9042,7 @@ bot.on("chosen_inline_result", async (ctx) => {
 
       const answer = visible;
       const newKey = makeId(6);
+      const part = 1;
       
       inlineCache.set(newKey, {
         prompt,
@@ -9047,7 +9051,9 @@ bot.on("chosen_inline_result", async (ctx) => {
         cursor,
         userId: pending.userId,
         model,
+        shortModel,
         mode: "explain",
+        part,
         completed,
         createdAt: Date.now(),
       });
@@ -9057,10 +9063,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
+      const headerLabel = completed ? "Full Explanation" : "Explanation (Part 1)";
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🧠 <b>Explain: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
+        `🧠 <b>${headerLabel}: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey)
@@ -9304,6 +9311,90 @@ async function doInlineTransform(ctx, mode) {
       });
     }
 
+    if (mode === "sum") {
+      const itemMode = item.mode || "default";
+
+      // For these modes, only allow summary once the full answer is complete.
+      if ((itemMode === "blackhole" || itemMode === "explain" || itemMode === "code") && !item.completed) {
+        await ctx.answerCallbackQuery({
+          text: "Finish the answer first, then summarize.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      const full = item.fullAnswer || item.answer || "";
+      if (!full || full.trim().length < 50) {
+        await ctx.answerCallbackQuery({
+          text: "Answer is too short to summarize.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      const summaryInput = full.slice(0, 12000);
+      let systemPrompt = "Summarize the content below into a concise, well-structured overview. Use short paragraphs and bullet points for key ideas. Focus on the most important information.";
+      let titlePrefix = "";
+      let icon = "📝 ";
+      if (itemMode === "blackhole") {
+        systemPrompt =
+          "You are summarizing a long research-style answer. Provide a concise, structured overview in 6–12 bullet points. Capture main arguments, key evidence, and final conclusions. Avoid repeating long quotes.";
+        const parts = item.part || 1;
+        titlePrefix = `Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
+        icon = "🗿🔬 ";
+      } else if (itemMode === "code") {
+        systemPrompt =
+          "Summarize the programming answer. Describe the purpose of the code, the main steps, and how to use it. Mention languages and key functions or modules. Do not repeat long code snippets.";
+        titlePrefix = "Summary of Code Answer";
+        icon = "💻 ";
+      } else if (itemMode === "explain") {
+        systemPrompt =
+          "Summarize the explanation in 3–7 short bullet points so it's easy to scan. Keep it simple and focused on the core ideas.";
+        titlePrefix = "Summary of Explanation";
+        icon = "🧠 ";
+      } else {
+        titlePrefix = "Summary";
+      }
+
+      const summaryOut = await llmText({
+        model: item.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
+        ],
+        temperature: 0.4,
+        max_tokens: 420,
+      });
+
+      const summary = (summaryOut || "No summary available.").slice(0, 2000);
+      const newKey = makeId(6);
+      const shortModel = (item.model || "").split("/").pop();
+
+      inlineCache.set(newKey, {
+        prompt: item.prompt,
+        answer: summary,
+        fullAnswer: summary,
+        userId: item.userId,
+        model: item.model,
+        mode: "summarize",
+        completed: true,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      const formatted = convertToTelegramHTML(summary);
+      const title = titlePrefix || "Summary";
+
+      await ctx.editMessageText(
+        `${icon}<b>${title}</b>\n\n${formatted}\n\n<i>via StarzAI • Summary • ${shortModel}</i>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      return;
+    }
+
     if (mode === "cont") {
       const itemMode = item.mode || "default";
       const isBlackhole = itemMode === "blackhole";
@@ -9456,6 +9547,33 @@ async function doInlineTransform(ctx, mode) {
         if (!leftover.length || item.cursor >= full.length) {
           item.completed = true;
         }
+
+        const finalTextExplain = (newAnswer || "(no output)").trim();
+        item.answer = finalTextExplain.slice(0, 3500);
+        const part = (item.part || 1) + 1;
+        item.part = part;
+        inlineCache.set(key, item);
+
+        const formattedExplain = convertToTelegramHTML(item.answer);
+        const escapedPromptExplain = escapeHTML(item.prompt || "");
+        const shortModelExplain = item.shortModel || (item.model || "").split("/").pop() || "";
+        let title;
+        if (item.completed && part === 1) {
+          title = `Full Explanation: ${escapedPromptExplain}`;
+        } else if (item.completed) {
+          title = `Explanation (Part ${part} – final): ${escapedPromptExplain}`;
+        } else {
+          title = `Explanation (Part ${part}): ${escapedPromptExplain}`;
+        }
+
+        await ctx.editMessageText(
+          `🧠 <b>${title}</b>\n\n${formattedExplain}\n\n<i>via StarzAI • Explain${shortModelExplain ? ` • ${shortModelExplain}` : ""}</i>`,
+          {
+            parse_mode: "HTML",
+            reply_markup: inlineAnswerKeyboard(key),
+          }
+        );
+        return;
       } else {
         // Default (quick, research, summarize, chat, etc.)
         const systemPrompt =
@@ -9506,6 +9624,7 @@ bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"))
 bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
 bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
 bot.callbackQuery(/^inl_cont:/, async (ctx) => doInlineTransform(ctx, "cont"));
+bot.callbackQuery(/^inl_sum:/, async (ctx) => doInlineTransform(ctx, "sum"));
 
 // Character new intro button
 bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
