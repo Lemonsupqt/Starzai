@@ -62,6 +62,9 @@ const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || "";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 
+// Optional: Parallel AI Search / Extract API key for web search integration
+const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
+
 const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
@@ -1867,7 +1870,7 @@ async function duckDuckGoScrape(query, numResults = 5) {
     const results = [];
     
     // Parse results using regex (simple extraction)
-    const resultRegex = /<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([^<]*)<\/a>/g;
+    const resultRegex = /<a rel=\"nofollow\" class=\"result__a\" href=\"([^\"]+)\">([^<]+)<\/a>[\s\S]*?<a class=\"result__snippet\"[^>]*>([^<]*)<\/a>/g;
     let match;
     
     while ((match = resultRegex.exec(html)) !== null && results.length < numResults) {
@@ -1943,8 +1946,84 @@ async function searxngSearch(query, numResults = 5) {
   return { success: false, errors };
 }
 
+// Parallel AI Search API (web search + extraction in one call)
+async function parallelWebSearch(query, numResults = 5) {
+  if (!PARALLEL_API_KEY) {
+    return { success: false, error: 'Parallel API key not configured', query };
+  }
+
+  try {
+    const response = await fetch('https://api.parallel.ai/v1beta/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': PARALLEL_API_KEY,
+        'parallel-beta': 'true',
+      },
+      body: JSON.stringify({
+        objective: query,
+        max_results: numResults,
+        mode: 'one-shot',
+        excerpts: {
+          max_chars_per_result: 1500,
+        },
+      }),
+      timeout: 15000,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.log('Parallel web search HTTP error:', response.status, text.slice(0, 200));
+      return {
+        success: false,
+        error: `Parallel search HTTP ${response.status}`,
+        query,
+      };
+    }
+
+    const data = await response.json();
+    const rawResults = Array.isArray(data.results) ? data.results : [];
+
+    const results = rawResults.slice(0, numResults).map((r) => {
+      const excerpts =
+        Array.isArray(r.excerpts)
+          ? r.excerpts.join("\n\n")
+          : (typeof r.excerpts === "string" ? r.excerpts : "");
+      const content = excerpts || r.full_content || "";
+      return {
+        title: r.title || r.url || "No title",
+        url: r.url || "",
+        content: content || "No description",
+        engine: "Parallel.ai",
+      };
+    });
+
+    return {
+      success: true,
+      results,
+      query,
+      instance: 'Parallel.ai',
+    };
+  } catch (e) {
+    console.log('Parallel web search error:', e.message);
+    return {
+      success: false,
+      error: e.message || 'Parallel web search failed',
+      query,
+    };
+  }
+}
+
 // Main web search function - tries multiple sources
 async function webSearch(query, numResults = 5) {
+  // Prefer Parallel.ai Search API if configured
+  if (PARALLEL_API_KEY) {
+    const parallelResult = await parallelWebSearch(query, numResults);
+    if (parallelResult.success && parallelResult.results && parallelResult.results.length > 0) {
+      return parallelResult;
+    }
+  }
+
   // Try SearXNG first (best results, uses Google/Bing)
   const searxResult = await searxngSearch(query, numResults);
   if (searxResult.success) return searxResult;
