@@ -3220,6 +3220,41 @@ bot.command("fbreply", async (ctx) => {
   }
 });
 
+// Alias: /f <feedbackId> <message>
+bot.command("f", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /f <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("f send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
+});
+
 // /stats - Show user usage statistics
 bot.command("stats", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -4119,9 +4154,7 @@ bot.command("whoami", async (ctx) => {
 // =====================
 
 // Bot status command
-bot.command("status", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-  
+async function sendOwnerStatus(ctx) {
   const totalUsers = Object.keys(usersDb.users).length;
   const usersByTier = { free: 0, premium: 0, ultra: 0 };
   let totalMessages = 0;
@@ -4134,7 +4167,7 @@ bot.command("status", async (ctx) => {
   const dayMs = 24 * 60 * 60 * 1000;
   const weekMs = 7 * dayMs;
   
-  for (const [id, user] of Object.entries(usersDb.users)) {
+  for (const [, user] of Object.entries(usersDb.users)) {
     usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
     if (user.banned) {
       bannedCount++;
@@ -4166,26 +4199,36 @@ bot.command("status", async (ctx) => {
     `• Ultra: ${usersByTier.ultra}`,
     `• Banned: ${bannedCount}`,
     ``,
-    `📈 *Activity*`,
-    `• Active today: ${activeToday}`,
-    `• Active this week: ${activeWeek}`,
+    `💬 *Messages*`,
     `• Total messages: ${totalMessages}`,
-    `• Total inline queries: ${totalInline}`,
+    `• Inline queries: ${totalInline}`,
+    `• Active today: ${activeToday}`,
+    `• Active last 7 days: ${activeWeek}`,
     ``,
-    `💬 *Sessions*`,
-    `• Inline chat sessions: ${inlineSessions}`,
-    `• Active DM chats: ${chatHistory.size}`,
-    `• Inline cache entries: ${inlineCache.size}`,
+    `💾 *Inline Sessions:* ${inlineSessions}`,
     ``,
-    `⚙️ *Config*`,
-    `• Free models: ${FREE_MODELS.length}`,
-    `• Premium models: ${PREMIUM_MODELS.length}`,
-    `• Ultra models: ${ULTRA_MODELS.length}`,
-    `• Global rate limit: ${RATE_LIMIT_PER_MINUTE}/min`,
-    `• Command cooldowns: free 60s, premium 30s, ultra 10s, owners none`,
+    `⚙️ *Rate limiting*`,
+    `• Global: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `• Command cooldowns:`,
+    `  - Free: ${COMMAND_COOLDOWN_FREE}s`,
+    `  - Premium: ${COMMAND_COOLDOWN_PREMIUM}s`,
+    `  - Ultra: ${COMMAND_COOLDOWN_ULTRA}s`,
+    `  - Owners: none`,
   ];
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+}
+
+bot.command("status", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
+});
+
+// Alias: /gstat (global stats)
+bot.command("gstat", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
+});
 });
 
 // User info command
@@ -4403,8 +4446,8 @@ bot.command("allowgroup", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 1) {
-    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+  if (args.length &lt; 1) {
+    return ctx.reply("Usage: /allowgroup &lt;chatId&gt; [note]");
   }
 
   const [chatIdRaw, ...noteParts] = args;
@@ -4412,7 +4455,34 @@ bot.command("allowgroup", async (ctx) => {
   const note = noteParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+    return ctx.reply("Usage: /allowgroup &lt;chatId&gt; [note]");
+  }
+
+  setGroupAuthorization(chatId, true, {
+    note,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `✅ Group ${chatId} authorized.` + (note ? `\nNote: ${note}` : "")
+  );
+});
+
+// Alias: /add &lt;chatId&gt; &lt;note&gt;  (owner-facing shorthand)
+bot.command("add", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length &lt; 1) {
+    return ctx.reply("Usage: /add &lt;chatId&gt; [note]");
+  }
+
+  const [chatIdRaw, ...noteParts] = args;
+  const chatId = chatIdRaw.trim();
+  const note = noteParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /add &lt;chatId&gt; [note]");
   }
 
   setGroupAuthorization(chatId, true, {
@@ -4429,8 +4499,8 @@ bot.command("denygroup", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 1) {
-    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+  if (args.length &lt; 1) {
+    return ctx.reply("Usage: /denygroup &lt;chatId&gt; [reason]");
   }
 
   const [chatIdRaw, ...reasonParts] = args;
@@ -4438,7 +4508,34 @@ bot.command("denygroup", async (ctx) => {
   const reason = reasonParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+    return ctx.reply("Usage: /denygroup &lt;chatId&gt; [reason]");
+  }
+
+  setGroupAuthorization(chatId, false, {
+    note: reason,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `🚫 Group ${chatId} blocked.` + (reason ? `\nReason: ${reason}` : "")
+  );
+});
+
+// Alias: /rem &lt;chatId&gt; &lt;reason&gt;  (owner-facing shorthand)
+bot.command("rem", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length &lt; 1) {
+    return ctx.reply("Usage: /rem &lt;chatId&gt; [reason]");
+  }
+
+  const [chatIdRaw, ...reasonParts] = args;
+  const chatId = chatIdRaw.trim();
+  const reason = reasonParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /rem &lt;chatId&gt; [reason]");
   }
 
   setGroupAuthorization(chatId, false, {
@@ -4468,7 +4565,32 @@ bot.command("grouplist", async (ctx) => {
     const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
     lines.push(`• \`${id}\` – ${title} (${status})${note}`);
   }
-  if (entries.length > max) {
+  if (entries.length &gt; max) {
+    lines.push("", `...and ${entries.length - max} more.`, "");
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Alias: /glist  (owner-facing shorthand)
+bot.command("glist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  ensurePrefsGroups();
+  const entries = Object.entries(prefsDb.groups || {});
+  if (entries.length === 0) {
+    return ctx.reply("No groups recorded yet.");
+  }
+
+  const max = 50;
+  const lines = ["🏘 *Groups (first 50)*", ""];
+  for (const [id, g] of entries.slice(0, max)) {
+    const status = g.allowed ? "✅ allowed" : "🚫 blocked";
+    const title = g.title ? escapeMarkdown(g.title) : "_no title_";
+    const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
+    lines.push(`• \`${id}\` – ${title} (${status})${note}`);
+  }
+  if (entries.length &gt; max) {
     lines.push("", `...and ${entries.length - max} more.`, "");
   }
 
@@ -4990,17 +5112,17 @@ bot.command("ownerhelp", async (ctx) => {
     "📘 *StarzAI Owner Guide (Quick)*",
     "",
     "👤 *User info & status*",
-    "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
-    "• /status — global bot stats",
+    "• /info &lt;userId&gt; — full user info (tier, bans, mutes, warnings, stats)",
+    "• /gstat — global bot stats",
     "",
     "🎫 *Tiers & access*",
-    "• /grant <userId> <tier>, /revoke <userId>",
-    "• /allow <userId> <model>, /deny <userId> <model>",
+    "• /grant &lt;userId&gt; &lt;tier&gt;, /revoke &lt;userId&gt;",
+    "• /allow &lt;userId&gt; &lt;model&gt;, /deny &lt;userId&gt; &lt;model&gt;",
     "",
     "🏘 *Group authorization*",
-    "• /allowgroup <chatId> [note] — authorize a group to use the bot",
-    "• /denygroup <chatId> [reason] — block a group from using the bot",
-    "• /grouplist — list known groups and their auth status",
+    "• /add &lt;chatId&gt; &lt;note&gt; — authorize a group to use the bot",
+    "• /rem &lt;chatId&gt; &lt;reason&gt; — block a group from using the bot",
+    "• /glist — list known groups and their auth status",
     "",
     "⏱ *Command cooldowns*",
     "• Free: 60s between slash commands (e.g. /start, /model, /stats, /search)",
@@ -5009,25 +5131,29 @@ bot.command("ownerhelp", async (ctx) => {
     "• Owners: no command cooldown or global rate limit",
     "",
     "🚫 *Bans*",
-    "• /ban <userId> [reason], /unban <userId> [reason]",
-    "• /softban <userId> [reason] — 24h total mute",
+    "• /ban &lt;userId&gt; &lt;reason&gt;",
+    "• /unban &lt;userId&gt; &lt;reason&gt;",
+    "• /softban &lt;userId&gt; &lt;reason&gt; — 24h total mute",
     "• /banlist — list banned users",
     "",
     "🔇 *Mutes*",
-    "• /mute <userId> <duration> [scope] [reason]",
-    "• /unmute <userId> [reason], /mutelist",
+    "• /mute &lt;userId&gt; &lt;duration&gt; &lt;scope&gt; &lt;reason&gt;",
+    "• /unmute &lt;userId&gt; &lt;reason&gt;",
+    "• /mutelist",
     "  scope: all, dm, group, inline, tier",
     "",
     "⚠️ *Warnings*",
-    "• /warn <userId> [reason] — auto softban at 3 warnings",
-    "• /clearwarns <userId> [reason] — reset warnings",
+    "• /warn &lt;userId&gt; &lt;reason&gt; — auto softban at 3 warnings",
+    "• /clearwarns &lt;userId&gt; &lt;reason&gt; — reset warnings",
     "",
-    FEEDBACK_CHAT_ID ? "💡 *Feedback* \n• /feedback — user-side command (button in menu)\n• /fbreply <feedbackId> <text> — reply to feedback sender" : "",
+    FEEDBACK_CHAT_ID
+      ? "💡 *Feedback* \\n• /feedback — user-side command (button in menu)\\n• /f &lt;feedbackId&gt; &lt;text&gt; — reply to feedback sender"
+      : "",
     "",
     "_Owners cannot be banned, muted, or warned._",
   ]
     .filter(Boolean)
-    .join("\n");
+    .join("\\n");
 
   await ctx.reply(lines, { parse_mode: "Markdown" });
 });
