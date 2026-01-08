@@ -5163,7 +5163,6 @@ bot.command("ownerhelp", async (ctx) => {
 
   await ctx.reply(text);
 });
-});
 
 // =====================
 // CALLBACKS: UNIFIED MENU NAVIGATION
