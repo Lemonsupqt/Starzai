@@ -4229,7 +4229,6 @@ bot.command("gstat", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
   await sendOwnerStatus(ctx);
 });
-});
 
 // User info command
 bot.command("info", async (ctx) => {
