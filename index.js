@@ -2229,6 +2229,7 @@ function buildPartnerKeyboard(partner) {
 function inlineAnswerKeyboard(key) {
   const item = inlineCache.get(key);
   const isBlackhole = item?.mode === "blackhole";
+  const isCompleted = Boolean(item?.completed);
 
   const kb = new InlineKeyboard()
     .switchInlineCurrent("💬 Reply", `c:${key}: `)
@@ -2238,8 +2239,11 @@ function inlineAnswerKeyboard(key) {
     .text("📈 Longer", `inl_long:${key}`);
 
   if (isBlackhole) {
-    // For Blackhole, use inline mode so continuation becomes a new message
-    kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+    // For Blackhole, use inline mode so continuation becomes a new message.
+    // Hide Continue once the analysis is marked as completed.
+    if (!isCompleted) {
+      kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+    }
   } else {
     // For other modes, keep callback-based continuation
     kb.row().text("➡️ Continue", `inl_cont:${key}`);
@@ -8473,48 +8477,74 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. Format your answer in clean Markdown.",
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
           },
-          { role: "user", content: `Provide deep analysis on: ${prompt}` },
+          {
+            role: "user",
+            content: `TEXT SO FAR:\n${context}`,
+          },
         ],
         temperature: 0.7,
-        max_tokens: 800,
+        max_tokens: 700,
       });
-      
-      // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
-      const answer = (out || "No results").slice(0, 3500);
+
+      const END_MARK = "END_OF_BLACKHOLE";
+      let continuation = (out || "").trim();
+      let completed = false;
+
+      if (continuation.includes(END_MARK)) {
+        completed = true;
+        continuation = continuation.replace(END_MARK, "").trim();
+        continuation += "\n\n---\n_End of Blackhole analysis._";
+      }
+
+      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
+
       const newKey = makeId(6);
-      
-      // Store for Regen/Shorter/Longer/Continue buttons
+
       inlineCache.set(newKey, {
         prompt,
-        answer,
-        fullAnswer: answer,
-        userId: pending.userId,
+        answer: continuation.slice(0, MAX_DISPLAY),
+        fullAnswer: newFull,
+        userId: ownerId,
         model,
         mode: "blackhole",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(pending.userId, prompt, "blackhole");
-      
-      // Convert and update
-      const formattedAnswer = convertToTelegramHTML(answer);
+
+      // Update base item as well so future continues from any chunk share history
+      baseItem.fullAnswer = newFull;
+      if (completed) baseItem.completed = true;
+      inlineCache.set(baseKey, baseItem);
+
+      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
       const escapedPrompt = escapeHTML(prompt);
-      
+
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey)
+          reply_markup: inlineAnswerKeyboard(newKey),
         }
       );
-      console.log(`Blackhole updated with AI response`);
-      
+      console.log(`Blackhole continuation updated with AI response`);
     } catch (e) {
+      console.error("Failed to get Blackhole continuation response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+
+    inlineCache.delete(`bh_cont_pending_${contId}`);
+    return;
+  } catch (e) {
       console.error("Failed to get Blackhole response:", e.message);
       const escapedPrompt = escapeHTML(prompt);
       try {
