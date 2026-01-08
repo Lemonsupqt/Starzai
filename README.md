@@ -6,7 +6,7 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 
 ### 💬 Chat Modes
 - **DM Chat** - Direct conversation with AI
-- **Group Chat** - Mention @starztechbot to get responses
+- **Group Chat** - Say "Starz" / "StarzAI" or reply to the bot to get responses
 - **Inline Mode** - Type `@starztechbot` anywhere for instant AI
 
 ### ⚡ AI Modes (Inline)
