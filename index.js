@@ -106,7 +106,7 @@ function writeJson(file, obj) {
 
 // Initialize with local fallback (will be overwritten by Supabase/Telegram data on startup)
 let usersDb = readJson(USERS_FILE, { users: {} });
-let prefsDb = readJson(PREFS_FILE, { userModel: {} });
+let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
 
@@ -383,6 +383,39 @@ const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, use
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
+
+// Ensure prefsDb.groups exists (for group authorization metadata)
+function ensurePrefsGroups() {
+  if (!prefsDb.groups) {
+    prefsDb.groups = {};
+  }
+}
+
+function getGroupRecord(chatId) {
+  ensurePrefsGroups();
+  const id = String(chatId);
+  return prefsDb.groups[id] || null;
+}
+
+function setGroupAuthorization(chatId, allowed, meta = {}) {
+  ensurePrefsGroups();
+  const id = String(chatId);
+  const existing = prefsDb.groups[id] || {};
+  prefsDb.groups[id] = {
+    id,
+    allowed,
+    title: meta.title !== undefined ? meta.title : existing.title || null,
+    addedBy: meta.addedBy !== undefined ? meta.addedBy : existing.addedBy || null,
+    updatedAt: new Date().toISOString(),
+    note: meta.note !== undefined ? meta.note : existing.note || null,
+  };
+  savePrefs();
+}
+
+function isGroupAuthorized(chatId) {
+  const rec = getGroupRecord(chatId);
+  return !!rec?.allowed;
+}
 
 // Active inline message tracking (for editing)
 const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
@@ -3855,6 +3888,82 @@ bot.command("deny", async (ctx) => {
   await ctx.reply(`Denied model ${modelId} for user ${targetId}.`);
 });
 
+bot.command("allowgroup", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+  }
+
+  const [chatIdRaw, ...noteParts] = args;
+  const chatId = chatIdRaw.trim();
+  const note = noteParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
+  }
+
+  setGroupAuthorization(chatId, true, {
+    note,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `✅ Group ${chatId} authorized.` + (note ? `\nNote: ${note}` : "")
+  );
+});
+
+bot.command("denygroup", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+  }
+
+  const [chatIdRaw, ...reasonParts] = args;
+  const chatId = chatIdRaw.trim();
+  const reason = reasonParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
+  }
+
+  setGroupAuthorization(chatId, false, {
+    note: reason,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `🚫 Group ${chatId} blocked.` + (reason ? `\nReason: ${reason}` : "")
+  );
+});
+
+bot.command("grouplist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  ensurePrefsGroups();
+  const entries = Object.entries(prefsDb.groups || {});
+  if (entries.length === 0) {
+    return ctx.reply("No groups recorded yet.");
+  }
+
+  const max = 50;
+  const lines = ["🏘 *Groups (first 50)*", ""];
+  for (const [id, g] of entries.slice(0, max)) {
+    const status = g.allowed ? "✅ allowed" : "🚫 blocked";
+    const title = g.title ? escapeMarkdown(g.title) : "_no title_";
+    const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
+    lines.push(`• \`${id}\` – ${title} (${status})${note}`);
+  }
+  if (entries.length > max) {
+    lines.push("", `...and ${entries.length - max} more.`, "");
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
 bot.command("ban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
@@ -5789,15 +5898,19 @@ bot.on("message:text", async (ctx) => {
   const botInfo = await bot.api.getMe();
   const botUsername = botInfo.username?.toLowerCase() || "";
 
-  // Group chat activation system:
-  // - Bot is dormant by default in groups
-  // - `/talk` explicitly activates \"respond to all\" mode for a short window
-  // - Otherwise, the bot only responds when:
-  //   • The message mentions the bot username, or
-  //   • The message contains \"Starz\" / \"StarzAI\", or
-  //   • The user replies to the bot, or
-  //   • The user has an active character in this chat
-  
+  // Group chat authorization + activation system:
+  // - Groups must be explicitly authorized by the owner (/allowgroup <chatId>)
+  // - If not authorized, the bot only responds with an authorization hint
+  //   when explicitly invoked (mention, wake word, reply, or active character)
+  // - When authorized:
+  //   • By default, respond only when:
+  //       - The message mentions the bot username, or
+  //       - The message contains "Starz" / "StarzAI", or
+  //       - The user replies to the bot, or
+  //       - The user has an active character in this chat
+  //   • If `/talk` has activated forced-active mode, respond to all messages
+  //     for a short window.
+
   if (chat.type !== "private") {
     const lower = text.toLowerCase();
     const hasWakeWord = /\bstarz(ai)?\b/.test(lower);
@@ -5805,6 +5918,50 @@ bot.on("message:text", async (ctx) => {
     const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     const groupForcedActive = isGroupActive(chat.id); // /talk-controlled
+
+    // Track basic group metadata in prefsDb.groups
+    ensurePrefsGroups();
+    const gid = String(chat.id);
+    const currentTitle = chat.title || chat.username || "";
+    const existingGroup = prefsDb.groups[gid];
+    if (!existingGroup) {
+      prefsDb.groups[gid] = {
+        id: gid,
+        allowed: false,
+        title: currentTitle || null,
+        addedBy: null,
+        updatedAt: new Date().toISOString(),
+        note: null,
+      };
+      savePrefs();
+    } else if (currentTitle && existingGroup.title !== currentTitle) {
+      existingGroup.title = currentTitle;
+      existingGroup.updatedAt = new Date().toISOString();
+      savePrefs();
+    }
+
+    const groupAllowed = isGroupAuthorized(chat.id);
+
+    if (!groupAllowed) {
+      // Only show the authorization hint when the bot is explicitly invoked
+      if (isMentioned || isReplyToBot || hasActiveChar) {
+        const ownersList = [...OWNER_IDS].join(", ");
+        const lines = [
+          "🚫 *This group is not authorized to use StarzAI yet.*",
+          "",
+          `🆔 *Chat ID:* \`${chat.id}\``,
+          "",
+          "Ask the bot owner to run:",
+          `\`/allowgroup ${chat.id}\``,
+          "in a private chat with the bot.",
+        ];
+        if (ownersList) {
+          lines.push("", `Current owners: \`${ownersList}\``);
+        }
+        await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+      }
+      return;
+    }
 
     if (!groupForcedActive) {
       // Default anti-spam mode: ignore unless explicitly invoked or character mode is active
@@ -5815,6 +5972,7 @@ bot.on("message:text", async (ctx) => {
       // In forced-active mode (/talk), keep refreshing the timer on any message
       activateGroup(chat.id);
     }
+  }
   }
 
   // Check if user is replying to a specific message
