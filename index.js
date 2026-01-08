@@ -2953,22 +2953,22 @@ bot.command("websearch", async (ctx) => {
   const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
   
   if (!query) {
-    return ctx.reply("🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>", {
+    return ctx.reply(
+      "🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>",
+      {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      }
+    );
+  }
+  
+  const statusMsg = await ctx.reply(
+    `🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`,
+    {
       parse_mode: "HTML",
       reply_to_message_id: ctx.message?.message_id,
-    });
-  }
-  
-  const statusMsg = await ctx.reply(`🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`, {
-    parse_mode: "HTML",
-    reply_to_message_id: ctx.message?.message_id,
-  });ebsearch\s*/i, "").trim();
-  
-  if (!query) {
-    return ctx.reply("🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>", { parse_mode: "HTML" });
-  }
-  
-  const statusMsg = await ctx.reply(`🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+    }
+  );
   
   try {
     // Search the web
