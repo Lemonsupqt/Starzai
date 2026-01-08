@@ -5115,6 +5115,7 @@ bot.command("ownerhelp", async (ctx) => {
 
   const text = [
     "📘 StarzAI Owner Guide (Quick)",
+    "──────────────────────",
     "",
     "👤 User info & status",
     "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
@@ -5143,8 +5144,8 @@ bot.command("ownerhelp", async (ctx) => {
     "",
     "🔇 Mutes",
     "• /mute <userId> <duration> <scope> <reason>",
-    "   duration: e.g. 10m, 2h, 1d",
-    "   scope: all, dm, group, inline, tier",
+    "   • duration: e.g. 10m, 2h, 1d",
+    "   • scope: all, dm, group, inline, tier",
     "• /unmute <userId> <reason>",
     "• /mutelist — list active mutes",
     "",
