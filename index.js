@@ -4856,11 +4856,106 @@ bot.command("clearwarns", async (ctx) => {
   }
 });
 
+// Alias: /cw -> same as /clearwarns
+bot.command("cw", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /cw <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot clear warnings for an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings) || rec.warnings.length === 0) {
+    return ctx.reply(`User ${targetIdStr} has no warnings.`);
+  }
+
+  const count = rec.warnings.length;
+  rec.warnings = [];
+  saveUsers();
+
+  let ownerMsg = `🧹 Cleared ${count} warnings for user ${targetIdStr}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🧹 *Your warnings on StarzAI have been cleared.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
 bot.command("softban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
   if (args.length < 1) return ctx.reply("Usage: /softban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot softban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    WARN_SOFTBAN_DURATION_MS,
+    "all",
+    reason || null,
+    ctx.from?.id
+  );
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🚫 Softban applied to user ${targetIdStr} for 24h (total mute).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Ban ends at: ${escapeMarkdown(humanUntil)}_`;
+    const msg =
+      "🚫 *You have received a temporary soft ban on StarzAI.*" +
+      reasonLine +
+      "\n\nYou are temporarily blocked from using the bot." +
+      untilLine;
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+// Alias: /sban -> same as /softban
+bot.command("sban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /sban <userId> [reason]");
 
   const [targetId, ...reasonParts] = args;
   const targetIdStr = String(targetId);
