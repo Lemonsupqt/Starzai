@@ -2225,14 +2225,25 @@ function buildPartnerKeyboard(partner) {
 }
 
 function inlineAnswerKeyboard(key) {
-  return new InlineKeyboard()
+  const item = inlineCache.get(key);
+  const isBlackhole = item?.mode === "blackhole";
+
+  const kb = new InlineKeyboard()
     .switchInlineCurrent("💬 Reply", `c:${key}: `)
     .text("🔁 Regen", `inl_regen:${key}`)
     .row()
     .text("✂️ Shorter", `inl_short:${key}`)
-    .text("📈 Longer", `inl_long:${key}`)
-    .row()
-    .text("➡️ Continue", `inl_cont:${key}`);
+    .text("📈 Longer", `inl_long:${key}`);
+
+  if (isBlackhole) {
+    // For Blackhole, use inline mode so continuation becomes a new message
+    kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
+  } else {
+    // For other modes, keep callback-based continuation
+    kb.row().text("➡️ Continue", `inl_cont:${key}`);
+  }
+
+  return kb;
 }
 
 // =====================
@@ -7977,6 +7988,84 @@ bot.on("inline_query", async (ctx) => {
     }
   }
 
+  // "bhcont KEY" - Blackhole continuation via inline mode
+  if (qLower.startsWith("bhcont")) {
+    const parts = q.split(/\s+/);
+    const contKey = (parts[1] || "").trim();
+
+    if (!contKey) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_hint_${sessionKey}`,
+          title: "🗿🔬 Continue Blackhole",
+          description: "Tap Continue under a Blackhole answer to use this.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const baseItem = inlineCache.get(contKey);
+    if (!baseItem || baseItem.mode !== "blackhole") {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_expired_${sessionKey}`,
+          title: "⚠️ Session expired",
+          description: "Start a new Blackhole analysis.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (String(userId) !== String(baseItem.userId)) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_denied_${sessionKey}`,
+          title: "🚫 Not your session",
+          description: "Only the original requester can continue.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const model = baseItem.model || ensureChosenModelValid(userId);
+    const shortModel = model.split("/").pop();
+    const prompt = baseItem.prompt || "";
+
+    const pendingKey = makeId(6);
+    inlineCache.set(`bh_cont_pending_${pendingKey}`, {
+      baseKey: contKey,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`bh_cont_pending_${pendingKey}`), 5 * 60 * 1000);
+
+    const escapedPrompt = escapeHTML(prompt);
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `bh_cont_start_${pendingKey}`,
+        title: `🗿🔬 Continue Blackhole`,
+        description: `Continue: ${prompt.slice(0, 40)}${prompt.length > 40 ? "..." : ""}`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+        input_message_content: {
+          message_text: `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n⏳ <i>Continuing in depth... Please wait...</i>\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "bh_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
   // "chat:" prefix - interactive chat mode
   if (q.startsWith("chat:")) {
     const userMessage = q.slice(5).trim();
@@ -8437,6 +8526,117 @@ bot.on("chosen_inline_result", async (ctx) => {
     
     // Clean up pending
     inlineCache.delete(`bh_pending_${bhKey}`);
+    return;
+  }
+
+  // Handle Blackhole continuation deferred response - bh_cont_start_KEY
+  if (resultId.startsWith("bh_cont_start_")) {
+    const contId = resultId.replace("bh_cont_start_", "");
+    const pending = inlineCache.get(`bh_cont_pending_${contId}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Blackhole continuation pending not found or no inlineMessageId: contId=${contId}`);
+      return;
+    }
+
+    const { baseKey, model, shortModel, userId: ownerId } = pending;
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem || baseItem.mode !== "blackhole") {
+      console.log(`Base Blackhole item missing for continuation: baseKey=${baseKey}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Session expired. Start a new Blackhole analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    if (String(ctx.from?.id || "") !== String(ownerId)) {
+      console.log(`Blackhole continuation denied: not owner`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Only the original requester can continue this analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    const prompt = baseItem.prompt || "";
+    console.log(`Processing Blackhole continuation for prompt: ${prompt}`);
+
+    try {
+      const MAX_DISPLAY = 3500;
+      const CONTEXT_LEN = 900;
+
+      let fullAnswer = baseItem.fullAnswer || baseItem.answer || "";
+      fullAnswer = trimIncompleteTail(fullAnswer);
+      const context = fullAnswer.slice(-CONTEXT_LEN);
+
+      const out = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end.",
+          },
+          {
+            role: "user",
+            content: `TEXT SO FAR:\n${context}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 700,
+      });
+
+      const continuation = (out || "").trim();
+      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
+
+      const newKey = makeId(6);
+
+      inlineCache.set(newKey, {
+        prompt,
+        answer: continuation.slice(0, MAX_DISPLAY),
+        fullAnswer: newFull,
+        userId: ownerId,
+        model,
+        mode: "blackhole",
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      // Update base item as well so future continues from any chunk share history
+      baseItem.fullAnswer = newFull;
+      inlineCache.set(baseKey, baseItem);
+
+      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
+      const escapedPrompt = escapeHTML(prompt);
+
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log(`Blackhole continuation updated with AI response`);
+    } catch (e) {
+      console.error("Failed to get Blackhole continuation response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+
+    inlineCache.delete(`bh_cont_pending_${contId}`);
     return;
   }
   
