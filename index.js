@@ -2228,7 +2228,9 @@ function buildPartnerKeyboard(partner) {
 
 function inlineAnswerKeyboard(key) {
   const item = inlineCache.get(key);
-  const isBlackhole = item?.mode === "blackhole";
+  const mode = item?.mode || "default";
+  const isBlackhole = mode === "blackhole";
+  const isQuark = mode === "quark";
   const isCompleted = Boolean(item?.completed);
 
   const kb = new InlineKeyboard()
@@ -2238,6 +2240,11 @@ function inlineAnswerKeyboard(key) {
     .text("✂️ Shorter", `inl_short:${key}`)
     .text("📈 Longer", `inl_long:${key}`);
 
+  // Quark: no Continue at all (answers are intentionally short)
+  if (isQuark) {
+    return kb;
+  }
+
   if (isBlackhole) {
     // For Blackhole, use inline mode so continuation becomes a new message.
     // Hide Continue once the analysis is marked as completed.
@@ -2245,8 +2252,11 @@ function inlineAnswerKeyboard(key) {
       kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
     }
   } else {
-    // For other modes, keep callback-based continuation
-    kb.row().text("➡️ Continue", `inl_cont:${key}`);
+    // For other modes, keep callback-based continuation.
+    // Hide Continue once the answer is marked as completed for that item.
+    if (!isCompleted) {
+      kb.row().text("➡️ Continue", `inl_cont:${key}`);
+    }
   }
 
   return kb;
@@ -8807,6 +8817,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
+          // Quark intentionally has no Continue button
           reply_markup: inlineAnswerKeyboard(newKey)
         }
       );
@@ -8828,6 +8839,37 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
   
+  // Helper to avoid cutting code blocks in the middle for Code mode answers
+  function splitCodeAnswerForDisplay(full, maxLen = 3500) {
+    if (!full) return { visible: "", remaining: "", completed: true };
+    if (full.length <= maxLen) {
+      return { visible: full, remaining: "", completed: true };
+    }
+
+    let cutoff = maxLen;
+    const fence = "```";
+    const lastFenceBeforeCut = full.lastIndexOf(fence, maxLen);
+    const lastFenceOverall = full.lastIndexOf(fence);
+
+    if (lastFenceBeforeCut !== -1) {
+      const countFences = (full.slice(0, cutoff).match(/```/g) || []).length;
+      // If we are inside an open fence (odd count), move back to before that fence
+      if (countFences % 2 === 1) {
+        cutoff = lastFenceBeforeCut;
+      }
+    }
+
+    // Also try to avoid splitting right before a second large block when possible
+    if (lastFenceOverall > 0 && lastFenceOverall > cutoff && lastFenceBeforeCut > 0) {
+      // keep everything up to before the second block if it's not too short
+      cutoff = Math.max(cutoff, lastFenceBeforeCut);
+    }
+
+    const visible = full.slice(0, cutoff).trimEnd();
+    const remaining = full.slice(cutoff).trimStart();
+    return { visible, remaining, completed: remaining.length === 0 };
+  }
+
   // Handle Code deferred response - code_start_KEY
   if (resultId.startsWith("code_start_")) {
     const codeKey = resultId.replace("code_start_", "");
@@ -8848,7 +8890,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are an expert programmer. Provide clear, working code with brief explanations. Always format code using fenced code blocks with language tags, like ```python ... ```. Focus on best practices and clean, idiomatic code.",
+              "You are an expert programmer. Provide clear, working code with brief explanations. Always format code using fenced code blocks with language tags, like ```python ... ```. Focus on best practices and clean, idiomatic code. If the user is asking for multiple sizeable code snippets (e.g., in two different languages), prioritize the first main implementation and be willing to let additional full implementations be shown in a continuation.",
           },
           { role: "user", content: prompt },
         ],
@@ -8856,15 +8898,19 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 700,
       });
       
-      const answer = (out || "No code").slice(0, 3500);
+      const raw = out || "No code";
+      const { visible, remaining, completed } = splitCodeAnswerForDisplay(raw, 3500);
+      const answer = visible;
       const newKey = makeId(6);
       
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: raw,
         userId: pending.userId,
         model,
         mode: "code",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9193,53 +9239,24 @@ async function doInlineTransform(ctx, mode) {
       const isBlackhole = itemMode === "blackhole";
       const isCode = itemMode === "code";
 
+      // Blackhole uses its own inline-based continuation (bhcont), so we do nothing here.
       if (isBlackhole) {
-        // For Blackhole, keep a separate fullAnswer so we can continue beyond
-        // what fits in a single Telegram message, while only displaying the tail.
-        const MAX_DISPLAY = 3500;
-        const CONTEXT_LEN = 900;
+        await ctx.answerCallbackQuery({ text: "Use the inline Continue button for Blackhole.", show_alert: true });
+        return;
+      }
 
-        let fullAnswer = item.fullAnswer || item.answer || "";
-        // Clean up any broken tail like "so it me" before continuing
-        fullAnswer = trimIncompleteTail(fullAnswer);
+      // Quark never shows Continue, but if somehow triggered, just ignore.
+      if (itemMode === "quark") {
+        await ctx.answerCallbackQuery({ text: "Quark answers are already complete.", show_alert: true });
+        return;
+      }
 
-        const context = fullAnswer.slice(-CONTEXT_LEN);
-
-        const continuation = await llmText({
-          model: item.model,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end.",
-            },
-            {
-              role: "user",
-              content: `TEXT SO FAR:\n${context}`,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 700,
-        });
-
-        const contClean = (continuation || "").trim();
-        const newFull = (fullAnswer + (contClean ? "\n\n" + contClean : "")).trim();
-
-        item.fullAnswer = newFull;
-
-        // For display, keep only the tail within Telegram's limit
-        let display = newFull;
-        if (display.length > MAX_DISPLAY) {
-          const tail = display.slice(-(MAX_DISPLAY - 120)); // reserve room for prefix
-          display = "… (earlier sections omitted due to Telegram limits)\n\n" + tail;
-        }
-        newAnswer = display;
-      } else {
-        const systemPrompt = isCode
-          ? "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged."
-          : "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue.";
-
-        const maxTokens = isCode ? 600 : 450;
+      if (isCode) {
+        // For Code, continue the answer with mode-aware prompt and completion marker.
+        const systemPrompt =
+          "You are an expert programmer continuing a code-focused answer. Continue from where it stopped, keeping existing fenced code blocks intact (```lang ... ```). Add more explanation or additional code as needed, but do not re-paste large sections unchanged. When there is nothing important left to add, end your answer with a line containing only END_OF_CODE.";
+        const maxTokens = 600;
+        const END_MARK = "END_OF_CODE";
 
         const continuation = await llmText({
           model: item.model,
@@ -9253,7 +9270,51 @@ async function doInlineTransform(ctx, mode) {
           temperature: 0.7,
           max_tokens: maxTokens,
         });
-        newAnswer = `${item.answer}\n\n${continuation || ""}`;
+
+        let contText = (continuation || "").trim();
+        let completed = false;
+        if (contText.includes(END_MARK)) {
+          completed = true;
+          contText = contText.replace(END_MARK, "").trim();
+          contText += "\n\n---\n_End of code answer._";
+        }
+
+        newAnswer = `${item.answer}\n\n${contText || ""}`.trim();
+        if (completed) {
+          item.completed = true;
+        }
+      } else {
+        // Default (quick, research, explain, summarize, chat, etc.)
+        const systemPrompt =
+          "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue. When there is nothing important left to add, end your answer with a line containing only END_OF_INLINE.";
+        const maxTokens = 450;
+        const END_MARK = "END_OF_INLINE";
+
+        const continuation = await llmText({
+          model: item.model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: maxTokens,
+        });
+
+        let contText = (continuation || "").trim();
+        let completed = false;
+        if (contText.includes(END_MARK)) {
+          completed = true;
+          contText = contText.replace(END_MARK, "").trim();
+          contText += "\n\n---\n_End of answer._";
+        }
+
+        newAnswer = `${item.answer}\n\n${contText || ""}`.trim();
+        if (completed) {
+          item.completed = true;
+        }
       }
     }
 
