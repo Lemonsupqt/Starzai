@@ -6128,7 +6128,11 @@ bot.on("message:text", async (ctx) => {
 
   try {
     // Send initial processing status - use HTML to avoid Markdown escaping issues
-    statusMsg = await ctx.reply(`⏳ Processing with <b>${model}</b>...`, { parse_mode: "HTML" });
+    // Make this a proper reply to the user's message so the final answer appears threaded.
+    statusMsg = await ctx.reply(`⏳ Processing with <b>${model}</b>...`, {
+      parse_mode: "HTML",
+      reply_to_message_id: msg.message_id,
+    });
 
     // Keep typing indicator active
     typingInterval = setInterval(() => {
@@ -6311,10 +6315,16 @@ bot.on("message:text", async (ctx) => {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
       } catch (editErr) {
         // Fallback to new message if edit fails
-        await ctx.reply(response, { parse_mode: "HTML" });
+        await ctx.reply(response, {
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
       }
     } else {
-      await ctx.reply(response, { parse_mode: "HTML" });
+      await ctx.reply(response, {
+        parse_mode: "HTML",
+        reply_to_message_id: msg.message_id,
+      });
     }
   } catch (e) {
     console.error(e);
@@ -6326,16 +6336,22 @@ bot.on("message:text", async (ctx) => {
     
     // Edit status message with error (cleaner than delete+send)
     const errMsg = isTimeout 
-      ? `⏱️ Model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch, or try again.`
+      ? `⏱️ Model &lt;b&gt;${model}&lt;/b&gt; timed out after ${elapsed}s. Try /model to switch, or try again.`
       : `❌ Error after ${elapsed}s. Try again in a moment.`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
       } catch {
-        await ctx.reply(errMsg, { parse_mode: "HTML" });
+        await ctx.reply(errMsg, {
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
       }
     } else {
-      await ctx.reply(errMsg, { parse_mode: "HTML" });
+      await ctx.reply(errMsg, {
+        parse_mode: "HTML",
+        reply_to_message_id: msg.message_id,
+      });
     }
   }
 });
