@@ -6104,11 +6104,11 @@ bot.on("message:text", async (ctx) => {
       // Check if it's a time/date query - handle directly without AI
       if (isTimeQuery(text)) {
         const timeResult = getTimeResponse(text, msg.date);
-        await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() =&gt; {});
+        await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() => {});
         
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         await ctx.reply(
-          `${timeResult.response}\\n\\n⚡ ${elapsed}s`,
+          `${timeResult.response}\n\n⚡ ${elapsed}s`,
           { parse_mode: "HTML", reply_to_message_id: msg.message_id }
         );
         return;
