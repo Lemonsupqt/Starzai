@@ -2231,6 +2231,8 @@ function inlineAnswerKeyboard(key) {
   const mode = item?.mode || "default";
   const isBlackhole = mode === "blackhole";
   const isQuark = mode === "quark";
+  const isExplain = mode === "explain";
+  const isSummarize = mode === "summarize";
   const isCompleted = Boolean(item?.completed);
 
   const kb = new InlineKeyboard()
@@ -2241,7 +2243,8 @@ function inlineAnswerKeyboard(key) {
     .text("📈 Longer", `inl_long:${key}`);
 
   // Quark: no Continue at all (answers are intentionally short)
-  if (isQuark) {
+  // Explain & Summarize: keep them as one-shot answers; use Shorter/Longer instead of Continue.
+  if (isQuark || isExplain || isSummarize) {
     return kb;
   }
 
