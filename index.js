@@ -3526,53 +3526,12 @@ bot.command("char", async (ctx) => {
     case "list": {
       if (savedChars.length === 0) {
         return ctx.reply(
-          "💾 *No saved characters yet!*\\n\\nUse `/char save [name]` to save one.",
+          "💾 *No saved characters yet!*\\\\n\\\\nUse `/char save [name]` to save one.",
           {
             parse_mode: "Markdown",
             reply_to_message_id: ctx.message?.message_id,
           }
         );
-      }haracter status and help with button list
-  if (!subcommand) {
-    const statusText = activeChar 
-      ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
-      : "🎭 <b>No active character</b>\n\n";
-    
-    const savedList = savedChars.length > 0
-      ? `💾 <b>Saved Characters:</b>\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\n")}\n\n`
-      : "";
-    
-    const helpText = [
-      statusText,
-      savedList,
-      "<b>Commands:</b>",
-      "• /char yoda - Start as Yoda",
-      "• /char save yoda - Save character",
-      "• /char list - Show saved",
-      "• /char remove yoda - Remove saved",
-      "• /char stop or /default - Stop character mode",
-      "",
-      "<i>Tap a character button below to start!</i>",
-    ].join("\n");
-    
-    return ctx.reply(helpText, { 
-      parse_mode: "HTML",
-      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
-    });
-  }
-  
-  // Subcommands
-  switch (subcommand) {
-    case "save": {
-      if (!value) return ctx.reply("❌ Please provide a character name: `/char save yoda`", { parse_mode: "Markdown" });
-      const result = saveCharacter(u.id, value);
-      const emoji = result.success ? "✅" : "❌";
-      return ctx.reply(`${emoji} ${result.message}`);
-    }
-    
-    case "list": {
-      if (savedChars.length === 0) {
-        return ctx.reply("💾 *No saved characters yet!*\n\nUse `/char save [name]` to save one.", { parse_mode: "Markdown" });
       }
       const listText = [
         "💾 *Your Saved Characters:*",
