@@ -494,13 +494,20 @@ function checkRateLimit(ctx) {
 }
 
 async function enforceRateLimit(ctx) {
+  const fromId = ctx.from?.id;
+  if (fromId && OWNER_IDS.has(String(fromId))) {
+    // Owners are not rate-limited
+    return true;
+  }
+
   const r = checkRateLimit(ctx);
   if (r.ok) return true;
 
   const msg = `Rate limit hit. Try again in ~${r.waitSec}s.`;
 
   if (ctx.inlineQuery) {
-    await safeAnswerInline(ctx,
+    await safeAnswerInline(
+      ctx,
       [
         {
           type: "article",
@@ -518,6 +525,66 @@ async function enforceRateLimit(ctx) {
     await ctx.reply(msg);
   }
   return false;
+}
+
+// Per-tier command cooldowns (slash commands only)
+const commandCooldown = new Map(); // userId -> last command timestamp (ms)
+
+function getTierForCooldown(user, userId) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) return "owner";
+  const t = user?.tier || "free";
+  if (t === "premium" || t === "ultra" || t === "free") return t;
+  return "free";
+}
+
+function getCommandCooldownSecondsForTier(tier) {
+  if (tier === "owner") return 0;
+  if (tier === "ultra") return 10;
+  if (tier === "premium") return 30;
+  // free and unknown default
+  return 60;
+}
+
+async function enforceCommandCooldown(ctx) {
+  const from = ctx.from;
+  const userId = from?.id ? String(from.id) : null;
+  if (!userId) return true;
+
+  // Owners: no command cooldown
+  if (OWNER_IDS.has(userId)) {
+    return true;
+  }
+
+  const user = getUserRecord(userId) || ensureUser(userId, from);
+  const tier = getTierForCooldown(user, userId);
+  const cooldownSec = getCommandCooldownSecondsForTier(tier);
+  if (cooldownSec <= 0) {
+    return true;
+  }
+
+  const cooldownMs = cooldownSec * 1000;
+  const now = nowMs();
+  const last = commandCooldown.get(userId) || 0;
+  const elapsed = now - last;
+
+  if (last && elapsed < cooldownMs) {
+    const remainingSec = Math.ceil((cooldownMs - elapsed) / 1000);
+    const msg = `⏱️ Command cooldown: wait ~${remainingSec}s before using another command.`;
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+      } else {
+        await ctx.reply(msg);
+      }
+    } catch {
+      // Ignore notification errors
+    }
+    return false;
+  }
+
+  commandCooldown.set(userId, now);
+  return true;
 }
 
 // =====================
@@ -2742,6 +2809,7 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 // =====================
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
 
   const chatType = ctx.chat.type;
@@ -2807,6 +2875,7 @@ bot.command("start", async (ctx) => {
 
 bot.command("help", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
   // Activate group if used in group chat
@@ -2820,6 +2889,7 @@ bot.command("help", async (ctx) => {
 // /search command - Web search
 bot.command("search", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/search\s*/i, "").trim();
@@ -2868,6 +2938,7 @@ bot.command("search", async (ctx) => {
 // /websearch command - Search and get AI summary
 bot.command("websearch", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
@@ -2938,6 +3009,7 @@ bot.command("websearch", async (ctx) => {
 
 bot.command("register", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
 
   const u = ctx.from;
   if (!u?.id) return ctx.reply("Could not get your user info.");
@@ -2952,12 +3024,16 @@ bot.command("register", async (ctx) => {
 
 bot.command("reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   chatHistory.delete(ctx.chat.id);
   await ctx.reply("Done. Memory cleared for this chat.");
 });
 
 // Group activation commands
 bot.command("stop", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (ctx.chat.type === "private") {
     return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
   }
@@ -2967,6 +3043,9 @@ bot.command("stop", async (ctx) => {
 });
 
 bot.command("talk", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (ctx.chat.type === "private") {
     return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
   }
@@ -2978,6 +3057,9 @@ bot.command("talk", async (ctx) => {
 
 // /feedback - entrypoint for feedback flow (DM only)
 bot.command("feedback", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (!FEEDBACK_CHAT_ID) {
     return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
   }
@@ -3088,6 +3170,7 @@ bot.command("fbreply", async (ctx) => {
 // /stats - Show user usage statistics
 bot.command("stats", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3129,6 +3212,7 @@ _Keep chatting to grow your stats!_`;
 // /persona - Set custom AI personality
 bot.command("persona", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3160,12 +3244,14 @@ bot.command("persona", async (ctx) => {
 // /history - DISABLED: History feature removed to prevent database bloat
 bot.command("history", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  return ctx.reply("⚠️ *History feature has been disabled*\n\nThis feature has been removed to optimize database performance and reduce storage costs.\n\n_You can still use inline mode by typing @starztechbot in any chat!_", { parse_mode: "Markdown" });
+  if (!(await enforceCommandCooldown(ctx))) return;
+  return ctx.reply("⚠️ *History feature has been disabled*\\n\\nThis feature has been removed to optimize database performance and reduce storage costs.\\n\\n_You can still use inline mode by typing @starztechbot in any chat!_", { parse_mode: "Markdown" });
 });
 
 // /partner - Manage your AI partner
 bot.command("partner", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3238,6 +3324,7 @@ bot.command("partner", async (ctx) => {
 // /char - Quick character mode for DM/GC
 bot.command("char", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   const chat = ctx.chat;
   if (!u?.id) return;
@@ -3341,6 +3428,7 @@ bot.command("char", async (ctx) => {
 // /default - Stop character mode and return to normal AI
 bot.command("default", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   const chat = ctx.chat;
   if (!u?.id) return;
@@ -3352,7 +3440,7 @@ bot.command("default", async (ctx) => {
   }
   
   clearActiveCharacter(u.id, chat.id);
-  return ctx.reply(`⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\n\n<i>Normal AI responses resumed.</i>`, { parse_mode: "HTML" });
+  return ctx.reply(`⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\\n\\n<i>Normal AI responses resumed.</i>`, { parse_mode: "HTML" });
 });
 
 // Build character selection keyboard
@@ -3793,6 +3881,7 @@ function categoryTitle(category) {
 
 bot.command("model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
 
   const u = ensureUser(ctx.from.id, ctx.from);
   const current = ensureChosenModelValid(ctx.from.id);
@@ -3804,6 +3893,9 @@ bot.command("model", async (ctx) => {
 });
 
 bot.command("whoami", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   const u = ensureUser(ctx.from.id, ctx.from);
   const model = ensureChosenModelValid(ctx.from.id);
   const stats = u.stats || {};
@@ -3901,7 +3993,8 @@ bot.command("status", async (ctx) => {
     `• Free models: ${FREE_MODELS.length}`,
     `• Premium models: ${PREMIUM_MODELS.length}`,
     `• Ultra models: ${ULTRA_MODELS.length}`,
-    `• Rate limit: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `• Global rate limit: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `• Command cooldowns: free 60s, premium 30s, ultra 10s, owners none`,
   ];
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
@@ -4715,6 +4808,17 @@ bot.command("ownerhelp", async (ctx) => {
     "🎫 *Tiers & access*",
     "• /grant <userId> <tier>, /revoke <userId>",
     "• /allow <userId> <model>, /deny <userId> <model>",
+    "",
+    "🏘 *Group authorization*",
+    "• /allowgroup <chatId> [note] — authorize a group to use the bot",
+    "• /denygroup <chatId> [reason] — block a group from using the bot",
+    "• /grouplist — list known groups and their auth status",
+    "",
+    "⏱ *Command cooldowns*",
+    "• Free: 60s between slash commands (e.g. /start, /model, /stats, /search)",
+    "• Premium: 30s between commands",
+    "• Ultra: 10s between commands",
+    "• Owners: no command cooldown or global rate limit",
     "",
     "🚫 *Bans*",
     "• /ban <userId> [reason], /unban <userId> [reason]",

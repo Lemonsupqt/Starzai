@@ -60,7 +60,7 @@ Set a custom personality for all DM responses:
 ### Owner Commands
 | Command | Description |
 |---------|-------------|
-| `/status` | Bot status & stats |
+| `/status` | Bot status & stats (includes rate limit and cooldown info) |
 | `/info <userId>` | User details |
 | `/grant <userId> <tier>` | Grant tier (free/premium/ultra) |
 | `/revoke <userId>` | Revoke to free tier |
@@ -75,6 +75,9 @@ Set a custom personality for all DM responses:
 | `/mutelist` | List all muted users |
 | `/allow <userId> <model>` | Allow specific model |
 | `/deny <userId> <model>` | Deny specific model |
+| `/allowgroup <chatId> [note]` | Authorize a group to use the bot |
+| `/denygroup <chatId> [reason]` | Block a group from using the bot |
+| `/grouplist` | List known groups and their authorization status |
 | `/ownerhelp` | Show a quick owner-only moderation guide in chat |
 
 ## 🚀 Deployment
@@ -108,9 +111,15 @@ SUPABASE_KEY=your_supabase_key
 
 **Other:**
 ```
-RATE_LIMIT_PER_MINUTE=12
+RATE_LIMIT_PER_MINUTE=12  # Global safety limit (all users, including inline)
 MODEL_VISION=vision_model_id
 ```
+
+**Per-tier slash command cooldowns (built-in):**
+- Free: 1 command every 60 seconds
+- Premium: 1 command every 30 seconds
+- Ultra: 1 command every 10 seconds
+- Owners: no command cooldown or global rate limit
 
 ## 💾 Data Persistence
 
