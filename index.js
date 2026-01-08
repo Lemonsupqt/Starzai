@@ -421,81 +421,7 @@ function isGroupAuthorized(chatId) {
 }
 
 // Active inline message tracking (for editing)
-const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
-
-// Pending shared chat input (user clicked Ask AI, waiting for their message)
-const pendingSharedInput = new Map(); // oderId -> { chatKey, userName, inlineMessageId, timestamp }
-
-// =====================
-// SHARED INLINE CHAT SESSIONS
-// These are keyed by inline_message_id so multiple users can participate
-// =====================
-const sharedChatSessions = new Map(); // chatKey -> { history: [], model, createdBy, createdAt, participants: Set }
-
-function getSharedChat(chatKey) {
-  return sharedChatSessions.get(chatKey) || null;
-}
-
-function createSharedChat(chatKey, creatorId, creatorName, model) {
-  const session = {
-    history: [],
-    model: model,
-    createdBy: creatorId,
-    createdByName: creatorName,
-    createdAt: Date.now(),
-    participants: new Set([String(creatorId)]),
-    lastActive: Date.now(),
-    inlineMessageId: null, // Will be set when message is sent
-  };
-  sharedChatSessions.set(chatKey, session);
-  return session;
-}
-
-function setSharedChatInlineMessageId(chatKey, inlineMessageId) {
-  const session = sharedChatSessions.get(chatKey);
-  if (session) {
-    session.inlineMessageId = inlineMessageId;
-  }
-}
-
-function addToSharedChat(chatKey, userId, userName, role, content) {
-  const session = sharedChatSessions.get(chatKey);
-  if (!session) return null;
-  
-  session.participants.add(String(userId));
-  session.history.push({ 
-    role, 
-    content, 
-    userId: String(userId),
-    userName: userName || "User",
-    timestamp: Date.now()
-  });
-  
-  // Keep last 30 messages
-  while (session.history.length > 30) session.history.shift();
-  session.lastActive = Date.now();
-  
-  return session;
-}
-
-function clearSharedChat(chatKey) {
-  const session = sharedChatSessions.get(chatKey);
-  if (session) {
-    session.history = [];
-    session.lastActive = Date.now();
-  }
-  return session;
-}
-
-// Clean up old shared sessions (older than 1 hour)
-setInterval(() => {
-  const oneHourAgo = Date.now() - 60 * 60 * 1000;
-  for (const [key, session] of sharedChatSessions) {
-    if (session.lastActive < oneHourAgo) {
-      sharedChatSessions.delete(key);
-    }
-  }
-}, 10 * 60 * 1000); // Check every 10 minutes
+const activeInlineMessages = new Map(); // sessionKey -&gt; inline_message_id
 
 function nowMs() {
   return Date.now();
@@ -2701,58 +2627,7 @@ function inlineModelSelectKeyboard(sessionKey, userId) {
   return kb;
 }
 
-// =====================
-// SHARED CHAT UI (Multi-user inline chat)
-// =====================
-const MESSAGES_PER_PAGE = 6;
 
-function formatSharedChatDisplay(session, page = -1) {
-  const history = session.history || [];
-  const model = session.model || "gpt-4o-mini";
-  const participantCount = session.participants?.size || 1;
-  
-  // Calculate total pages
-  const totalPages = Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
-  
-  // -1 means last page (default)
-  if (page === -1 || page > totalPages) page = totalPages;
-  if (page < 1) page = 1;
-  
-  let display = `🤖 *StarzAI Yap*\n`;
-  display += `👥 ${participantCount} participant${participantCount > 1 ? "s" : ""} • 📊 \`${model.split("/").pop()}\``;
-  
-  // Show page indicator if multiple pages
-  if (totalPages > 1) {
-    display += ` • 📄 ${page}/${totalPages}`;
-  }
-  display += `\n━━━━━━━━━━━━━━━\n\n`;
-  
-  if (history.length === 0) {
-    display += `_No messages yet._\n_Reply to this message to chat!_`;
-  } else {
-    // Get messages for this page
-    const startIdx = (page - 1) * MESSAGES_PER_PAGE;
-    const endIdx = startIdx + MESSAGES_PER_PAGE;
-    const pageHistory = history.slice(startIdx, endIdx);
-    
-    for (const msg of pageHistory) {
-      if (msg.role === "user") {
-        const name = msg.userName || "User";
-        display += `👤 *${name}:* ${msg.content.slice(0, 150)}${msg.content.length > 150 ? "..." : ""}\n\n`;
-      } else {
-        display += `🤖 *AI:* ${msg.content.slice(0, 300)}${msg.content.length > 300 ? "..." : ""}\n\n`;
-      }
-    }
-  }
-  
-  display += `━━━━━━━━━━━━━━━`;
-  return display.slice(0, 3800);
-}
-
-function getSharedChatPageCount(session) {
-  const history = session?.history || [];
-  return Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
-}
 
 // =====================
 // SETTINGS MENU KEYBOARDS (for editable inline message)
@@ -2803,35 +2678,7 @@ function settingsCategoryKeyboard(category, userId, currentModel) {
   return kb;
 }
 
-function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
-  const kb = new InlineKeyboard();
-  
-  // -1 means last page
-  if (page === -1) page = totalPages;
-  
-  // Page navigation (only if multiple pages)
-  if (totalPages > 1) {
-    if (page > 1) {
-      kb.text("◀️ Prev", `schat_page:${chatKey}:${page - 1}`);
-    }
-    kb.text(`📄 ${page}/${totalPages}`, `schat_noop`);
-    if (page < totalPages) {
-      kb.text("Next ▶️", `schat_page:${chatKey}:${page + 1}`);
-    }
-    kb.row();
-  }
-  
-  // Main action - Ask AI via inline query
-  kb.switchInlineCurrent("💬 Reply", `yap:${chatKey}: `);
-  kb.text("🔁 Regen", `schat_regen:${chatKey}`);
-  kb.row();
-  
-  // Secondary actions
-  kb.text("🔄 Refresh", `schat_refresh:${chatKey}`)
-    .text("🗑️ Clear", `schat_clear:${chatKey}`);
-  
-  return kb;
-}
+
 
 // Inline settings keyboard - shows model categories
 function inlineSettingsCategoryKeyboard(sessionKey, userId) {
@@ -3629,9 +3476,111 @@ bot.callbackQuery("open_char", async (ctx) => {
 });
 
 // Partner callback handlers - Setup field buttons
-const pendingPartnerInput = new Map(); // userId -> { field, messageId }
-// pendingFeedback: userId -> { createdAt, source }
+const pendingPartnerInput = new Map(); // userId -&gt; { field, messageId }
+// pendingFeedback: userId -&gt; { createdAt, source }
 const pendingFeedback = new Map();
+
+async function handleFeedbackIfActive(ctx, options = {}) {
+  const u = ctx.from;
+  const chat = ctx.chat;
+  const msg = ctx.message;
+
+  if (!u?.id || !chat || !msg) return false;
+
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (!pendingFb || chat.type !== "private") {
+    return false;
+  }
+
+  pendingFeedback.delete(String(u.id));
+
+  // 2 minute timeout
+  if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+    await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+    return true;
+  }
+
+  if (!FEEDBACK_CHAT_ID) {
+    await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+    return true;
+  }
+
+  const rec = getUserRecord(u.id) || {};
+  const feedbackId = `FB-${u.id}-${makeId(4)}`;
+  const tier = (rec.tier || "free").toUpperCase();
+  const banned = rec.banned ? "YES" : "no";
+  const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+  let muteInfo = "none";
+  if (rec.mute) {
+    const m = rec.mute;
+    const scope = m.scope || "all";
+    const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    muteInfo = `scope=${scope}, until=${untilStr}`;
+  }
+
+  const sourceTag = pendingFb.source || "general";
+  const sourceMap = {
+    general: "General (menu)",
+    command: "/feedback command",
+    ban: "After ban notice",
+    mute: "After mute notice",
+    softban: "After softban notice",
+    warn: "After warning notice",
+    group_unauthed: "Unauthorized group",
+  };
+  const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+  const username = rec.username || u.username || "";
+  const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
+  const rawCaption =
+    options.caption != null ? options.caption : (msg.caption || "");
+  const captionText = (rawCaption || "").trim();
+
+  const metaLines = [
+    `📬 *New Feedback*`,
+    ``,
+    `🆔 *Feedback ID:* \`${feedbackId}\``,
+    `👤 *User ID:* \`${u.id}\``,
+    `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+    `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+    `🚫 *Banned:* ${banned}`,
+    `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+    `⚠️ *Warnings:* ${warningsCount}`,
+    `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+    `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
+  ];
+
+  if (pendingFb.groupId) {
+    metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
+  }
+
+  if (captionText) {
+    metaLines.push(
+      `📝 *Caption:* ${escapeMarkdown(captionText.slice(0, 500))}`
+    );
+  }
+
+  const metaText = metaLines.join("\n");
+
+  try {
+    await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
+    await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, {
+      parse_mode: "Markdown",
+    });
+    await ctx.reply(
+      "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+        `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.error("Feedback forward error:", e.message);
+    await ctx.reply("❌ Failed to send feedback. Please try again later.");
+  }
+
+  return true;
+}
 
 bot.callbackQuery("partner_set_name", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -5922,108 +5871,6 @@ bot.on("message:text", async (ctx) => {
   const replyTo = ctx.message?.reply_to_message;
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
   // (Replies are handled as normal messages below)
-  
-  // Check if user has pending shared chat input
-  const pendingInput = pendingSharedInput.get(String(u.id));
-  if (pendingInput && chat.type === "private") {
-    // Clear the pending state
-    pendingSharedInput.delete(String(u.id));
-    
-    // Check if not expired (5 min timeout)
-    if (Date.now() - pendingInput.timestamp < 5 * 60 * 1000) {
-      const { chatKey, userName, inlineMessageId } = pendingInput;
-      const session = getSharedChat(chatKey);
-      
-      if (session) {
-        // Check if we have the inline message ID
-        const msgId = inlineMessageId || session.inlineMessageId;
-        
-        if (!msgId) {
-          await ctx.reply(`⚠️ Session found but message ID missing. The Yap message may have been deleted. Start a new Yap session!`);
-          return;
-        }
-        
-        // Add user message to session
-        addToSharedChat(chatKey, u.id, userName, "user", text);
-        
-        // Acknowledge in DM
-        await ctx.reply(`✅ Message sent to group chat! Getting AI response...`);
-        
-        // Get AI response with streaming
-        try {
-          const yapModel = session.model || ensureChosenModelValid(u.id);
-          const messages = [
-            { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
-            ...session.history.slice(-8).map(m => ({
-              role: m.role,
-              content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-            }))
-          ];
-          
-          // Use streaming for real-time updates
-          const aiResponse = await llmTextStream({
-            model: yapModel,
-            messages,
-            temperature: 0.7,
-            max_tokens: 400,
-            onChunk: async (partialText) => {
-              // Update the inline message with partial response
-              const tempSession = { ...session, history: [...session.history, { role: "assistant", content: partialText + "█", userName: "AI", userId: "0" }] };
-              const totalPages = Math.max(1, Math.ceil(tempSession.history.length / MESSAGES_PER_PAGE));
-              try {
-                await bot.api.editMessageTextInline(
-                  msgId,
-                  formatSharedChatDisplay(tempSession, -1),
-                  {
-                    parse_mode: "Markdown",
-                    reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-                  }
-                );
-              } catch (e) {
-                // Ignore edit errors (message unchanged, rate limit, etc)
-              }
-            },
-          });
-          
-          // Add final AI response to session
-          addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
-          
-          // Final update with complete response
-          const updatedSession = getSharedChat(chatKey);
-          const totalPages = getSharedChatPageCount(updatedSession);
-          
-          await bot.api.editMessageTextInline(
-            msgId,
-            formatSharedChatDisplay(updatedSession, -1),
-            {
-              parse_mode: "Markdown",
-              reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-            }
-          );
-          
-          await ctx.reply(`✅ AI responded! Check the group chat.`);
-        } catch (e) {
-          console.error("Shared chat AI error:", e.message);
-          await ctx.reply(`⚠️ AI is slow. Your message was added - tap Refresh in the group chat!`);
-          
-          // Still update the message to show user's message
-          try {
-            const updatedSession = getSharedChat(chatKey);
-            const totalPages = getSharedChatPageCount(updatedSession);
-            await bot.api.editMessageTextInline(
-              msgId,
-              formatSharedChatDisplay(updatedSession, -1) + `\n\n⏳ _Getting AI response..._`,
-              {
-                parse_mode: "Markdown",
-                reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-              }
-            );
-          } catch {}
-        }
-        return;
-      }
-    }
-  }
 
   // Check if user has pending partner field input
   const pendingPartner = pendingPartnerInput.get(String(u.id));
@@ -6041,95 +5888,16 @@ bot.on("message:text", async (ctx) => {
         
         const partner = getPartner(u.id);
         await ctx.reply(
-          `✅ *${field.charAt(0).toUpperCase() + field.slice(1)}* updated!\n\n` + buildPartnerSetupMessage(partner),
+          `✅ *${field.charAt(0).toUpperCase() + field.slice(1)}* updated!\\n\\n` + buildPartnerSetupMessage(partner),
           { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
         );
         return;
       }
     }
   }
-
-  // Check if user has pending feedback
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    // 2 minute timeout
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const rec = getUserRecord(u.id);
-    const tier = (rec?.tier || "free").toUpperCase();
-    const banned = rec?.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec?.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec?.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-      group_unauthed: "Unauthorized group",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec?.username || u.username || "";
-    const name = rec?.firstName || rec?.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${sourceLabel}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-    ];
-
-    if (pendingFb.groupId) {
-      metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
-    }
-
-    const metaText = metaLines.join("\n");
-
-    try {
-      // Forward the original message
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
-      // Send meta info
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  
+  const feedbackHandled = await handleFeedbackIfActive(ctx);
+  if (feedbackHandled) return;
 
   const model = ensureChosenModelValid(u.id);
   const botUsername = BOT_USERNAME || "";
@@ -6476,79 +6244,8 @@ bot.on("message:photo", async (ctx) => {
   const caption = ctx.message?.caption || "";
   if (!(await checkAntiSpam(ctx, caption))) return;
 
-  // Feedback handling for photo + caption
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const rec = getUserRecord(u.id) || {};
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const tier = (rec.tier || "free").toUpperCase();
-    const banned = rec.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec.username || u.username || "";
-    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    try {
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward (photo) error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  const feedbackHandled = await handleFeedbackIfActive(ctx, { caption });
+  if (feedbackHandled) return;
 
   if (!getUserRecord(u.id)) registerUser(u);
 
@@ -6704,78 +6401,8 @@ bot.on("message:video", async (ctx) => {
   if (!(await checkAntiSpam(ctx, caption))) return;
   
   // Feedback handling for video + caption (DM only)
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const rec = getUserRecord(u.id) || {};
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const tier = (rec.tier || "free").toUpperCase();
-    const banned = rec.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec.username || u.username || "";
-    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    try {
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward (video) error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  const feedbackHandled = await handleFeedbackIfActive(ctx, { caption });
+  if (feedbackHandled) return;
 
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
