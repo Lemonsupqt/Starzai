@@ -4445,8 +4445,8 @@ bot.command("allowgroup", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length &lt; 1) {
-    return ctx.reply("Usage: /allowgroup &lt;chatId&gt; [note]");
+  if (args.length < 1) {
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
   }
 
   const [chatIdRaw, ...noteParts] = args;
@@ -4454,7 +4454,7 @@ bot.command("allowgroup", async (ctx) => {
   const note = noteParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /allowgroup &lt;chatId&gt; [note]");
+    return ctx.reply("Usage: /allowgroup <chatId> [note]");
   }
 
   setGroupAuthorization(chatId, true, {
@@ -4467,13 +4467,13 @@ bot.command("allowgroup", async (ctx) => {
   );
 });
 
-// Alias: /add &lt;chatId&gt; &lt;note&gt;  (owner-facing shorthand)
+// Alias: /add <chatId> <note>  (owner-facing shorthand)
 bot.command("add", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length &lt; 1) {
-    return ctx.reply("Usage: /add &lt;chatId&gt; [note]");
+  if (args.length < 1) {
+    return ctx.reply("Usage: /add <chatId> [note]");
   }
 
   const [chatIdRaw, ...noteParts] = args;
@@ -4481,7 +4481,7 @@ bot.command("add", async (ctx) => {
   const note = noteParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /add &lt;chatId&gt; [note]");
+    return ctx.reply("Usage: /add <chatId> [note]");
   }
 
   setGroupAuthorization(chatId, true, {
@@ -4498,8 +4498,8 @@ bot.command("denygroup", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length &lt; 1) {
-    return ctx.reply("Usage: /denygroup &lt;chatId&gt; [reason]");
+  if (args.length < 1) {
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
   }
 
   const [chatIdRaw, ...reasonParts] = args;
@@ -4507,7 +4507,7 @@ bot.command("denygroup", async (ctx) => {
   const reason = reasonParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /denygroup &lt;chatId&gt; [reason]");
+    return ctx.reply("Usage: /denygroup <chatId> [reason]");
   }
 
   setGroupAuthorization(chatId, false, {
@@ -4520,13 +4520,13 @@ bot.command("denygroup", async (ctx) => {
   );
 });
 
-// Alias: /rem &lt;chatId&gt; &lt;reason&gt;  (owner-facing shorthand)
+// Alias: /rem <chatId> <reason>  (owner-facing shorthand)
 bot.command("rem", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length &lt; 1) {
-    return ctx.reply("Usage: /rem &lt;chatId&gt; [reason]");
+  if (args.length < 1) {
+    return ctx.reply("Usage: /rem <chatId> [reason]");
   }
 
   const [chatIdRaw, ...reasonParts] = args;
@@ -4534,7 +4534,7 @@ bot.command("rem", async (ctx) => {
   const reason = reasonParts.join(" ").trim() || null;
 
   if (!chatId) {
-    return ctx.reply("Usage: /rem &lt;chatId&gt; [reason]");
+    return ctx.reply("Usage: /rem <chatId> [reason]");
   }
 
   setGroupAuthorization(chatId, false, {
@@ -4564,7 +4564,7 @@ bot.command("grouplist", async (ctx) => {
     const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
     lines.push(`• \`${id}\` – ${title} (${status})${note}`);
   }
-  if (entries.length &gt; max) {
+  if (entries.length > max) {
     lines.push("", `...and ${entries.length - max} more.`, "");
   }
 
@@ -4589,7 +4589,7 @@ bot.command("glist", async (ctx) => {
     const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
     lines.push(`• \`${id}\` – ${title} (${status})${note}`);
   }
-  if (entries.length &gt; max) {
+  if (entries.length > max) {
     lines.push("", `...and ${entries.length - max} more.`, "");
   }
 
