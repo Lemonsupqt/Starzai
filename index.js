@@ -5973,7 +5973,6 @@ bot.on("message:text", async (ctx) => {
       activateGroup(chat.id);
     }
   }
-  }
 
   // Check if user is replying to a specific message
   const replyToMsg = ctx.message?.reply_to_message;
