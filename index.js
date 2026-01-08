@@ -8911,7 +8911,34 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 260,
       });
 
-      const summary = (summaryOut || "No summary available.").slice(0, 1200);
+      // Base truncation limit
+      let summary = (summaryOut || "No summary available.").slice(0, 1200);
+
+      // Clean up incomplete tail (mid-word / mid-sentence)
+      summary = trimIncompleteTail(summary, 220);
+
+      // Drop any dangling heading/bullet line at the very end (like "• Recent Discoveries:")
+      const lines = summary.split("\n");
+      while (lines.length > 0) {
+        const last = lines[lines.length - 1].trim();
+        if (!last) {
+          // Drop empty trailing lines
+          lines.pop();
+          continue;
+        }
+        const isHeaderOnly =
+          // Ends with ":" and has no period/question/exclamation afterwards
+          (/[:：]\s*$/.test(last) && !/[.!?]\s*$/.test(last)) ||
+          // Bullet with very short content
+          (/^[•\-*]\s+.+$/.test(last) && last.length < 40);
+        if (isHeaderOnly) {
+          lines.pop();
+          continue;
+        }
+        break;
+      }
+      summary = lines.join("\n").trim();
+
       const newKey = makeId(6);
 
       inlineCache.set(newKey, {
