@@ -4185,7 +4185,13 @@ async function sendOwnerStatus(ctx) {
   const inlineSessions = Object.keys(inlineSessionsDb.sessions).length;
   const uptime = process.uptime();
   const uptimeStr = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
-  
+
+  // Derive per-tier cooldowns from the same helper used by enforceCommandCooldown
+  const freeCooldown = getCommandCooldownSecondsForTier("free");
+  const premiumCooldown = getCommandCooldownSecondsForTier("premium");
+  const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
+  const ownerCooldown = getCommandCooldownSecondsForTier("owner");
+
   const lines = [
     `📊 *Bot Status*`,
     ``,
@@ -4210,10 +4216,10 @@ async function sendOwnerStatus(ctx) {
     `⚙️ *Rate limiting*`,
     `• Global: ${RATE_LIMIT_PER_MINUTE}/min`,
     `• Command cooldowns:`,
-    `  - Free: ${COMMAND_COOLDOWN_FREE}s`,
-    `  - Premium: ${COMMAND_COOLDOWN_PREMIUM}s`,
-    `  - Ultra: ${COMMAND_COOLDOWN_ULTRA}s`,
-    `  - Owners: none`,
+    `  - Free: ${freeCooldown}s`,
+    `  - Premium: ${premiumCooldown}s`,
+    `  - Ultra: ${ultraCooldown}s`,
+    `  - Owners: ${ownerCooldown > 0 ? ownerCooldown + "s" : "none"}`,
   ];
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
@@ -5111,16 +5117,16 @@ bot.command("ownerhelp", async (ctx) => {
     "📘 *StarzAI Owner Guide (Quick)*",
     "",
     "👤 *User info & status*",
-    "• /info &lt;userId&gt; — full user info (tier, bans, mutes, warnings, stats)",
+    "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
     "• /gstat — global bot stats",
     "",
     "🎫 *Tiers & access*",
-    "• /grant &lt;userId&gt; &lt;tier&gt;, /revoke &lt;userId&gt;",
-    "• /allow &lt;userId&gt; &lt;model&gt;, /deny &lt;userId&gt; &lt;model&gt;",
+    "• /grant <userId> <tier>, /revoke <userId>",
+    "• /allow <userId> <model>, /deny <userId> <model>",
     "",
     "🏘 *Group authorization*",
-    "• /add &lt;chatId&gt; &lt;note&gt; — authorize a group to use the bot",
-    "• /rem &lt;chatId&gt; &lt;reason&gt; — block a group from using the bot",
+    "• /add <chatId> <note> — authorize a group to use the bot",
+    "• /rem <chatId> <reason> — block a group from using the bot",
     "• /glist — list known groups and their auth status",
     "",
     "⏱ *Command cooldowns*",
@@ -5130,29 +5136,29 @@ bot.command("ownerhelp", async (ctx) => {
     "• Owners: no command cooldown or global rate limit",
     "",
     "🚫 *Bans*",
-    "• /ban &lt;userId&gt; &lt;reason&gt;",
-    "• /unban &lt;userId&gt; &lt;reason&gt;",
-    "• /softban &lt;userId&gt; &lt;reason&gt; — 24h total mute",
+    "• /ban <userId> <reason>",
+    "• /unban <userId> <reason>",
+    "• /softban <userId> <reason> — 24h total mute",
     "• /banlist — list banned users",
     "",
     "🔇 *Mutes*",
-    "• /mute &lt;userId&gt; &lt;duration&gt; &lt;scope&gt; &lt;reason&gt;",
-    "• /unmute &lt;userId&gt; &lt;reason&gt;",
+    "• /mute <userId> <duration> <scope> <reason>",
+    "• /unmute <userId> <reason>",
     "• /mutelist",
     "  scope: all, dm, group, inline, tier",
     "",
     "⚠️ *Warnings*",
-    "• /warn &lt;userId&gt; &lt;reason&gt; — auto softban at 3 warnings",
-    "• /clearwarns &lt;userId&gt; &lt;reason&gt; — reset warnings",
+    "• /warn <userId> <reason> — auto softban at 3 warnings",
+    "• /clearwarns <userId> <reason> — reset warnings",
     "",
     FEEDBACK_CHAT_ID
-      ? "💡 *Feedback* \\n• /feedback — user-side command (button in menu)\\n• /f &lt;feedbackId&gt; &lt;text&gt; — reply to feedback sender"
+      ? "💡 *Feedback* \n• /feedback — user-side command (button in menu)\n• /f <feedbackId> <text> — reply to feedback sender"
       : "",
     "",
     "_Owners cannot be banned, muted, or warned._",
   ]
     .filter(Boolean)
-    .join("\\n");
+    .join("\n");
 
   await ctx.reply(lines, { parse_mode: "Markdown" });
 });
