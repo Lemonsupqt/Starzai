@@ -4515,10 +4515,6 @@ bot.callbackQuery("menu_plans", async (ctx) => {
     await ctx.reply(msg, { parse_mode: "Markdown", reply_markup: kb });
   }
 });
-  } catch (e) {
-    // If edit fails, ignore
-  }
-});
 
 // Model menu
 bot.callbackQuery("menu_model", async (ctx) => {
