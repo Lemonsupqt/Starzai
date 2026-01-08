@@ -2243,8 +2243,8 @@ function inlineAnswerKeyboard(key) {
     .text("📈 Longer", `inl_long:${key}`);
 
   // Quark: no Continue at all (answers are intentionally short)
-  // Explain & Summarize: keep them as one-shot answers; use Shorter/Longer instead of Continue.
-  if (isQuark || isExplain || isSummarize) {
+  // Summarize: keep as one-shot; use Shorter/Longer instead of Continue.
+  if (isQuark || isSummarize) {
     return kb;
   }
 
@@ -2255,7 +2255,7 @@ function inlineAnswerKeyboard(key) {
       kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
     }
   } else {
-    // For other modes, keep callback-based continuation.
+    // For other modes (quick, explain, research, code, chat), keep callback-based continuation.
     // Hide Continue once the answer is marked as completed for that item.
     if (!isCompleted) {
       kb.row().text("➡️ Continue", `inl_cont:${key}`);
@@ -8509,18 +8509,21 @@ bot.on("chosen_inline_result", async (ctx) => {
       }
 
       // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
-      const answer = raw.slice(0, 3500);
+      let answer = raw.slice(0, 3500);
+      // Avoid ending the first chunk mid-word or mid-sentence when possible.
+      answer = trimIncompleteTail(answer);
       const newKey = makeId(6);
       
       // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
         answer,
-        fullAnswer: answer,
+        fullAnswer: raw,
         userId: pending.userId,
         model,
         mode: "blackhole",
         completed,
+        part: 1,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -8531,10 +8534,11 @@ bot.on("chosen_inline_result", async (ctx) => {
       // Convert and update
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
+      const partLabel = completed ? "Part 1 – final" : "Part 1";
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey)
@@ -8612,7 +8616,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Keep the same structure and style as earlier sections: use headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
           },
           {
             role: "user",
@@ -8633,9 +8637,13 @@ bot.on("chosen_inline_result", async (ctx) => {
         continuation += "\n\n---\n_End of Blackhole analysis._";
       }
 
+      // Clean tail of continuation to avoid ending mid-word/mid-sentence when possible.
+      continuation = trimIncompleteTail(continuation);
+
       const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
 
       const newKey = makeId(6);
+      const part = (baseItem.part || 1) + 1;
 
       inlineCache.set(newKey, {
         prompt,
@@ -8645,21 +8653,24 @@ bot.on("chosen_inline_result", async (ctx) => {
         model,
         mode: "blackhole",
         completed,
+        part,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
       // Update base item as well so future continues from any chunk share history
       baseItem.fullAnswer = newFull;
+      baseItem.part = part;
       if (completed) baseItem.completed = true;
       inlineCache.set(baseKey, baseItem);
 
       const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
       const escapedPrompt = escapeHTML(prompt);
+      const partLabel = completed ? `Part ${part} – final` : `Part ${part}`;
 
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey),
@@ -8992,15 +9003,52 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 400,
       });
       
-      const answer = (out || "No explanation").slice(0, 1500);
+      const raw = out || "No explanation";
+      const maxLen = 1500;
+      let visible = raw;
+      let cursor = raw.length;
+      let completed = true;
+
+      if (raw.length > maxLen) {
+        // Prefer to cut at a sentence or word boundary near the limit
+        const slice = raw.slice(0, maxLen);
+        let cutoff = slice.length;
+
+        const windowSize = 200;
+        const windowStart = Math.max(0, cutoff - windowSize);
+        const windowText = slice.slice(windowStart, cutoff);
+
+        let rel = Math.max(
+          windowText.lastIndexOf(". "),
+          windowText.lastIndexOf("! "),
+          windowText.lastIndexOf("? ")
+        );
+        if (rel !== -1) {
+          cutoff = windowStart + rel + 2; // include punctuation + space
+        } else {
+          const spaceRel = windowText.lastIndexOf(" ");
+          if (spaceRel !== -1) {
+            cutoff = windowStart + spaceRel;
+          }
+        }
+
+        visible = slice.slice(0, cutoff).trimEnd();
+        cursor = visible.length;
+        completed = cursor >= raw.length;
+      }
+
+      const answer = visible;
       const newKey = makeId(6);
       
       inlineCache.set(newKey, {
         prompt,
         answer,
+        fullAnswer: raw,
+        cursor,
         userId: pending.userId,
         model,
         mode: "explain",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -9260,6 +9308,7 @@ async function doInlineTransform(ctx, mode) {
       const itemMode = item.mode || "default";
       const isBlackhole = itemMode === "blackhole";
       const isCode = itemMode === "code";
+      const isExplain = itemMode === "explain";
 
       // Blackhole uses its own inline-based continuation (bhcont), so we do nothing here.
       if (isBlackhole) {
@@ -9344,8 +9393,71 @@ async function doInlineTransform(ctx, mode) {
         if (!leftover.length || item.cursor >= full.length) {
           item.completed = true;
         }
+      } else if (isExplain) {
+        // For Explain mode, reveal the rest of the original explanation without
+        // asking the model to rewrite it, cutting at sentence/word boundaries.
+        const full = item.fullAnswer || item.answer || "";
+        if (!full) {
+          await ctx.answerCallbackQuery({ text: "No more explanation to show.", show_alert: true });
+          return;
+        }
+
+        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
+        if (cursor >= full.length) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
+          return;
+        }
+
+        const remaining = full.slice(cursor);
+        if (!remaining.trim()) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
+          return;
+        }
+
+        const maxLen = 3500;
+        let cutoff = Math.min(maxLen, remaining.length);
+
+        if (cutoff < remaining.length) {
+          const windowSize = 200;
+          const windowStart = Math.max(0, cutoff - windowSize);
+          const windowText = remaining.slice(windowStart, cutoff);
+
+          let rel = Math.max(
+            windowText.lastIndexOf(". "),
+            windowText.lastIndexOf("! "),
+            windowText.lastIndexOf("? ")
+          );
+          if (rel !== -1) {
+            cutoff = windowStart + rel + 2; // include punctuation + space
+          } else {
+            const spaceRel = windowText.lastIndexOf(" ");
+            if (spaceRel !== -1) {
+              cutoff = windowStart + spaceRel;
+            }
+          }
+        }
+
+        const addition = remaining.slice(0, cutoff).trimEnd();
+        const leftover = remaining.slice(cutoff).trimStart();
+
+        if (!addition) {
+          item.completed = true;
+          inlineCache.set(key, item);
+          await ctx.answerCallbackQuery({ text: "No further explanation to show.", show_alert: true });
+          return;
+        }
+
+        newAnswer = `${item.answer}\n\n${addition}`.trim();
+        item.cursor = cursor + cutoff;
+        if (!leftover.length || item.cursor >= full.length) {
+          item.completed = true;
+        }
       } else {
-        // Default (quick, research, explain, summarize, chat, etc.)
+        // Default (quick, research, summarize, chat, etc.)
         const systemPrompt =
           "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue. When there is nothing important left to add, end your answer with a line containing only END_OF_INLINE.";
         const maxTokens = 450;
