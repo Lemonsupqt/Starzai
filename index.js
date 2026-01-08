@@ -2283,6 +2283,13 @@ function inlineAnswerKeyboard(key) {
   const transformsUsed = typeof item?.transformsUsed === "number" ? item.transformsUsed : 0;
   const shortLongLocked = !!item?.shortLongLocked;
 
+  // Regen limits per tier (per answer)
+  const regenCount = typeof item?.regenCount === "number" ? item.regenCount : 0;
+  let maxRegen = 1;
+  if (isUltraUser) maxRegen = 3;
+  else if (isPremiumUser) maxRegen = 2;
+  const canRegen = regenCount < maxRegen;
+
   let canShort = false;
   let canLong = false;
 
@@ -2305,9 +2312,10 @@ function inlineAnswerKeyboard(key) {
 
   // Ultra Summary results themselves: special, simpler controls
   if (isSummarize) {
-    const kb = new InlineKeyboard()
-      .switchInlineCurrent("💬 Reply", `c:${key}: `)
-      .text("🔁 Regen", `inl_regen:${key}`);
+    const kb = new InlineKeyboard().switchInlineCurrent("💬 Reply", `c:${key}: `);
+    if (canRegen) {
+      kb.text("🔁 Regen", `inl_regen:${key}`);
+    }
 
     kb.row();
     if (canShort) kb.text("✂️ More concise", `inl_short:${key}`);
@@ -2319,9 +2327,10 @@ function inlineAnswerKeyboard(key) {
     return kb;
   }
 
-  const kb = new InlineKeyboard()
-    .switchInlineCurrent("💬 Reply", `c:${key}: `)
-    .text("🔁 Regen", `inl_regen:${key}`);
+  const kb = new InlineKeyboard().switchInlineCurrent("💬 Reply", `c:${key}: `);
+  if (canRegen) {
+    kb.text("🔁 Regen", `inl_regen:${key}`);
+  }
 
   // Shorter/Longer + Revert row (all non-summary modes)
   kb.row();
@@ -9897,6 +9906,24 @@ async function doInlineTransform(ctx, mode) {
     return;
   }
 
+  // Regen limit check per tier (per answer)
+  if (mode === "regen") {
+    const userRec = getUserRecord(item.userId);
+    const tier = userRec?.tier || "free";
+    if (typeof item.regenCount !== "number") item.regenCount = 0;
+
+    let maxRegen = 1;
+    if (tier === "ultra") maxRegen = 3;
+    else if (tier === "premium") maxRegen = 2;
+
+    if (item.regenCount >= maxRegen) {
+      return ctx.answerCallbackQuery({
+        text: "Regen limit reached for this answer.",
+        show_alert: true,
+      });
+    }
+  }
+
   await ctx.answerCallbackQuery({ text: "Working..." });
 
   try {
@@ -9919,6 +9946,8 @@ async function doInlineTransform(ctx, mode) {
       item.longCount = 0;
       item.transformsUsed = 0;
       item.shortLongLocked = false;
+
+      item.regenCount = (item.regenCount || 0) + 1;
     }
 
     if (mode === "short" || mode === "long") {
