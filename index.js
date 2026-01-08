@@ -2862,11 +2862,6 @@ bot.command("start", async (ctx) => {
     }
   }
 
-  // Activate group if used in group chat
-  if (chatType !== "private") {
-    activateGroup(ctx.chat.id);
-  }
-
   await ctx.reply(buildMainMenuMessage(ctx.from.id), {
     parse_mode: "Markdown",
     reply_markup: mainMenuKeyboard(ctx.from.id),
@@ -2877,11 +2872,6 @@ bot.command("help", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
-  
-  // Activate group if used in group chat
-  if (ctx.chat.type !== "private") {
-    activateGroup(ctx.chat.id);
-  }
   
   await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
 });
@@ -5206,7 +5196,7 @@ bot.callbackQuery("help_features", async (ctx) => {
     "",
     "📡 *Multi-Platform*",
     "• DM - Direct chat with AI",
-    "• Groups - Say \"Starz\" / \"StarzAI\" or reply to the bot",
+    "• Groups - Say \"Starz\" / \"Ai\" or reply to the bot",
     "• Inline - Type @starztechbot anywhere",
   ].join("\n");
   
@@ -5954,6 +5944,13 @@ bot.on("message:text", async (ctx) => {
     console.log(`[MSG] Ignoring command: ${text}`);
     return;
   }
+
+  // Ignore messages that are inline results sent via this bot (via_bot == this bot)
+  // This prevents GC wake words like "Ai" inside inline answers from triggering the bot again.
+  if (msg?.via_bot?.id && BOT_ID && msg.via_bot.id === BOT_ID) {
+    console.log(`[MSG] Ignoring via_bot message from this bot in chat ${chat.id}`);
+    return;
+  }
   
   // Deduplicate - prevent processing same message twice
   const dedupeKey = `${chat.id}:${messageId}`;
@@ -6020,7 +6017,7 @@ bot.on("message:text", async (ctx) => {
   // - When authorized:
   //   • By default, respond only when:
   //       - The message mentions the bot username, or
-  //       - The message contains "Starz" / "StarzAI", or
+  //       - The message contains "Starz" or "Ai", or
   //       - The user replies to the bot, or
   //       - The user has an active character in this chat
   //   • If `/talk` has activated forced-active mode, respond to all messages
@@ -6028,7 +6025,10 @@ bot.on("message:text", async (ctx) => {
 
   if (chat.type !== "private") {
     const lower = text.toLowerCase();
-    const hasWakeWord = /\bstarz(ai)?\b/.test(lower);
+    const hasStarzWake = /\bstarz\b/.test(lower);
+    const hasAiWake = /\bai\b/.test(lower);
+    const hasWakeWord = hasStarzWake || hasAiWake;
+
     const isMentioned = botUsername
       ? lower.includes(`@${botUsername}`) || hasWakeWord
       : hasWakeWord;
