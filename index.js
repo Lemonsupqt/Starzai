@@ -2832,12 +2832,15 @@ bot.command("start", async (ctx) => {
       }
 
       await ctx.reply(
-        "💡 *Feedback Mode* (group)\n\n" +
-          `We detected this group ID: \`${groupId}\`.\n\n` +
-          "Please send *one message* describing the problem (for example why you want it authorized).\n" +
-          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+        "💡 *Feedback Mode* (group)\\n\\n" +
+          `We detected this group ID: \`${groupId}\`.\\n\\n` +
+          "Please send *one message* describing the problem (for example why you want it authorized).\\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
           "_You have 2 minutes. After that, feedback mode will expire._",
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
       return;
     }
@@ -2845,7 +2848,9 @@ bot.command("start", async (ctx) => {
     // Handle feedback deep link
     if (param === "feedback") {
       if (!FEEDBACK_CHAT_ID) {
-        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.", {
+          reply_to_message_id: ctx.message?.message_id,
+        });
       }
       
       const u = ctx.from;
@@ -2853,11 +2858,14 @@ bot.command("start", async (ctx) => {
       
       pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
       return ctx.reply(
-        "💡 *Feedback Mode*\n\n" +
-          "Please send *one message* with your feedback.\n" +
-          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+        "💡 *Feedback Mode*\\n\\n" +
+          "Please send *one message* with your feedback.\\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
           "_You have 2 minutes. After that, feedback mode will expire._",
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
     }
   }
@@ -2865,6 +2873,7 @@ bot.command("start", async (ctx) => {
   await ctx.reply(buildMainMenuMessage(ctx.from.id), {
     parse_mode: "Markdown",
     reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_to_message_id: ctx.message?.message_id,
   });
 });
 
@@ -2873,7 +2882,11 @@ bot.command("help", async (ctx) => {
   if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), {
+    parse_mode: "Markdown",
+    reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // /search command - Web search
@@ -2885,10 +2898,16 @@ bot.command("search", async (ctx) => {
   const query = ctx.message.text.replace(/^\/search\s*/i, "").trim();
   
   if (!query) {
-    return ctx.reply("🔍 <b>Web Search</b>\n\nUsage: <code>/search your query here</code>\n\nExample: <code>/search latest AI news</code>", { parse_mode: "HTML" });
+    return ctx.reply("🔍 <b>Web Search</b>\\n\\nUsage: <code>/search your query here</code>\\n\\nExample: <code>/search latest AI news</code>", {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
-  const statusMsg = await ctx.reply(`🔍 Searching for: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+  const statusMsg = await ctx.reply(`🔍 Searching for: <i>${escapeHTML(query)}</i>...`, {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.message?.message_id,
+  });
   
   try {
     const searchResult = await webSearch(query, 5);
@@ -2932,6 +2951,18 @@ bot.command("websearch", async (ctx) => {
   const u = ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
+  
+  if (!query) {
+    return ctx.reply("🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>", {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
+  
+  const statusMsg = await ctx.reply(`🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`, {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.message?.message_id,
+  });ebsearch\s*/i, "").trim();
   
   if (!query) {
     return ctx.reply("🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>", { parse_mode: "HTML" });
@@ -3002,21 +3033,33 @@ bot.command("register", async (ctx) => {
   if (!(await enforceCommandCooldown(ctx))) return;
 
   const u = ctx.from;
-  if (!u?.id) return ctx.reply("Could not get your user info.");
+  if (!u?.id) {
+    return ctx.reply("Could not get your user info.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
 
   if (getUserRecord(u.id)) {
-    return ctx.reply("✅ You're already registered.", { reply_markup: helpKeyboard() });
+    return ctx.reply("✅ You're already registered.", {
+      reply_markup: helpKeyboard(),
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
 
   registerUser(u);
-  await ctx.reply("✅ Registered! Use /model to choose models.", { reply_markup: helpKeyboard() });
+  await ctx.reply("✅ Registered! Use /model to choose models.", {
+    reply_markup: helpKeyboard(),
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 bot.command("reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
   chatHistory.delete(ctx.chat.id);
-  await ctx.reply("Done. Memory cleared for this chat.");
+  await ctx.reply("Done. Memory cleared for this chat.", {
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // Group activation commands
@@ -3025,11 +3068,16 @@ bot.command("stop", async (ctx) => {
   if (!(await enforceCommandCooldown(ctx))) return;
 
   if (ctx.chat.type === "private") {
-    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   deactivateGroup(ctx.chat.id);
-  await ctx.reply("🚫 Bot is now dormant. Mention me or reply to wake me up!", { parse_mode: "HTML" });
+  await ctx.reply("🚫 Bot is now dormant. Mention me or reply to wake me up!", {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 bot.command("talk", async (ctx) => {
@@ -3037,12 +3085,20 @@ bot.command("talk", async (ctx) => {
   if (!(await enforceCommandCooldown(ctx))) return;
 
   if (ctx.chat.type === "private") {
-    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   activateGroup(ctx.chat.id);
   const remaining = getGroupActiveRemaining(ctx.chat.id);
-  await ctx.reply(`✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`, { parse_mode: "HTML" });
+  await ctx.reply(
+    `✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`,
+    {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /feedback - entrypoint for feedback flow (DM only)
@@ -3051,10 +3107,14 @@ bot.command("feedback", async (ctx) => {
   if (!(await enforceCommandCooldown(ctx))) return;
 
   if (!FEEDBACK_CHAT_ID) {
-    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   if (ctx.chat.type !== "private") {
-    return ctx.reply("💡 Please send feedback in a private chat with me.");
+    return ctx.reply("💡 Please send feedback in a private chat with me.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
 
   const u = ctx.from;
@@ -3062,11 +3122,14 @@ bot.command("feedback", async (ctx) => {
 
   pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "command" });
   await ctx.reply(
-    "💡 *Feedback Mode*\n\n" +
-      "Please send *one message* with your feedback.\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+    "💡 *Feedback Mode*\\n\\n" +
+      "Please send *one message* with your feedback.\\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
-    { parse_mode: "Markdown" }
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
   );
 });
 
@@ -3196,7 +3259,10 @@ ${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
 
 _Keep chatting to grow your stats!_`;
   
-  await ctx.reply(statsMsg, { parse_mode: "Markdown" });
+  await ctx.reply(statsMsg, {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // /persona - Set custom AI personality
@@ -3214,28 +3280,45 @@ bot.command("persona", async (ctx) => {
     const currentPersona = user.persona || "Default (helpful AI assistant)";
     return ctx.reply(
       `🎭 *Custom Persona*\n\nCurrent: _${currentPersona}_\n\n*Usage:*\n\`/persona friendly teacher\`\n\`/persona sarcastic comedian\`\n\`/persona wise philosopher\`\n\`/persona reset\` - Back to default\n\n_Your persona affects all AI responses!_`,
-      { parse_mode: "Markdown" }
+      {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      }
     );
   }
   
   if (args.toLowerCase() === "reset") {
     delete user.persona;
     saveUsers();
-    return ctx.reply("✅ Persona reset to default helpful AI assistant!");
+    return ctx.reply("✅ Persona reset to default helpful AI assistant!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   // Set new persona
   user.persona = args.slice(0, 100); // Limit to 100 chars
   saveUsers();
   
-  await ctx.reply(`✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`, { parse_mode: "Markdown" });
+  await ctx.reply(
+    `✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`,
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /history - DISABLED: History feature removed to prevent database bloat
 bot.command("history", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
-  return ctx.reply("⚠️ *History feature has been disabled*\\n\\nThis feature has been removed to optimize database performance and reduce storage costs.\\n\\n_You can still use inline mode by typing @starztechbot in any chat!_", { parse_mode: "Markdown" });
+  return ctx.reply(
+    "⚠️ *History feature has been disabled*\\n\\nThis feature has been removed to optimize database performance and reduce storage costs.\\n\\n_You can still use inline mode by typing @starztechbot in any chat!_",
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /partner - Manage your AI partner
@@ -3253,60 +3336,129 @@ bot.command("partner", async (ctx) => {
   
   // No subcommand - show partner setup with checklist buttons
   if (!subcommand) {
-    return ctx.reply(
-      buildPartnerSetupMessage(partner),
-      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-    );
+    return ctx.reply(buildPartnerSetupMessage(partner), {
+      parse_mode: "Markdown",
+      reply_markup: buildPartnerKeyboard(partner),
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   // Subcommands
   switch (subcommand) {
     case "name":
-      if (!value) return ctx.reply("❌ Please provide a name: `/partner name Luna`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply("❌ Please provide a name: `/partner name Luna`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
       setPartner(u.id, { name: value.slice(0, 50) });
-      return ctx.reply(`✅ Partner name set to: *${value.slice(0, 50)}*`, { parse_mode: "Markdown" });
+      return ctx.reply(`✅ Partner name set to: *${value.slice(0, 50)}*`, {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "personality":
-      if (!value) return ctx.reply("❌ Please provide personality traits: `/partner personality cheerful, witty, caring`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide personality traits: `/partner personality cheerful, witty, caring`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { personality: value.slice(0, 200) });
-      return ctx.reply(`✅ Partner personality set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner personality set to: _${value.slice(0, 200)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "background":
-      if (!value) return ctx.reply("❌ Please provide a background: `/partner background A mysterious traveler from another dimension`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide a background: `/partner background A mysterious traveler from another dimension`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { background: value.slice(0, 300) });
-      return ctx.reply(`✅ Partner background set to: _${value.slice(0, 300)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner background set to: _${value.slice(0, 300)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "style":
-      if (!value) return ctx.reply("❌ Please provide a speaking style: `/partner style speaks softly with poetic phrases`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide a speaking style: `/partner style speaks softly with poetic phrases`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { style: value.slice(0, 200) });
-      return ctx.reply(`✅ Partner speaking style set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner speaking style set to: _${value.slice(0, 200)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "chat":
       if (!partner?.name) {
-        return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]` to start.", { parse_mode: "Markdown" });
+        return ctx.reply(
+          "❌ Please set up your partner first! Use `/partner name [name]` to start.",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       }
       setPartner(u.id, { active: true });
-      return ctx.reply(`🤝🏻 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\n\n_Use \`/partner stop\` to end the conversation._`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `🤝🏻 *Partner mode activated!*\\n\\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\\n\\n_Use \`/partner stop\` to end the conversation._`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "stop":
       if (partner) {
         setPartner(u.id, { active: false });
       }
-      return ctx.reply("⏹ Partner mode deactivated. Normal AI responses resumed.");
+      return ctx.reply("⏹ Partner mode deactivated. Normal AI responses resumed.", {
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "clearchat":
       clearPartnerChat(u.id);
-      return ctx.reply("🗑 Partner chat history cleared. Starting fresh!");
+      return ctx.reply("🗑 Partner chat history cleared. Starting fresh!", {
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "clear":
     case "delete":
       clearPartner(u.id);
-      return ctx.reply("❌ Partner deleted. Use `/partner` to create a new one.", { parse_mode: "Markdown" });
+      return ctx.reply("❌ Partner deleted. Use `/partner` to create a new one.", {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     default:
       return ctx.reply(
-        `❓ Unknown subcommand: \`${subcommand}\`\n\n*Available:* name, personality, background, style, chat, stop, clearchat, clear`,
-        { parse_mode: "Markdown" }
+        `❓ Unknown subcommand: \`${subcommand}\`\\n\\n*Available:* name, personality, background, style, chat, stop, clearchat, clear`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
   }
 });
@@ -3327,6 +3479,60 @@ bot.command("char", async (ctx) => {
   const savedChars = getSavedCharacters(u.id);
   
   // No subcommand - show character status and help with button list
+  if (!subcommand) {
+    const statusText = activeChar 
+      ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\\n\\n`
+      : "🎭 <b>No active character</b>\\n\\n";
+    
+    const savedList = savedChars.length > 0
+      ? `💾 <b>Saved Characters:</b>\\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\\n")}\\n\\n`
+      : "";
+    
+    const helpText = [
+      statusText,
+      savedList,
+      "<b>Commands:</b>",
+      "• /char yoda - Start as Yoda",
+      "• /char save yoda - Save character",
+      "• /char list - Show saved",
+      "• /char remove yoda - Remove saved",
+      "• /char stop or /default - Stop character mode",
+      "",
+      "<i>Tap a character button below to start!</i>",
+    ].join("\\n");
+    
+    return ctx.reply(helpText, { 
+      parse_mode: "HTML",
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
+  
+  // Subcommands
+  switch (subcommand) {
+    case "save": {
+      if (!value)
+        return ctx.reply("❌ Please provide a character name: `/char save yoda`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
+      const result = saveCharacter(u.id, value);
+      const emoji = result.success ? "✅" : "❌";
+      return ctx.reply(`${emoji} ${result.message}`, {
+        reply_to_message_id: ctx.message?.message_id,
+      });
+    }
+    
+    case "list": {
+      if (savedChars.length === 0) {
+        return ctx.reply(
+          "💾 *No saved characters yet!*\\n\\nUse `/char save [name]` to save one.",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
+      }haracter status and help with button list
   if (!subcommand) {
     const statusText = activeChar 
       ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
@@ -3394,14 +3600,23 @@ bot.command("char", async (ctx) => {
         return ctx.reply("❌ No active character in this chat.");
       }
       clearActiveCharacter(u.id, chat.id);
-      return ctx.reply(`⏹ Character mode stopped. ${activeChar.name} has left the chat.\n\n_Normal AI responses resumed._`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `⏹ Character mode stopped. ${activeChar.name} has left the chat.\n\n_Normal AI responses resumed._`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
     }
     
     default: {
       // Assume it's a character name to activate
       const characterName = args.join(" ").trim();
       if (!characterName) {
-        return ctx.reply("❌ Please provide a character name: `/char yoda`", { parse_mode: "Markdown" });
+        return ctx.reply("❌ Please provide a character name: `/char yoda`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
       }
       
       setActiveCharacter(u.id, chat.id, characterName);
@@ -3409,7 +3624,10 @@ bot.command("char", async (ctx) => {
       const chatType = chat.type === "private" ? "DM" : "group";
       return ctx.reply(
         `🎭 *${characterName}* is now active in this ${chatType}!\n\nJust send messages and they'll respond in character.\n\n_Use \`/char stop\` to end._`,
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
     }
   }
@@ -3426,11 +3644,19 @@ bot.command("default", async (ctx) => {
   const activeChar = getActiveCharacter(u.id, chat.id);
   
   if (!activeChar) {
-    return ctx.reply("✅ Already in default mode. No active character.");
+    return ctx.reply("✅ Already in default mode. No active character.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   clearActiveCharacter(u.id, chat.id);
-  return ctx.reply(`⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\\n\\n<i>Normal AI responses resumed.</i>`, { parse_mode: "HTML" });
+  return ctx.reply(
+    `⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\n\n<i>Normal AI responses resumed.</i>`,
+    {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // Build character selection keyboard
@@ -3877,8 +4103,12 @@ bot.command("model", async (ctx) => {
   const current = ensureChosenModelValid(ctx.from.id);
 
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
-    { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    `👤 Plan: *${u.tier.toUpperCase()}*\\n🤖 Current: \`${current}\`\\n\\nSelect a category:`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: modelCategoryKeyboard(u.tier),
+      reply_to_message_id: ctx.message?.message_id,
+    }
   );
 });
 
@@ -3919,7 +4149,10 @@ bot.command("whoami", async (ctx) => {
     `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
   ];
 
-  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+  await ctx.reply(lines.join("\n"), {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // =====================
