@@ -2236,6 +2236,17 @@ function inlineAnswerKeyboard(key) {
   const isCode = mode === "code";
   const isCompleted = Boolean(item?.completed);
 
+  // Summary results: special, simpler controls
+  if (isSummarize) {
+    const kb = new InlineKeyboard()
+      .switchInlineCurrent("💬 Reply", `c:${key}: `)
+      .text("🔁 Regen", `inl_regen:${key}`)
+      .row()
+      .text("✂️ More concise", `inl_short:${key}`)
+      .text("📚 More detail", `inl_long:${key}`);
+    return kb;
+  }
+
   const kb = new InlineKeyboard()
     .switchInlineCurrent("💬 Reply", `c:${key}: `)
     .text("🔁 Regen", `inl_regen:${key}`)
@@ -2243,9 +2254,8 @@ function inlineAnswerKeyboard(key) {
     .text("✂️ Shorter", `inl_short:${key}`)
     .text("📈 Longer", `inl_long:${key}`);
 
-  // Quark: no Continue at all (answers are intentionally short)
-  // Summarize results themselves: one-shot; no Continue / Ultra Summary from here.
-  if (isQuark || isSummarize) {
+  // Quark: no Continue or Ultra Summary (already one-shot)
+  if (isQuark) {
     return kb;
   }
 
@@ -2254,16 +2264,16 @@ function inlineAnswerKeyboard(key) {
     if (!isCompleted) {
       kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
     } else {
-      // Once full analysis is done, offer an Ultra Summary as a new inline message.
-      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
+      // Once full analysis is done, offer Ultra Summary as an inline transform (callback).
+      kb.row().text("🧾 Ultra Summary", `inl_sum:${key}`);
     }
   } else if (isExplain || isCode) {
     // Explain & Code: callback-based continuation while incomplete.
     if (!isCompleted) {
       kb.row().text("➡️ Continue", `inl_cont:${key}`);
     } else {
-      // When fully revealed, provide Ultra Summary as a separate inline result.
-      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
+      // When fully revealed, provide Ultra Summary via callback.
+      kb.row().text("🧾 Ultra Summary", `inl_sum:${key}`);
     }
   } else {
     // Other modes (quick, research, chat, etc.): standard Continue while available.
@@ -8095,159 +8105,6 @@ bot.on("inline_query", async (ctx) => {
     ], { cache_time: 0, is_personal: true });
   }
 
-  // "ultrasum KEY" - Ultra Summary for Blackhole / Explain / Code as a new inline message
-  if (qLower.startsWith("ultrasum")) {
-    const parts = q.split(/\s+/);
-    const sumKey = (parts[1] || "").trim();
-
-    if (!sumKey) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_hint_${sessionKey}`,
-          title: "🧾 Ultra Summary",
-          description: "Tap Ultra Summary under a completed answer to use this.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
-          input_message_content: { message_text: "_" },
-          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    const baseItem = inlineCache.get(sumKey);
-    if (!baseItem) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_expired_${sessionKey}`,
-          title: "⚠️ Session expired",
-          description: "The original answer is no longer available.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    if (String(userId) !== String(baseItem.userId)) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_denied_${sessionKey}`,
-          title: "🚫 Not your session",
-          description: "Only the original requester can summarize.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    const mode = baseItem.mode || "default";
-    const supported = mode === "blackhole" || mode === "explain" || mode === "code";
-    if (!supported) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_unsupported_${sessionKey}`,
-          title: "🧾 Ultra Summary not available",
-          description: "This answer type does not support Ultra Summary.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/info.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    if (!baseItem.completed) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_incomplete_${sessionKey}`,
-          title: "🧾 Ultra Summary",
-          description: "Finish the answer first, then summarize.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    const full = (baseItem.fullAnswer || baseItem.answer || "").trim();
-    if (!full || full.length < 50) {
-      return safeAnswerInline(ctx, [
-        {
-          type: "article",
-          id: `ultrasum_tooshort_${sessionKey}`,
-          title: "🧾 Ultra Summary",
-          description: "Answer is too short to summarize.",
-          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
-          input_message_content: { message_text: "_" },
-        },
-      ], { cache_time: 0, is_personal: true });
-    }
-
-    const modelForSum = baseItem.model || ensureChosenModelValid(userId);
-    const shortModel = modelForSum.split("/").pop();
-    const summaryInput = full.slice(0, 12000);
-
-    let systemPrompt = "Summarize the content below into a concise, well-structured overview. Use short paragraphs and bullet points for key ideas. Focus on the most important information.";
-    let titlePrefix = "Ultra Summary";
-    let icon = "🧾 ";
-    let thumbnail = "https://img.icons8.com/fluency/96/survey.png";
-
-    if (mode === "blackhole") {
-      systemPrompt =
-        "You are summarizing a long research-style answer. Provide a concise, structured overview in 6–12 bullet points. Capture main arguments, key evidence, and final conclusions. Avoid repeating long quotes.";
-      const partsCount = baseItem.part || 1;
-      titlePrefix = `Ultra Summary of Blackhole (${partsCount} part${partsCount > 1 ? "s" : ""})`;
-      icon = "🗿🔬 ";
-      thumbnail = "https://img.icons8.com/fluency/96/black-hole.png";
-    } else if (mode === "code") {
-      systemPrompt =
-        "Summarize the programming answer. Describe the purpose of the code, the main steps, and how to use it. Mention languages and key functions or modules. Do not repeat long code snippets.";
-      titlePrefix = "Ultra Summary of Code Answer";
-      icon = "💻 ";
-      thumbnail = "https://img.icons8.com/fluency/96/source-code.png";
-    } else if (mode === "explain") {
-      systemPrompt =
-        "Summarize the explanation in 3–7 short bullet points so it's easy to scan. Keep it simple and focused on the core ideas.";
-      titlePrefix = "Ultra Summary of Explanation";
-      icon = "🧠 ";
-      thumbnail = "https://img.icons8.com/fluency/96/brain.png";
-    }
-
-    const summaryOut = await llmText({
-      model: modelForSum,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
-      ],
-      temperature: 0.4,
-      max_tokens: 420,
-    });
-
-    const summary = (summaryOut || "No summary available.").slice(0, 2000);
-    const formattedSummary = convertToTelegramHTML(summary);
-    const escapedPrompt = escapeHTML(baseItem.prompt || "");
-    const header =
-      mode === "blackhole"
-        ? `${icon}<b>${titlePrefix}: ${escapedPrompt}</b>`
-        : `${icon}<b>${titlePrefix}</b>${escapedPrompt ? `: ${escapedPrompt}` : ""}`;
-
-    const articleId = `ultrasum_${makeId(6)}`;
-
-    return safeAnswerInline(ctx, [
-      {
-        type: "article",
-        id: articleId,
-        title: "🧾 Ultra Summary",
-        description: summary.replace(/\s+/g, " ").slice(0, 80),
-        thumbnail_url: thumbnail,
-        input_message_content: {
-          message_text: `${header}\n\n${formattedSummary}\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
-          parse_mode: "HTML",
-        },
-      },
-    ], { cache_time: 0, is_personal: true });
-  }
-
   // "chat:" prefix - interactive chat mode
   if (q.startsWith("chat:")) {
     const userMessage = q.slice(5).trim();
@@ -9469,6 +9326,96 @@ async function doInlineTransform(ctx, mode) {
         temperature: 0.7,
         max_tokens: 420,
       });
+    }
+
+    if (mode === "sum") {
+      const itemMode = item.mode || "default";
+
+      // Only summarize when the underlying answer is fully complete.
+      if ((itemMode === "blackhole" || itemMode === "explain" || itemMode === "code") && !item.completed) {
+        await ctx.answerCallbackQuery({
+          text: "Finish the answer first, then summarize.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      const full = (item.fullAnswer || item.answer || "").trim();
+      if (!full || full.length < 50) {
+        await ctx.answerCallbackQuery({
+          text: "Answer is too short to summarize.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      const summaryInput = full.slice(0, 12000);
+      let systemPrompt =
+        "Summarize the content below into a concise, well-structured overview. Use short paragraphs and bullet points for key ideas. Focus on the most important information.";
+      let titlePrefix = "Ultra Summary";
+      let icon = "🧾 ";
+      let headerPrompt = item.prompt || "";
+      if (itemMode === "blackhole") {
+        systemPrompt =
+          "You are summarizing a long research-style answer. Provide a concise, structured overview in 6–12 bullet points. Capture main arguments, key evidence, and final conclusions. Avoid repeating long quotes.";
+        const parts = item.part || 1;
+        titlePrefix = `Ultra Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
+        icon = "🗿🔬 ";
+      } else if (itemMode === "code") {
+        systemPrompt =
+          "Summarize the programming answer. Describe the purpose of the code, the main steps, and how to use it. Mention languages and key functions or modules. Do not repeat long code snippets.";
+        titlePrefix = "Ultra Summary of Code Answer";
+        icon = "💻 ";
+      } else if (itemMode === "explain") {
+        systemPrompt =
+          "Summarize the explanation in 3–7 short bullet points so it's easy to scan. Keep it simple and focused on the core ideas.";
+        titlePrefix = "Ultra Summary of Explanation";
+        icon = "🧠 ";
+      }
+
+      const summaryOut = await llmText({
+        model: item.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
+        ],
+        temperature: 0.4,
+        max_tokens: 420,
+      });
+
+      const summary = (summaryOut || "No summary available.").slice(0, 2000);
+      const newKey = makeId(6);
+      const shortModel = (item.model || "").split("/").pop() || "";
+
+      inlineCache.set(newKey, {
+        prompt: headerPrompt,
+        answer: summary,
+        fullAnswer: summary,
+        userId: item.userId,
+        model: item.model,
+        mode: "summarize",
+        completed: true,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      const formatted = convertToTelegramHTML(summary);
+      const escapedPrompt = escapeHTML(headerPrompt);
+      const title =
+        itemMode === "blackhole"
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : escapedPrompt
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : titlePrefix;
+
+      await ctx.editMessageText(
+        `${icon}<b>${title}</b>\n\n${formatted}\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      return;
     }
 
     if (mode === "cont") {
