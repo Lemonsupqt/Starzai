@@ -8839,30 +8839,46 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
   
-  // Helper to avoid cutting code blocks in the middle for Code mode answers
+  // Helper to avoid cutting code blocks in the middle for Code mode answers.
+  // We try to cut AFTER the last complete fenced block (``` ... ```) that fits
+  // within maxLen. If none, we fall back to cutting at a newline near maxLen.
   function splitCodeAnswerForDisplay(full, maxLen = 3500) {
     if (!full) return { visible: "", remaining: "", completed: true };
     if (full.length <= maxLen) {
       return { visible: full, remaining: "", completed: true };
     }
 
-    let cutoff = maxLen;
     const fence = "```";
-    const lastFenceBeforeCut = full.lastIndexOf(fence, maxLen);
-    const lastFenceOverall = full.lastIndexOf(fence);
+    const positions = [];
+    let idx = 0;
+    while (true) {
+      const found = full.indexOf(fence, idx);
+      if (found === -1) break;
+      positions.push(found);
+      idx = found + fence.length;
+    }
 
-    if (lastFenceBeforeCut !== -1) {
-      const countFences = (full.slice(0, cutoff).match(/```/g) || []).length;
-      // If we are inside an open fence (odd count), move back to before that fence
-      if (countFences % 2 === 1) {
-        cutoff = lastFenceBeforeCut;
+    let cutoff = maxLen;
+
+    if (positions.length >= 2) {
+      // Pair fences as open/close in order.
+      for (let i = 0; i + 1 < positions.length; i += 2) {
+        const openIdx = positions[i];
+        const closeIdx = positions[i + 1] + fence.length; // include closing fence
+        if (closeIdx <= maxLen) {
+          cutoff = Math.max(cutoff, closeIdx);
+        } else {
+          break;
+        }
       }
     }
 
-    // Also try to avoid splitting right before a second large block when possible
-    if (lastFenceOverall > 0 && lastFenceOverall > cutoff && lastFenceBeforeCut > 0) {
-      // keep everything up to before the second block if it's not too short
-      cutoff = Math.max(cutoff, lastFenceBeforeCut);
+    // Fallback: avoid cutting in the middle of a line if we didn't find a good fence.
+    if (cutoff === maxLen) {
+      const lastNewline = full.lastIndexOf("\n", maxLen);
+      if (lastNewline > 0) {
+        cutoff = lastNewline;
+      }
     }
 
     const visible = full.slice(0, cutoff).trimEnd();
