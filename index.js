@@ -72,6 +72,9 @@ if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 // =====================
 const bot = new Bot(BOT_TOKEN);
 
+let BOT_ID = null;
+let BOT_USERNAME = "";
+
 const openai = new OpenAI({
   baseURL: "https://ai.megallm.io/v1",
   apiKey: MEGALLM_API_KEY,
@@ -418,81 +421,7 @@ function isGroupAuthorized(chatId) {
 }
 
 // Active inline message tracking (for editing)
-const activeInlineMessages = new Map(); // sessionKey -> inline_message_id
-
-// Pending shared chat input (user clicked Ask AI, waiting for their message)
-const pendingSharedInput = new Map(); // oderId -> { chatKey, userName, inlineMessageId, timestamp }
-
-// =====================
-// SHARED INLINE CHAT SESSIONS
-// These are keyed by inline_message_id so multiple users can participate
-// =====================
-const sharedChatSessions = new Map(); // chatKey -> { history: [], model, createdBy, createdAt, participants: Set }
-
-function getSharedChat(chatKey) {
-  return sharedChatSessions.get(chatKey) || null;
-}
-
-function createSharedChat(chatKey, creatorId, creatorName, model) {
-  const session = {
-    history: [],
-    model: model,
-    createdBy: creatorId,
-    createdByName: creatorName,
-    createdAt: Date.now(),
-    participants: new Set([String(creatorId)]),
-    lastActive: Date.now(),
-    inlineMessageId: null, // Will be set when message is sent
-  };
-  sharedChatSessions.set(chatKey, session);
-  return session;
-}
-
-function setSharedChatInlineMessageId(chatKey, inlineMessageId) {
-  const session = sharedChatSessions.get(chatKey);
-  if (session) {
-    session.inlineMessageId = inlineMessageId;
-  }
-}
-
-function addToSharedChat(chatKey, userId, userName, role, content) {
-  const session = sharedChatSessions.get(chatKey);
-  if (!session) return null;
-  
-  session.participants.add(String(userId));
-  session.history.push({ 
-    role, 
-    content, 
-    userId: String(userId),
-    userName: userName || "User",
-    timestamp: Date.now()
-  });
-  
-  // Keep last 30 messages
-  while (session.history.length > 30) session.history.shift();
-  session.lastActive = Date.now();
-  
-  return session;
-}
-
-function clearSharedChat(chatKey) {
-  const session = sharedChatSessions.get(chatKey);
-  if (session) {
-    session.history = [];
-    session.lastActive = Date.now();
-  }
-  return session;
-}
-
-// Clean up old shared sessions (older than 1 hour)
-setInterval(() => {
-  const oneHourAgo = Date.now() - 60 * 60 * 1000;
-  for (const [key, session] of sharedChatSessions) {
-    if (session.lastActive < oneHourAgo) {
-      sharedChatSessions.delete(key);
-    }
-  }
-}, 10 * 60 * 1000); // Check every 10 minutes
+const activeInlineMessages = new Map(); // sessionKey -&gt; inline_message_id
 
 function nowMs() {
   return Date.now();
@@ -565,13 +494,20 @@ function checkRateLimit(ctx) {
 }
 
 async function enforceRateLimit(ctx) {
+  const fromId = ctx.from?.id;
+  if (fromId && OWNER_IDS.has(String(fromId))) {
+    // Owners are not rate-limited
+    return true;
+  }
+
   const r = checkRateLimit(ctx);
   if (r.ok) return true;
 
   const msg = `Rate limit hit. Try again in ~${r.waitSec}s.`;
 
   if (ctx.inlineQuery) {
-    await safeAnswerInline(ctx,
+    await safeAnswerInline(
+      ctx,
       [
         {
           type: "article",
@@ -589,6 +525,66 @@ async function enforceRateLimit(ctx) {
     await ctx.reply(msg);
   }
   return false;
+}
+
+// Per-tier command cooldowns (slash commands only)
+const commandCooldown = new Map(); // userId -> last command timestamp (ms)
+
+function getTierForCooldown(user, userId) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) return "owner";
+  const t = user?.tier || "free";
+  if (t === "premium" || t === "ultra" || t === "free") return t;
+  return "free";
+}
+
+function getCommandCooldownSecondsForTier(tier) {
+  if (tier === "owner") return 0;
+  if (tier === "ultra") return 10;
+  if (tier === "premium") return 30;
+  // free and unknown default
+  return 60;
+}
+
+async function enforceCommandCooldown(ctx) {
+  const from = ctx.from;
+  const userId = from?.id ? String(from.id) : null;
+  if (!userId) return true;
+
+  // Owners: no command cooldown
+  if (OWNER_IDS.has(userId)) {
+    return true;
+  }
+
+  const user = getUserRecord(userId) || ensureUser(userId, from);
+  const tier = getTierForCooldown(user, userId);
+  const cooldownSec = getCommandCooldownSecondsForTier(tier);
+  if (cooldownSec <= 0) {
+    return true;
+  }
+
+  const cooldownMs = cooldownSec * 1000;
+  const now = nowMs();
+  const last = commandCooldown.get(userId) || 0;
+  const elapsed = now - last;
+
+  if (last && elapsed < cooldownMs) {
+    const remainingSec = Math.ceil((cooldownMs - elapsed) / 1000);
+    const msg = `⏱️ Command cooldown: wait ~${remainingSec}s before using another command.`;
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+      } else {
+        await ctx.reply(msg);
+      }
+    } catch {
+      // Ignore notification errors
+    }
+    return false;
+  }
+
+  commandCooldown.set(userId, now);
+  return true;
 }
 
 // =====================
@@ -766,31 +762,29 @@ async function handleSpamDetection(ctx, spamResult, userId) {
   
   // Auto-mute after threshold
   if (record.spamCount >= SPAM_CONFIG.AUTO_MUTE_THRESHOLD) {
-    const muteUntil = nowMs + (SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000);
+    const durationMs = SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000;
+    const autoReason = `${spamResult.reason} (automatic spam detection)`;
     
-    // Add to muted users
-    const muteEntry = {
-      reason: "Automatic spam detection",
-      until: muteUntil,
-      by: "system",
-      scope: "all"
-    };
-    
-    if (!mutedUsers.has(String(userId))) {
-      mutedUsers.set(String(userId), muteEntry);
-    }
+    // Apply a regular mute using the global mute system
+    const { until } = applyMuteToUser(
+      String(userId),
+      durationMs,
+      "all",
+      autoReason,
+      "system"
+    );
     
     // Reset spam count
     record.spamCount = 0;
     
     // Notify user
     try {
-      const untilDate = new Date(muteUntil).toLocaleString();
+      const untilDate = until ? new Date(until).toLocaleString() : "unknown";
       await ctx.reply(
-        `🚫 *Auto-Muted for Spam*\n\n` +
-        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\n\n` +
-        `Reason: ${spamResult.reason}\n` +
-        `Mute expires: ${untilDate}\n\n` +
+        `🚫 *Auto-Muted for Spam*\\n\\n` +
+        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\\n\\n` +
+        `Reason: ${spamResult.reason}\\n` +
+        `Mute expires: ${untilDate}\\n\\n` +
         `_Please avoid spamming to use the bot._`,
         { parse_mode: "Markdown" }
       );
@@ -807,9 +801,9 @@ async function handleSpamDetection(ctx, spamResult, userId) {
     
     try {
       await ctx.reply(
-        `⚠️ *Spam Warning*\n\n` +
-        `${spamResult.reason}\n\n` +
-        `Please slow down or you will be automatically muted.\n` +
+        `⚠️ *Spam Warning*\\n\\n` +
+        `${spamResult.reason}\\n\\n` +
+        `Please slow down or you will be automatically muted.\\n` +
         `(Warning ${record.spamCount}/${SPAM_CONFIG.AUTO_MUTE_THRESHOLD})`,
         { parse_mode: "Markdown" }
       );
@@ -2316,7 +2310,12 @@ function helpText() {
     "• /char — Quick character roleplay",
     "• /persona — Set AI personality",
     "• /stats — Your usage statistics",
+    "• /search — Web search (raw results)",
+    "• /websearch — AI web search with summary",
     FEEDBACK_CHAT_ID ? "• /feedback — Send feedback to the StarzAI team" : "",
+    "",
+    "🕐 *Time & Date*",
+    "• Ask things like: `what's the time in Tokyo?`, `current date in London`",
     "",
     "⌨️ *Inline Modes* (type @starztechbot)",
     "• `q:` — ⭐ Quark (quick answers)",
@@ -2695,58 +2694,7 @@ function inlineModelSelectKeyboard(sessionKey, userId) {
   return kb;
 }
 
-// =====================
-// SHARED CHAT UI (Multi-user inline chat)
-// =====================
-const MESSAGES_PER_PAGE = 6;
 
-function formatSharedChatDisplay(session, page = -1) {
-  const history = session.history || [];
-  const model = session.model || "gpt-4o-mini";
-  const participantCount = session.participants?.size || 1;
-  
-  // Calculate total pages
-  const totalPages = Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
-  
-  // -1 means last page (default)
-  if (page === -1 || page > totalPages) page = totalPages;
-  if (page < 1) page = 1;
-  
-  let display = `🤖 *StarzAI Yap*\n`;
-  display += `👥 ${participantCount} participant${participantCount > 1 ? "s" : ""} • 📊 \`${model.split("/").pop()}\``;
-  
-  // Show page indicator if multiple pages
-  if (totalPages > 1) {
-    display += ` • 📄 ${page}/${totalPages}`;
-  }
-  display += `\n━━━━━━━━━━━━━━━\n\n`;
-  
-  if (history.length === 0) {
-    display += `_No messages yet._\n_Reply to this message to chat!_`;
-  } else {
-    // Get messages for this page
-    const startIdx = (page - 1) * MESSAGES_PER_PAGE;
-    const endIdx = startIdx + MESSAGES_PER_PAGE;
-    const pageHistory = history.slice(startIdx, endIdx);
-    
-    for (const msg of pageHistory) {
-      if (msg.role === "user") {
-        const name = msg.userName || "User";
-        display += `👤 *${name}:* ${msg.content.slice(0, 150)}${msg.content.length > 150 ? "..." : ""}\n\n`;
-      } else {
-        display += `🤖 *AI:* ${msg.content.slice(0, 300)}${msg.content.length > 300 ? "..." : ""}\n\n`;
-      }
-    }
-  }
-  
-  display += `━━━━━━━━━━━━━━━`;
-  return display.slice(0, 3800);
-}
-
-function getSharedChatPageCount(session) {
-  const history = session?.history || [];
-  return Math.max(1, Math.ceil(history.length / MESSAGES_PER_PAGE));
-}
 
 // =====================
 // SETTINGS MENU KEYBOARDS (for editable inline message)
@@ -2797,35 +2745,7 @@ function settingsCategoryKeyboard(category, userId, currentModel) {
   return kb;
 }
 
-function sharedChatKeyboard(chatKey, page = -1, totalPages = 1) {
-  const kb = new InlineKeyboard();
-  
-  // -1 means last page
-  if (page === -1) page = totalPages;
-  
-  // Page navigation (only if multiple pages)
-  if (totalPages > 1) {
-    if (page > 1) {
-      kb.text("◀️ Prev", `schat_page:${chatKey}:${page - 1}`);
-    }
-    kb.text(`📄 ${page}/${totalPages}`, `schat_noop`);
-    if (page < totalPages) {
-      kb.text("Next ▶️", `schat_page:${chatKey}:${page + 1}`);
-    }
-    kb.row();
-  }
-  
-  // Main action - Ask AI via inline query
-  kb.switchInlineCurrent("💬 Reply", `yap:${chatKey}: `);
-  kb.text("🔁 Regen", `schat_regen:${chatKey}`);
-  kb.row();
-  
-  // Secondary actions
-  kb.text("🔄 Refresh", `schat_refresh:${chatKey}`)
-    .text("🗑️ Clear", `schat_clear:${chatKey}`);
-  
-  return kb;
-}
+
 
 // Inline settings keyboard - shows model categories
 function inlineSettingsCategoryKeyboard(sessionKey, userId) {
@@ -2889,6 +2809,7 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
 // =====================
 bot.command("start", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
 
   const chatType = ctx.chat.type;
@@ -2911,12 +2832,15 @@ bot.command("start", async (ctx) => {
       }
 
       await ctx.reply(
-        "💡 *Feedback Mode* (group)\n\n" +
-          `We detected this group ID: \`${groupId}\`.\n\n` +
-          "Please send *one message* describing the problem (for example why you want it authorized).\n" +
-          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+        "💡 *Feedback Mode* (group)\\n\\n" +
+          `We detected this group ID: \`${groupId}\`.\\n\\n` +
+          "Please send *one message* describing the problem (for example why you want it authorized).\\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
           "_You have 2 minutes. After that, feedback mode will expire._",
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
       return;
     }
@@ -2924,7 +2848,9 @@ bot.command("start", async (ctx) => {
     // Handle feedback deep link
     if (param === "feedback") {
       if (!FEEDBACK_CHAT_ID) {
-        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+        return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.", {
+          reply_to_message_id: ctx.message?.message_id,
+        });
       }
       
       const u = ctx.from;
@@ -2932,50 +2858,56 @@ bot.command("start", async (ctx) => {
       
       pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "deeplink" });
       return ctx.reply(
-        "💡 *Feedback Mode*\n\n" +
-          "Please send *one message* with your feedback.\n" +
-          "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+        "💡 *Feedback Mode*\\n\\n" +
+          "Please send *one message* with your feedback.\\n" +
+          "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
           "_You have 2 minutes. After that, feedback mode will expire._",
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
     }
-  }
-
-  // Activate group if used in group chat
-  if (chatType !== "private") {
-    activateGroup(ctx.chat.id);
   }
 
   await ctx.reply(buildMainMenuMessage(ctx.from.id), {
     parse_mode: "Markdown",
     reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_to_message_id: ctx.message?.message_id,
   });
 });
 
 bot.command("help", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
-  // Activate group if used in group chat
-  if (ctx.chat.type !== "private") {
-    activateGroup(ctx.chat.id);
-  }
-  
-  await ctx.reply(buildMainMenuMessage(ctx.from.id), { parse_mode: "Markdown", reply_markup: mainMenuKeyboard(ctx.from.id) });
+  await ctx.reply(buildMainMenuMessage(ctx.from.id), {
+    parse_mode: "Markdown",
+    reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // /search command - Web search
 bot.command("search", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/search\s*/i, "").trim();
   
   if (!query) {
-    return ctx.reply("🔍 <b>Web Search</b>\n\nUsage: <code>/search your query here</code>\n\nExample: <code>/search latest AI news</code>", { parse_mode: "HTML" });
+    return ctx.reply("🔍 <b>Web Search</b>\\n\\nUsage: <code>/search your query here</code>\\n\\nExample: <code>/search latest AI news</code>", {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
-  const statusMsg = await ctx.reply(`🔍 Searching for: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+  const statusMsg = await ctx.reply(`🔍 Searching for: <i>${escapeHTML(query)}</i>...`, {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.message?.message_id,
+  });
   
   try {
     const searchResult = await webSearch(query, 5);
@@ -3015,15 +2947,28 @@ bot.command("search", async (ctx) => {
 // /websearch command - Search and get AI summary
 bot.command("websearch", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
   
   if (!query) {
-    return ctx.reply("🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>", { parse_mode: "HTML" });
+    return ctx.reply(
+      "🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>",
+      {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      }
+    );
   }
   
-  const statusMsg = await ctx.reply(`🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`, { parse_mode: "HTML" });
+  const statusMsg = await ctx.reply(
+    `🔍 Searching and analyzing: <i>${escapeHTML(query)}</i>...`,
+    {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
   
   try {
     // Search the web
@@ -3085,51 +3030,91 @@ bot.command("websearch", async (ctx) => {
 
 bot.command("register", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
 
   const u = ctx.from;
-  if (!u?.id) return ctx.reply("Could not get your user info.");
+  if (!u?.id) {
+    return ctx.reply("Could not get your user info.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
 
   if (getUserRecord(u.id)) {
-    return ctx.reply("✅ You're already registered.", { reply_markup: helpKeyboard() });
+    return ctx.reply("✅ You're already registered.", {
+      reply_markup: helpKeyboard(),
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
 
   registerUser(u);
-  await ctx.reply("✅ Registered! Use /model to choose models.", { reply_markup: helpKeyboard() });
+  await ctx.reply("✅ Registered! Use /model to choose models.", {
+    reply_markup: helpKeyboard(),
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 bot.command("reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   chatHistory.delete(ctx.chat.id);
-  await ctx.reply("Done. Memory cleared for this chat.");
+  await ctx.reply("Done. Memory cleared for this chat.", {
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // Group activation commands
 bot.command("stop", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (ctx.chat.type === "private") {
-    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   deactivateGroup(ctx.chat.id);
-  await ctx.reply("🚫 Bot is now dormant. Mention me or reply to wake me up!", { parse_mode: "HTML" });
+  await ctx.reply("🚫 Bot is now dormant. Mention me or reply to wake me up!", {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 bot.command("talk", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (ctx.chat.type === "private") {
-    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!");
+    return ctx.reply("ℹ️ This command is for group chats. In DMs, I'm always listening!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   activateGroup(ctx.chat.id);
   const remaining = getGroupActiveRemaining(ctx.chat.id);
-  await ctx.reply(`✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`, { parse_mode: "HTML" });
+  await ctx.reply(
+    `✅ Bot is now active! I'll respond to all messages for ${Math.ceil(remaining / 60)} minutes.\n\nUse /stop to make me dormant again.`,
+    {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /feedback - entrypoint for feedback flow (DM only)
 bot.command("feedback", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   if (!FEEDBACK_CHAT_ID) {
-    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.");
+    return ctx.reply("⚠️ Feedback is not configured yet. Please try again later.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   if (ctx.chat.type !== "private") {
-    return ctx.reply("💡 Please send feedback in a private chat with me.");
+    return ctx.reply("💡 Please send feedback in a private chat with me.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
 
   const u = ctx.from;
@@ -3137,11 +3122,14 @@ bot.command("feedback", async (ctx) => {
 
   pendingFeedback.set(String(u.id), { createdAt: Date.now(), source: "command" });
   await ctx.reply(
-    "💡 *Feedback Mode*\n\n" +
-      "Please send *one message* with your feedback.\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+    "💡 *Feedback Mode*\\n\\n" +
+      "Please send *one message* with your feedback.\\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\\n\\n" +
       "_You have 2 minutes. After that, feedback mode will expire._",
-    { parse_mode: "Markdown" }
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
   );
 });
 
@@ -3232,9 +3220,45 @@ bot.command("fbreply", async (ctx) => {
   }
 });
 
+// Alias: /f <feedbackId> <message>
+bot.command("f", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /f <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("f send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
+});
+
 // /stats - Show user usage statistics
 bot.command("stats", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3270,12 +3294,16 @@ ${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
 
 _Keep chatting to grow your stats!_`;
   
-  await ctx.reply(statsMsg, { parse_mode: "Markdown" });
+  await ctx.reply(statsMsg, {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // /persona - Set custom AI personality
 bot.command("persona", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3287,32 +3315,51 @@ bot.command("persona", async (ctx) => {
     const currentPersona = user.persona || "Default (helpful AI assistant)";
     return ctx.reply(
       `🎭 *Custom Persona*\n\nCurrent: _${currentPersona}_\n\n*Usage:*\n\`/persona friendly teacher\`\n\`/persona sarcastic comedian\`\n\`/persona wise philosopher\`\n\`/persona reset\` - Back to default\n\n_Your persona affects all AI responses!_`,
-      { parse_mode: "Markdown" }
+      {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      }
     );
   }
   
   if (args.toLowerCase() === "reset") {
     delete user.persona;
     saveUsers();
-    return ctx.reply("✅ Persona reset to default helpful AI assistant!");
+    return ctx.reply("✅ Persona reset to default helpful AI assistant!", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   // Set new persona
   user.persona = args.slice(0, 100); // Limit to 100 chars
   saveUsers();
   
-  await ctx.reply(`✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`, { parse_mode: "Markdown" });
+  await ctx.reply(
+    `✅ *Persona set!*\n\nAI will now respond as: _${user.persona}_\n\n_Use \`/persona reset\` to go back to default._`,
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /history - DISABLED: History feature removed to prevent database bloat
 bot.command("history", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  return ctx.reply("⚠️ *History feature has been disabled*\n\nThis feature has been removed to optimize database performance and reduce storage costs.\n\n_You can still use inline mode by typing @starztechbot in any chat!_", { parse_mode: "Markdown" });
+  if (!(await enforceCommandCooldown(ctx))) return;
+  return ctx.reply(
+    "⚠️ *History feature has been disabled*\\n\\nThis feature has been removed to optimize database performance and reduce storage costs.\\n\\n_You can still use inline mode by typing @starztechbot in any chat!_",
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // /partner - Manage your AI partner
 bot.command("partner", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   if (!u?.id) return;
   
@@ -3324,60 +3371,129 @@ bot.command("partner", async (ctx) => {
   
   // No subcommand - show partner setup with checklist buttons
   if (!subcommand) {
-    return ctx.reply(
-      buildPartnerSetupMessage(partner),
-      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-    );
+    return ctx.reply(buildPartnerSetupMessage(partner), {
+      parse_mode: "Markdown",
+      reply_markup: buildPartnerKeyboard(partner),
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   // Subcommands
   switch (subcommand) {
     case "name":
-      if (!value) return ctx.reply("❌ Please provide a name: `/partner name Luna`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply("❌ Please provide a name: `/partner name Luna`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
       setPartner(u.id, { name: value.slice(0, 50) });
-      return ctx.reply(`✅ Partner name set to: *${value.slice(0, 50)}*`, { parse_mode: "Markdown" });
+      return ctx.reply(`✅ Partner name set to: *${value.slice(0, 50)}*`, {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "personality":
-      if (!value) return ctx.reply("❌ Please provide personality traits: `/partner personality cheerful, witty, caring`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide personality traits: `/partner personality cheerful, witty, caring`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { personality: value.slice(0, 200) });
-      return ctx.reply(`✅ Partner personality set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner personality set to: _${value.slice(0, 200)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "background":
-      if (!value) return ctx.reply("❌ Please provide a background: `/partner background A mysterious traveler from another dimension`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide a background: `/partner background A mysterious traveler from another dimension`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { background: value.slice(0, 300) });
-      return ctx.reply(`✅ Partner background set to: _${value.slice(0, 300)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner background set to: _${value.slice(0, 300)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "style":
-      if (!value) return ctx.reply("❌ Please provide a speaking style: `/partner style speaks softly with poetic phrases`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply(
+          "❌ Please provide a speaking style: `/partner style speaks softly with poetic phrases`",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       setPartner(u.id, { style: value.slice(0, 200) });
-      return ctx.reply(`✅ Partner speaking style set to: _${value.slice(0, 200)}_`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `✅ Partner speaking style set to: _${value.slice(0, 200)}_`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "chat":
       if (!partner?.name) {
-        return ctx.reply("❌ Please set up your partner first! Use `/partner name [name]` to start.", { parse_mode: "Markdown" });
+        return ctx.reply(
+          "❌ Please set up your partner first! Use `/partner name [name]` to start.",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       }
       setPartner(u.id, { active: true });
-      return ctx.reply(`🤝🏻 *Partner mode activated!*\n\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\n\n_Use \`/partner stop\` to end the conversation._`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `🤝🏻 *Partner mode activated!*\\n\\n${partner.name} is now ready to chat. Just send messages and they'll respond in character.\\n\\n_Use \`/partner stop\` to end the conversation._`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
       
     case "stop":
       if (partner) {
         setPartner(u.id, { active: false });
       }
-      return ctx.reply("⏹ Partner mode deactivated. Normal AI responses resumed.");
+      return ctx.reply("⏹ Partner mode deactivated. Normal AI responses resumed.", {
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "clearchat":
       clearPartnerChat(u.id);
-      return ctx.reply("🗑 Partner chat history cleared. Starting fresh!");
+      return ctx.reply("🗑 Partner chat history cleared. Starting fresh!", {
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     case "clear":
     case "delete":
       clearPartner(u.id);
-      return ctx.reply("❌ Partner deleted. Use `/partner` to create a new one.", { parse_mode: "Markdown" });
+      return ctx.reply("❌ Partner deleted. Use `/partner` to create a new one.", {
+        parse_mode: "Markdown",
+        reply_to_message_id: ctx.message?.message_id,
+      });
       
     default:
       return ctx.reply(
-        `❓ Unknown subcommand: \`${subcommand}\`\n\n*Available:* name, personality, background, style, chat, stop, clearchat, clear`,
-        { parse_mode: "Markdown" }
+        `❓ Unknown subcommand: \`${subcommand}\`\\n\\n*Available:* name, personality, background, style, chat, stop, clearchat, clear`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
   }
 });
@@ -3385,6 +3501,7 @@ bot.command("partner", async (ctx) => {
 // /char - Quick character mode for DM/GC
 bot.command("char", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   const chat = ctx.chat;
   if (!u?.id) return;
@@ -3399,11 +3516,11 @@ bot.command("char", async (ctx) => {
   // No subcommand - show character status and help with button list
   if (!subcommand) {
     const statusText = activeChar 
-      ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\n\n`
-      : "🎭 <b>No active character</b>\n\n";
+      ? `🎭 <b>Active Character:</b> ${escapeHTML(activeChar.name)}\\n\\n`
+      : "🎭 <b>No active character</b>\\n\\n";
     
     const savedList = savedChars.length > 0
-      ? `💾 <b>Saved Characters:</b>\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\n")}\n\n`
+      ? `💾 <b>Saved Characters:</b>\\n${savedChars.map((c, i) => `${i + 1}. ${escapeHTML(c)}`).join("\\n")}\\n\\n`
       : "";
     
     const helpText = [
@@ -3417,26 +3534,39 @@ bot.command("char", async (ctx) => {
       "• /char stop or /default - Stop character mode",
       "",
       "<i>Tap a character button below to start!</i>",
-    ].join("\n");
+    ].join("\\n");
     
     return ctx.reply(helpText, { 
       parse_mode: "HTML",
-      reply_markup: buildCharacterKeyboard(savedChars, activeChar)
+      reply_markup: buildCharacterKeyboard(savedChars, activeChar),
+      reply_to_message_id: ctx.message?.message_id,
     });
   }
   
   // Subcommands
   switch (subcommand) {
     case "save": {
-      if (!value) return ctx.reply("❌ Please provide a character name: `/char save yoda`", { parse_mode: "Markdown" });
+      if (!value)
+        return ctx.reply("❌ Please provide a character name: `/char save yoda`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
       const result = saveCharacter(u.id, value);
       const emoji = result.success ? "✅" : "❌";
-      return ctx.reply(`${emoji} ${result.message}`);
+      return ctx.reply(`${emoji} ${result.message}`, {
+        reply_to_message_id: ctx.message?.message_id,
+      });
     }
     
     case "list": {
       if (savedChars.length === 0) {
-        return ctx.reply("💾 *No saved characters yet!*\n\nUse `/char save [name]` to save one.", { parse_mode: "Markdown" });
+        return ctx.reply(
+          "💾 *No saved characters yet!*\\\\n\\\\nUse `/char save [name]` to save one.",
+          {
+            parse_mode: "Markdown",
+            reply_to_message_id: ctx.message?.message_id,
+          }
+        );
       }
       const listText = [
         "💾 *Your Saved Characters:*",
@@ -3464,14 +3594,23 @@ bot.command("char", async (ctx) => {
         return ctx.reply("❌ No active character in this chat.");
       }
       clearActiveCharacter(u.id, chat.id);
-      return ctx.reply(`⏹ Character mode stopped. ${activeChar.name} has left the chat.\n\n_Normal AI responses resumed._`, { parse_mode: "Markdown" });
+      return ctx.reply(
+        `⏹ Character mode stopped. ${activeChar.name} has left the chat.\n\n_Normal AI responses resumed._`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
+      );
     }
     
     default: {
       // Assume it's a character name to activate
       const characterName = args.join(" ").trim();
       if (!characterName) {
-        return ctx.reply("❌ Please provide a character name: `/char yoda`", { parse_mode: "Markdown" });
+        return ctx.reply("❌ Please provide a character name: `/char yoda`", {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        });
       }
       
       setActiveCharacter(u.id, chat.id, characterName);
@@ -3479,7 +3618,10 @@ bot.command("char", async (ctx) => {
       const chatType = chat.type === "private" ? "DM" : "group";
       return ctx.reply(
         `🎭 *${characterName}* is now active in this ${chatType}!\n\nJust send messages and they'll respond in character.\n\n_Use \`/char stop\` to end._`,
-        { parse_mode: "Markdown" }
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id,
+        }
       );
     }
   }
@@ -3488,6 +3630,7 @@ bot.command("char", async (ctx) => {
 // /default - Stop character mode and return to normal AI
 bot.command("default", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
   const u = ctx.from;
   const chat = ctx.chat;
   if (!u?.id) return;
@@ -3495,11 +3638,19 @@ bot.command("default", async (ctx) => {
   const activeChar = getActiveCharacter(u.id, chat.id);
   
   if (!activeChar) {
-    return ctx.reply("✅ Already in default mode. No active character.");
+    return ctx.reply("✅ Already in default mode. No active character.", {
+      reply_to_message_id: ctx.message?.message_id,
+    });
   }
   
   clearActiveCharacter(u.id, chat.id);
-  return ctx.reply(`⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\n\n<i>Normal AI responses resumed.</i>`, { parse_mode: "HTML" });
+  return ctx.reply(
+    `⏹ <b>${escapeHTML(activeChar.name)}</b> has left the chat.\n\n<i>Normal AI responses resumed.</i>`,
+    {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
 });
 
 // Build character selection keyboard
@@ -3623,9 +3774,111 @@ bot.callbackQuery("open_char", async (ctx) => {
 });
 
 // Partner callback handlers - Setup field buttons
-const pendingPartnerInput = new Map(); // userId -> { field, messageId }
-// pendingFeedback: userId -> { createdAt, source }
+const pendingPartnerInput = new Map(); // userId -&gt; { field, messageId }
+// pendingFeedback: userId -&gt; { createdAt, source }
 const pendingFeedback = new Map();
+
+async function handleFeedbackIfActive(ctx, options = {}) {
+  const u = ctx.from;
+  const chat = ctx.chat;
+  const msg = ctx.message;
+
+  if (!u?.id || !chat || !msg) return false;
+
+  const pendingFb = pendingFeedback.get(String(u.id));
+  if (!pendingFb || chat.type !== "private") {
+    return false;
+  }
+
+  pendingFeedback.delete(String(u.id));
+
+  // 2 minute timeout
+  if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
+    await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
+    return true;
+  }
+
+  if (!FEEDBACK_CHAT_ID) {
+    await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
+    return true;
+  }
+
+  const rec = getUserRecord(u.id) || {};
+  const feedbackId = `FB-${u.id}-${makeId(4)}`;
+  const tier = (rec.tier || "free").toUpperCase();
+  const banned = rec.banned ? "YES" : "no";
+  const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
+
+  let muteInfo = "none";
+  if (rec.mute) {
+    const m = rec.mute;
+    const scope = m.scope || "all";
+    const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
+    muteInfo = `scope=${scope}, until=${untilStr}`;
+  }
+
+  const sourceTag = pendingFb.source || "general";
+  const sourceMap = {
+    general: "General (menu)",
+    command: "/feedback command",
+    ban: "After ban notice",
+    mute: "After mute notice",
+    softban: "After softban notice",
+    warn: "After warning notice",
+    group_unauthed: "Unauthorized group",
+  };
+  const sourceLabel = sourceMap[sourceTag] || sourceTag;
+
+  const username = rec.username || u.username || "";
+  const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
+
+  const rawCaption =
+    options.caption != null ? options.caption : (msg.caption || "");
+  const captionText = (rawCaption || "").trim();
+
+  const metaLines = [
+    `📬 *New Feedback*`,
+    ``,
+    `🆔 *Feedback ID:* \`${feedbackId}\``,
+    `👤 *User ID:* \`${u.id}\``,
+    `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
+    `🎫 *Tier:* ${escapeMarkdown(tier)}`,
+    `🚫 *Banned:* ${banned}`,
+    `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
+    `⚠️ *Warnings:* ${warningsCount}`,
+    `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
+    `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
+  ];
+
+  if (pendingFb.groupId) {
+    metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
+  }
+
+  if (captionText) {
+    metaLines.push(
+      `📝 *Caption:* ${escapeMarkdown(captionText.slice(0, 500))}`
+    );
+  }
+
+  const metaText = metaLines.join("\n");
+
+  try {
+    await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
+    await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, {
+      parse_mode: "Markdown",
+    });
+    await ctx.reply(
+      "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
+        `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    console.error("Feedback forward error:", e.message);
+    await ctx.reply("❌ Failed to send feedback. Please try again later.");
+  }
+
+  return true;
+}
 
 bot.callbackQuery("partner_set_name", async (ctx) => {
   await ctx.answerCallbackQuery();
@@ -3805,15 +4058,17 @@ function modelListKeyboard(category, currentModel, userTier) {
   for (let i = 0; i < models.length; i += 2) {
     const row = [];
     const m1 = models[i];
+    const short1 = m1.split("/").pop();
     row.push({
-      text: `${m1 === currentModel ? "✅ " : ""}${m1}`,
+      text: `${m1 === currentModel ? "✅ " : ""}${short1}`,
       callback_data: `setmodel:${m1}`,
     });
     
     if (models[i + 1]) {
       const m2 = models[i + 1];
+      const short2 = m2.split("/").pop();
       row.push({
-        text: `${m2 === currentModel ? "✅ " : ""}${m2}`,
+        text: `${m2 === currentModel ? "✅ " : ""}${short2}`,
         callback_data: `setmodel:${m2}`,
       });
     }
@@ -3836,17 +4091,25 @@ function categoryTitle(category) {
 
 bot.command("model", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
 
   const u = ensureUser(ctx.from.id, ctx.from);
   const current = ensureChosenModelValid(ctx.from.id);
 
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
-    { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    `👤 Plan: *${u.tier.toUpperCase()}*\\n🤖 Current: \`${current}\`\\n\\nSelect a category:`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: modelCategoryKeyboard(u.tier),
+      reply_to_message_id: ctx.message?.message_id,
+    }
   );
 });
 
 bot.command("whoami", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+
   const u = ensureUser(ctx.from.id, ctx.from);
   const model = ensureChosenModelValid(ctx.from.id);
   const stats = u.stats || {};
@@ -3854,7 +4117,13 @@ bot.command("whoami", async (ctx) => {
   const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
   const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
   const shortModel = model.split("/").pop();
-  const safeModel = escapeMarkdown(shortModel);
+  // Show model as-is inside code block to avoid ugly backslashes like grok\-4\.1
+  const safeModel = shortModel;
+
+  const isOwnerUser = OWNER_IDS.has(String(ctx.from.id));
+  const tierLabel = isOwnerUser
+    ? `${u.tier.toUpperCase()} (OWNER)`
+    : (u.tier || "free").toUpperCase();
 
   const lines = [
     `👤 *Your Profile*`,
@@ -3863,7 +4132,7 @@ bot.command("whoami", async (ctx) => {
     `📛 Username: ${safeUsername}`,
     `👋 Name: ${safeName}`,
     ``,
-    `🎫 *Tier:* ${u.tier.toUpperCase()}`,
+    `🎫 *Tier:* ${tierLabel}`,
     `🤖 *Model:* \`${safeModel}\``,
     ``,
     `📊 *Usage Stats*`,
@@ -3874,7 +4143,10 @@ bot.command("whoami", async (ctx) => {
     `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
   ];
 
-  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+  await ctx.reply(lines.join("\n"), {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // =====================
@@ -3882,9 +4154,7 @@ bot.command("whoami", async (ctx) => {
 // =====================
 
 // Bot status command
-bot.command("status", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-  
+async function sendOwnerStatus(ctx) {
   const totalUsers = Object.keys(usersDb.users).length;
   const usersByTier = { free: 0, premium: 0, ultra: 0 };
   let totalMessages = 0;
@@ -3897,7 +4167,7 @@ bot.command("status", async (ctx) => {
   const dayMs = 24 * 60 * 60 * 1000;
   const weekMs = 7 * dayMs;
   
-  for (const [id, user] of Object.entries(usersDb.users)) {
+  for (const [, user] of Object.entries(usersDb.users)) {
     usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
     if (user.banned) {
       bannedCount++;
@@ -3915,7 +4185,13 @@ bot.command("status", async (ctx) => {
   const inlineSessions = Object.keys(inlineSessionsDb.sessions).length;
   const uptime = process.uptime();
   const uptimeStr = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
-  
+
+  // Derive per-tier cooldowns from the same helper used by enforceCommandCooldown
+  const freeCooldown = getCommandCooldownSecondsForTier("free");
+  const premiumCooldown = getCommandCooldownSecondsForTier("premium");
+  const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
+  const ownerCooldown = getCommandCooldownSecondsForTier("owner");
+
   const lines = [
     `📊 *Bot Status*`,
     ``,
@@ -3929,25 +4205,35 @@ bot.command("status", async (ctx) => {
     `• Ultra: ${usersByTier.ultra}`,
     `• Banned: ${bannedCount}`,
     ``,
-    `📈 *Activity*`,
-    `• Active today: ${activeToday}`,
-    `• Active this week: ${activeWeek}`,
+    `💬 *Messages*`,
     `• Total messages: ${totalMessages}`,
-    `• Total inline queries: ${totalInline}`,
+    `• Inline queries: ${totalInline}`,
+    `• Active today: ${activeToday}`,
+    `• Active last 7 days: ${activeWeek}`,
     ``,
-    `💬 *Sessions*`,
-    `• Inline chat sessions: ${inlineSessions}`,
-    `• Active DM chats: ${chatHistory.size}`,
-    `• Inline cache entries: ${inlineCache.size}`,
+    `💾 *Inline Sessions:* ${inlineSessions}`,
     ``,
-    `⚙️ *Config*`,
-    `• Free models: ${FREE_MODELS.length}`,
-    `• Premium models: ${PREMIUM_MODELS.length}`,
-    `• Ultra models: ${ULTRA_MODELS.length}`,
-    `• Rate limit: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `⚙️ *Rate limiting*`,
+    `• Global: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `• Command cooldowns:`,
+    `  - Free: ${freeCooldown}s`,
+    `  - Premium: ${premiumCooldown}s`,
+    `  - Ultra: ${ultraCooldown}s`,
+    `  - Owners: ${ownerCooldown > 0 ? ownerCooldown + "s" : "none"}`,
   ];
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+}
+
+bot.command("status", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
+});
+
+// Alias: /gstat (global stats)
+bot.command("gstat", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
 });
 
 // User info command
@@ -4187,6 +4473,33 @@ bot.command("allowgroup", async (ctx) => {
   );
 });
 
+// Alias: /add <chatId> <note>  (owner-facing shorthand)
+bot.command("add", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /add <chatId> [note]");
+  }
+
+  const [chatIdRaw, ...noteParts] = args;
+  const chatId = chatIdRaw.trim();
+  const note = noteParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /add <chatId> [note]");
+  }
+
+  setGroupAuthorization(chatId, true, {
+    note,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `✅ Group ${chatId} authorized.` + (note ? `\nNote: ${note}` : "")
+  );
+});
+
 bot.command("denygroup", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
@@ -4213,7 +4526,59 @@ bot.command("denygroup", async (ctx) => {
   );
 });
 
+// Alias: /rem <chatId> <reason>  (owner-facing shorthand)
+bot.command("rem", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) {
+    return ctx.reply("Usage: /rem <chatId> [reason]");
+  }
+
+  const [chatIdRaw, ...reasonParts] = args;
+  const chatId = chatIdRaw.trim();
+  const reason = reasonParts.join(" ").trim() || null;
+
+  if (!chatId) {
+    return ctx.reply("Usage: /rem <chatId> [reason]");
+  }
+
+  setGroupAuthorization(chatId, false, {
+    note: reason,
+    addedBy: ctx.from?.id || null,
+  });
+
+  await ctx.reply(
+    `🚫 Group ${chatId} blocked.` + (reason ? `\nReason: ${reason}` : "")
+  );
+});
+
 bot.command("grouplist", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  ensurePrefsGroups();
+  const entries = Object.entries(prefsDb.groups || {});
+  if (entries.length === 0) {
+    return ctx.reply("No groups recorded yet.");
+  }
+
+  const max = 50;
+  const lines = ["🏘 *Groups (first 50)*", ""];
+  for (const [id, g] of entries.slice(0, max)) {
+    const status = g.allowed ? "✅ allowed" : "🚫 blocked";
+    const title = g.title ? escapeMarkdown(g.title) : "_no title_";
+    const note = g.note ? ` — ${escapeMarkdown(g.note)}` : "";
+    lines.push(`• \`${id}\` – ${title} (${status})${note}`);
+  }
+  if (entries.length > max) {
+    lines.push("", `...and ${entries.length - max} more.`, "");
+  }
+
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// Alias: /glist  (owner-facing shorthand)
+bot.command("glist", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   ensurePrefsGroups();
@@ -4491,11 +4856,106 @@ bot.command("clearwarns", async (ctx) => {
   }
 });
 
+// Alias: /cw -> same as /clearwarns
+bot.command("cw", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /cw <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot clear warnings for an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (!Array.isArray(rec.warnings) || rec.warnings.length === 0) {
+    return ctx.reply(`User ${targetIdStr} has no warnings.`);
+  }
+
+  const count = rec.warnings.length;
+  rec.warnings = [];
+  saveUsers();
+
+  let ownerMsg = `🧹 Cleared ${count} warnings for user ${targetIdStr}.`;
+  if (reason) ownerMsg += ` Reason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const msg = `🧹 *Your warnings on StarzAI have been cleared.*${reasonLine}`;
+    await bot.api.sendMessage(targetIdStr, msg, { parse_mode: "Markdown" });
+  } catch (e) {
+    // ignore
+  }
+});
+
 bot.command("softban", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
   const args = (ctx.message?.text || "").split(/\s+/).slice(1);
   if (args.length < 1) return ctx.reply("Usage: /softban <userId> [reason]");
+
+  const [targetId, ...reasonParts] = args;
+  const targetIdStr = String(targetId);
+  const reason = reasonParts.join(" ").trim();
+
+  if (OWNER_IDS.has(targetIdStr)) {
+    return ctx.reply("⚠️ Cannot softban an owner.");
+  }
+
+  const rec = ensureUser(targetIdStr);
+  if (rec.banned) {
+    return ctx.reply(`User ${targetIdStr} is already banned.`);
+  }
+
+  const { until } = applyMuteToUser(
+    targetIdStr,
+    WARN_SOFTBAN_DURATION_MS,
+    "all",
+    reason || null,
+    ctx.from?.id
+  );
+
+  const humanUntil = new Date(until).toLocaleString();
+  let ownerMsg = `🚫 Softban applied to user ${targetIdStr} for 24h (total mute).`;
+  ownerMsg += `\nUntil: ${humanUntil}`;
+  if (reason) ownerMsg += `\nReason: ${reason}`;
+  await ctx.reply(ownerMsg);
+
+  // Notify user
+  try {
+    const reasonLine = reason ? `\n\n*Reason:* ${escapeMarkdown(reason)}` : "";
+    const untilLine = `\n\n_Ban ends at: ${escapeMarkdown(humanUntil)}_`;
+    const msg =
+      "🚫 *You have received a temporary soft ban on StarzAI.*" +
+      reasonLine +
+      "\n\nYou are temporarily blocked from using the bot." +
+      untilLine;
+
+    const replyMarkup =
+      FEEDBACK_CHAT_ID
+        ? new InlineKeyboard().text("💡 Feedback", "menu_feedback")
+        : undefined;
+
+    await bot.api.sendMessage(targetIdStr, msg, {
+      parse_mode: "Markdown",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+// Alias: /sban -> same as /softban
+bot.command("sban", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 1) return ctx.reply("Usage: /sban <userId> [reason]");
 
   const [targetId, ...reasonParts] = args;
   const targetIdStr = String(targetId);
@@ -4748,39 +5208,59 @@ bot.command("mutelist", async (ctx) => {
 bot.command("ownerhelp", async (ctx) => {
   if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
 
-  const lines = [
-    "📘 *StarzAI Owner Guide (Quick)*",
+  const text = [
+    "📘 StarzAI Owner Guide",
     "",
-    "👤 *User info & status*",
+    "👤 User info & status",
+    "",
     "• /info <userId> — full user info (tier, bans, mutes, warnings, stats)",
-    "• /status — global bot stats",
+    "• /gstat — global bot stats",
     "",
-    "🎫 *Tiers & access*",
-    "• /grant <userId> <tier>, /revoke <userId>",
-    "• /allow <userId> <model>, /deny <userId> <model>",
+    "🎫 Tiers & access",
     "",
-    "🚫 *Bans*",
-    "• /ban <userId> [reason], /unban <userId> [reason]",
-    "• /softban <userId> [reason] — 24h total mute",
+    "• /grant <userId> <tier>,",
+    "• /revoke <userId>",
+    "• /allow <userId> <model>,",
+    "• /deny <userId> <model>",
+    "",
+    "🏘 Group authorization",
+    "",
+    "• /add <chatId> note — authorize a group to use the bot",
+    "• /rem <chatId> reason — block a group from using the bot",
+    "• /glist — list known groups and their auth status",
+    "",
+    "🚫 Bans",
+    "",
+    "• /ban <userId> reason",
+    "• /unban <userId> reason",
+    "• /sban <userId> reason — 24h total mute",
     "• /banlist — list banned users",
     "",
-    "🔇 *Mutes*",
-    "• /mute <userId> <duration> [scope] [reason]",
-    "• /unmute <userId> [reason], /mutelist",
+    "🔇 Mutes",
+    "",
+    "• /mute <userId> <duration> scope reason",
+    "• /unmute <userId> reason",
+    "• /mutelist",
     "  scope: all, dm, group, inline, tier",
     "",
-    "⚠️ *Warnings*",
-    "• /warn <userId> [reason] — auto softban at 3 warnings",
-    "• /clearwarns <userId> [reason] — reset warnings",
+    "⚠️ Warnings",
     "",
-    FEEDBACK_CHAT_ID ? "💡 *Feedback* \n• /feedback — user-side command (button in menu)\n• /fbreply <feedbackId> <text> — reply to feedback sender" : "",
+    "• /warn <userId> reason — auto softban at 3 warnings",
+    "• /cw <userId> reason — reset warnings",
     "",
-    "_Owners cannot be banned, muted, or warned._",
+    "💡 Feedback",
+    "",
+    "• /feedback — user-side command (button in menu)",
+    "• /f <feedbackId> <text> — reply to feedback sender",
+    "",
+    "•Owners cannot be banned, muted, or warned.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  await ctx.reply(lines, { parse_mode: "Markdown" });
+  await ctx.reply(text, {
+    reply_to_message_id: ctx.message?.message_id,
+  });
 });
 
 // =====================
@@ -5139,7 +5619,7 @@ bot.callbackQuery("help_features", async (ctx) => {
     "",
     "📡 *Multi-Platform*",
     "• DM - Direct chat with AI",
-    "• Groups - Say \"Starz\" / \"StarzAI\" or reply to the bot",
+    "• Groups - Say \"Starz\" / \"Ai\" or reply to the bot",
     "• Inline - Type @starztechbot anywhere",
   ].join("\n");
   
@@ -5887,6 +6367,13 @@ bot.on("message:text", async (ctx) => {
     console.log(`[MSG] Ignoring command: ${text}`);
     return;
   }
+
+  // Ignore messages that are inline results sent via this bot (via_bot == this bot)
+  // This prevents GC wake words like "Ai" inside inline answers from triggering the bot again.
+  if (msg?.via_bot?.id && BOT_ID && msg.via_bot.id === BOT_ID) {
+    console.log(`[MSG] Ignoring via_bot message from this bot in chat ${chat.id}`);
+    return;
+  }
   
   // Deduplicate - prevent processing same message twice
   const dedupeKey = `${chat.id}:${messageId}`;
@@ -5914,108 +6401,6 @@ bot.on("message:text", async (ctx) => {
   const replyTo = ctx.message?.reply_to_message;
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
   // (Replies are handled as normal messages below)
-  
-  // Check if user has pending shared chat input
-  const pendingInput = pendingSharedInput.get(String(u.id));
-  if (pendingInput && chat.type === "private") {
-    // Clear the pending state
-    pendingSharedInput.delete(String(u.id));
-    
-    // Check if not expired (5 min timeout)
-    if (Date.now() - pendingInput.timestamp < 5 * 60 * 1000) {
-      const { chatKey, userName, inlineMessageId } = pendingInput;
-      const session = getSharedChat(chatKey);
-      
-      if (session) {
-        // Check if we have the inline message ID
-        const msgId = inlineMessageId || session.inlineMessageId;
-        
-        if (!msgId) {
-          await ctx.reply(`⚠️ Session found but message ID missing. The Yap message may have been deleted. Start a new Yap session!`);
-          return;
-        }
-        
-        // Add user message to session
-        addToSharedChat(chatKey, u.id, userName, "user", text);
-        
-        // Acknowledge in DM
-        await ctx.reply(`✅ Message sent to group chat! Getting AI response...`);
-        
-        // Get AI response with streaming
-        try {
-          const yapModel = session.model || ensureChosenModelValid(u.id);
-          const messages = [
-            { role: "system", content: "You are StarzAI in a group chat. Multiple users may talk to you. Be friendly, helpful, and concise. Max 500 chars." },
-            ...session.history.slice(-8).map(m => ({
-              role: m.role,
-              content: m.role === "user" ? `${m.userName}: ${m.content}` : m.content
-            }))
-          ];
-          
-          // Use streaming for real-time updates
-          const aiResponse = await llmTextStream({
-            model: yapModel,
-            messages,
-            temperature: 0.7,
-            max_tokens: 400,
-            onChunk: async (partialText) => {
-              // Update the inline message with partial response
-              const tempSession = { ...session, history: [...session.history, { role: "assistant", content: partialText + "█", userName: "AI", userId: "0" }] };
-              const totalPages = Math.max(1, Math.ceil(tempSession.history.length / MESSAGES_PER_PAGE));
-              try {
-                await bot.api.editMessageTextInline(
-                  msgId,
-                  formatSharedChatDisplay(tempSession, -1),
-                  {
-                    parse_mode: "Markdown",
-                    reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-                  }
-                );
-              } catch (e) {
-                // Ignore edit errors (message unchanged, rate limit, etc)
-              }
-            },
-          });
-          
-          // Add final AI response to session
-          addToSharedChat(chatKey, 0, "AI", "assistant", aiResponse);
-          
-          // Final update with complete response
-          const updatedSession = getSharedChat(chatKey);
-          const totalPages = getSharedChatPageCount(updatedSession);
-          
-          await bot.api.editMessageTextInline(
-            msgId,
-            formatSharedChatDisplay(updatedSession, -1),
-            {
-              parse_mode: "Markdown",
-              reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-            }
-          );
-          
-          await ctx.reply(`✅ AI responded! Check the group chat.`);
-        } catch (e) {
-          console.error("Shared chat AI error:", e.message);
-          await ctx.reply(`⚠️ AI is slow. Your message was added - tap Refresh in the group chat!`);
-          
-          // Still update the message to show user's message
-          try {
-            const updatedSession = getSharedChat(chatKey);
-            const totalPages = getSharedChatPageCount(updatedSession);
-            await bot.api.editMessageTextInline(
-              msgId,
-              formatSharedChatDisplay(updatedSession, -1) + `\n\n⏳ _Getting AI response..._`,
-              {
-                parse_mode: "Markdown",
-                reply_markup: sharedChatKeyboard(chatKey, -1, totalPages),
-              }
-            );
-          } catch {}
-        }
-        return;
-      }
-    }
-  }
 
   // Check if user has pending partner field input
   const pendingPartner = pendingPartnerInput.get(String(u.id));
@@ -6033,108 +6418,29 @@ bot.on("message:text", async (ctx) => {
         
         const partner = getPartner(u.id);
         await ctx.reply(
-          `✅ *${field.charAt(0).toUpperCase() + field.slice(1)}* updated!\n\n` + buildPartnerSetupMessage(partner),
+          `✅ *${field.charAt(0).toUpperCase() + field.slice(1)}* updated!\\n\\n` + buildPartnerSetupMessage(partner),
           { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
         );
         return;
       }
     }
   }
-
-  // Check if user has pending feedback
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    // 2 minute timeout
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const rec = getUserRecord(u.id);
-    const tier = (rec?.tier || "free").toUpperCase();
-    const banned = rec?.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec?.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec?.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-      group_unauthed: "Unauthorized group",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec?.username || u.username || "";
-    const name = rec?.firstName || rec?.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${sourceLabel}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-    ];
-
-    if (pendingFb.groupId) {
-      metaLines.push(`👥 *Group ID:* \`${pendingFb.groupId}\``);
-    }
-
-    const metaText = metaLines.join("\n");
-
-    try {
-      // Forward the original message
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, msg.message_id);
-      // Send meta info
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaText, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  
+  const feedbackHandled = await handleFeedbackIfActive(ctx);
+  if (feedbackHandled) return;
 
   const model = ensureChosenModelValid(u.id);
-  const botInfo = await bot.api.getMe();
-  const botUsername = botInfo.username?.toLowerCase() || "";
+  const botUsername = BOT_USERNAME || "";
+  const botId = BOT_ID;
 
   // Group chat authorization + activation system:
-  // - Groups must be explicitly authorized by the owner (/allowgroup <chatId>)
+  // - Groups must be explicitly authorized by the owner (/allowgroup &lt;chatId&gt;)
   // - If not authorized, the bot only responds with an authorization hint
   //   when explicitly invoked (mention, wake word, reply, or active character)
   // - When authorized:
   //   • By default, respond only when:
   //       - The message mentions the bot username, or
-  //       - The message contains "Starz" / "StarzAI", or
+  //       - The message contains "Starz" or "Ai", or
   //       - The user replies to the bot, or
   //       - The user has an active character in this chat
   //   • If `/talk` has activated forced-active mode, respond to all messages
@@ -6142,9 +6448,14 @@ bot.on("message:text", async (ctx) => {
 
   if (chat.type !== "private") {
     const lower = text.toLowerCase();
-    const hasWakeWord = /\bstarz(ai)?\b/.test(lower);
-    const isMentioned = lower.includes(`@${botUsername}`) || hasWakeWord;
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const hasStarzWake = /\bstarz\b/.test(lower);
+    const hasAiWake = /\bai\b/.test(lower);
+    const hasWakeWord = hasStarzWake || hasAiWake;
+
+    const isMentioned = botUsername
+      ? lower.includes(`@${botUsername}`) || hasWakeWord
+      : hasWakeWord;
+    const isReplyToBot = botId && ctx.message?.reply_to_message?.from?.id === botId;
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     const groupForcedActive = isGroupActive(chat.id); // /talk-controlled
 
@@ -6185,11 +6496,11 @@ bot.on("message:text", async (ctx) => {
         ];
 
         let replyMarkup;
-        if (FEEDBACK_CHAT_ID && botInfo.username) {
+        if (FEEDBACK_CHAT_ID && BOT_USERNAME) {
           const kb = new InlineKeyboard();
           kb.url(
             "💡 Feedback",
-            `https://t.me/${botInfo.username}?start=group_${chat.id}`
+            `https://t.me/${BOT_USERNAME}?start=group_${chat.id}`
           );
           replyMarkup = kb;
         }
@@ -6240,7 +6551,11 @@ bot.on("message:text", async (ctx) => {
 
   try {
     // Send initial processing status - use HTML to avoid Markdown escaping issues
-    statusMsg = await ctx.reply(`⏳ Processing with <b>${model}</b>...`, { parse_mode: "HTML" });
+    // Make this a proper reply to the user's message so the final answer appears threaded.
+    statusMsg = await ctx.reply(`⏳ Processing with <b>${model}</b>...`, {
+      parse_mode: "HTML",
+      reply_to_message_id: msg.message_id,
+    });
 
     // Keep typing indicator active
     typingInterval = setInterval(() => {
@@ -6328,7 +6643,7 @@ bot.on("message:text", async (ctx) => {
         const timeResult = getTimeResponse(text, msg.date);
         await ctx.api.deleteMessage(chat.id, statusMsg.message_id).catch(() => {});
         
-        const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         await ctx.reply(
           `${timeResult.response}\n\n⚡ ${elapsed}s`,
           { parse_mode: "HTML", reply_to_message_id: msg.message_id }
@@ -6423,10 +6738,16 @@ bot.on("message:text", async (ctx) => {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
       } catch (editErr) {
         // Fallback to new message if edit fails
-        await ctx.reply(response, { parse_mode: "HTML" });
+        await ctx.reply(response, {
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
       }
     } else {
-      await ctx.reply(response, { parse_mode: "HTML" });
+      await ctx.reply(response, {
+        parse_mode: "HTML",
+        reply_to_message_id: msg.message_id,
+      });
     }
   } catch (e) {
     console.error(e);
@@ -6438,16 +6759,22 @@ bot.on("message:text", async (ctx) => {
     
     // Edit status message with error (cleaner than delete+send)
     const errMsg = isTimeout 
-      ? `⏱️ Model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch, or try again.`
+      ? `⏱️ Model &lt;b&gt;${model}&lt;/b&gt; timed out after ${elapsed}s. Try /model to switch, or try again.`
       : `❌ Error after ${elapsed}s. Try again in a moment.`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
       } catch {
-        await ctx.reply(errMsg, { parse_mode: "HTML" });
+        await ctx.reply(errMsg, {
+          parse_mode: "HTML",
+          reply_to_message_id: msg.message_id,
+        });
       }
     } else {
-      await ctx.reply(errMsg, { parse_mode: "HTML" });
+      await ctx.reply(errMsg, {
+        parse_mode: "HTML",
+        reply_to_message_id: msg.message_id,
+      });
     }
   }
 });
@@ -6466,79 +6793,8 @@ bot.on("message:photo", async (ctx) => {
   const caption = ctx.message?.caption || "";
   if (!(await checkAntiSpam(ctx, caption))) return;
 
-  // Feedback handling for photo + caption
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const rec = getUserRecord(u.id) || {};
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const tier = (rec.tier || "free").toUpperCase();
-    const banned = rec.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec.username || u.username || "";
-    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    try {
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward (photo) error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  const feedbackHandled = await handleFeedbackIfActive(ctx, { caption });
+  if (feedbackHandled) return;
 
   if (!getUserRecord(u.id)) registerUser(u);
 
@@ -6552,7 +6808,7 @@ bot.on("message:photo", async (ctx) => {
   // Check if replying to a character message (like text handler does)
   let replyCharacter = null;
   const replyToMsg = ctx.message?.reply_to_message;
-  if (replyToMsg?.from?.id === bot.botInfo.id && replyToMsg?.text) {
+  if (replyToMsg?.from?.id === BOT_ID && replyToMsg?.text) {
     // Check if the replied message starts with a character label
     const charMatch = replyToMsg.text.match(/^🎭\s*(.+?)\n/);
     if (charMatch) {
@@ -6694,83 +6950,12 @@ bot.on("message:video", async (ctx) => {
   if (!(await checkAntiSpam(ctx, caption))) return;
   
   // Feedback handling for video + caption (DM only)
-  const pendingFb = pendingFeedback.get(String(u.id));
-  if (pendingFb && chat.type === "private") {
-    pendingFeedback.delete(String(u.id));
-
-    if (Date.now() - pendingFb.createdAt > 2 * 60 * 1000) {
-      await ctx.reply("⌛ Feedback mode expired. Tap the Feedback button again to retry.");
-      return;
-    }
-    if (!FEEDBACK_CHAT_ID) {
-      await ctx.reply("⚠️ Feedback is not configured at the moment. Please try again later.");
-      return;
-    }
-
-    const rec = getUserRecord(u.id) || {};
-    const feedbackId = `FB-${u.id}-${makeId(4)}`;
-    const tier = (rec.tier || "free").toUpperCase();
-    const banned = rec.banned ? "YES" : "no";
-    const warningsCount = Array.isArray(rec.warnings) ? rec.warnings.length : 0;
-
-    let muteInfo = "none";
-    if (rec.mute) {
-      const m = rec.mute;
-      const scope = m.scope || "all";
-      const untilStr = m.until ? new Date(m.until).toLocaleString() : "unknown";
-      muteInfo = `scope=${scope}, until=${untilStr}`;
-    }
-
-    const sourceTag = pendingFb.source || "general";
-    const sourceMap = {
-      general: "General (menu)",
-      command: "/feedback command",
-      ban: "After ban notice",
-      mute: "After mute notice",
-      softban: "After softban notice",
-      warn: "After warning notice",
-    };
-    const sourceLabel = sourceMap[sourceTag] || sourceTag;
-
-    const username = rec.username || u.username || "";
-    const name = rec.firstName || rec.first_name || u.first_name || u.firstName || "";
-
-    const metaLines = [
-      `📬 *New Feedback*`,
-      ``,
-      `🆔 *Feedback ID:* \`${feedbackId}\``,
-      `👤 *User ID:* \`${u.id}\``,
-      `🧾 *Context:* ${escapeMarkdown(sourceLabel)}`,
-      `🎫 *Tier:* ${escapeMarkdown(tier)}`,
-      `🚫 *Banned:* ${banned}`,
-      `🔇 *Mute:* ${escapeMarkdown(muteInfo)}`,
-      `⚠️ *Warnings:* ${warningsCount}`,
-      `📛 *Username:* ${username ? escapeMarkdown("@" + username) : "_none_"}`,
-      `👋 *Name:* ${name ? escapeMarkdown(name) : "_none_"}`,
-      ctx.message.caption ? `📝 *Caption:* ${escapeMarkdown(ctx.message.caption.slice(0, 500))}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    try {
-      await bot.api.forwardMessage(FEEDBACK_CHAT_ID, chat.id, ctx.message.message_id);
-      await bot.api.sendMessage(FEEDBACK_CHAT_ID, metaLines, { parse_mode: "Markdown" });
-      await ctx.reply(
-        "✅ *Feedback sent!* Thank you for helping improve StarzAI.\n\n" +
-          `Your feedback ID is \`${feedbackId}\`. The team may reply to you using this ID.`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Feedback forward (video) error:", e.message);
-      await ctx.reply("❌ Failed to send feedback. Please try again later.");
-    }
-    return;
-  }
+  const feedbackHandled = await handleFeedbackIfActive(ctx, { caption });
+  if (feedbackHandled) return;
 
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     
     if (!isReplyToBot && !groupActive) {
@@ -6962,8 +7147,7 @@ bot.on("message:video_note", async (ctx) => {
   
   // In groups: only process if replying to bot or group is active
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     
@@ -7016,8 +7200,7 @@ bot.on("message:animation", async (ctx) => {
   
   // In groups: only process if replying to bot or group is active or has character
   if (chat.type !== "private") {
-    const botInfo = await bot.api.getMe();
-    const isReplyToBot = ctx.message?.reply_to_message?.from?.id === botInfo.id;
+    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
     const groupActive = isGroupActive(chat.id);
     const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
     
@@ -10552,6 +10735,16 @@ http
   })
   .listen(PORT, async () => {
     console.log("Listening on", PORT);
+
+    // Cache bot info (ID and username) for later use
+    try {
+      const me = await bot.api.getMe();
+      BOT_ID = me.id;
+      BOT_USERNAME = (me.username || "").toLowerCase();
+      console.log(`Bot identity: @${BOT_USERNAME} (id=${BOT_ID})`);
+    } catch (e) {
+      console.error("Failed to fetch bot info:", e.message);
+    }
 
     // Initialize storage - try Supabase first (permanent), then Telegram as fallback
     const supabaseLoaded = await loadFromSupabase();

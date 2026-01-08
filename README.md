@@ -8,6 +8,7 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 - **DM Chat** - Direct conversation with AI
 - **Group Chat** - Say "Starz" / "StarzAI" or reply to the bot to get responses
 - **Inline Mode** - Type `@starztechbot` anywhere for instant AI
+- **Time & Date** - Ask things like “what's the time in Tokyo?” or “today's date in London”.
 
 ### ⚡ AI Modes (Inline)
 | Mode | Prefix | Description |
@@ -32,9 +33,9 @@ Set a custom personality for all DM responses:
 - `/persona friendly teacher` - Sets AI personality
 - `/persona reset` - Back to default
 
-### 📊 Stats & History
+### 📊 Stats
 - `/stats` - View your usage statistics
-- `/history` - Recent prompts with quick re-use buttons
+- `/history` - (Disabled) Previously showed recent prompts; now returns a notice to avoid database bloat
 
 ## 📋 Commands
 
@@ -52,12 +53,14 @@ Set a custom personality for all DM responses:
 | `/partner` | Manage your AI partner |
 | `/persona` | Set AI personality |
 | `/stats` | Usage statistics |
-| `/history` | Recent prompts |
+| `/history` | (Disabled) Previously showed recent prompts |
+| `/search` | Web search with raw results |
+| `/websearch` | Web search with AI-generated summary |
 
 ### Owner Commands
 | Command | Description |
 |---------|-------------|
-| `/status` | Bot status & stats |
+| `/status` | Bot status & stats (includes rate limit and cooldown info) |
 | `/info <userId>` | User details |
 | `/grant <userId> <tier>` | Grant tier (free/premium/ultra) |
 | `/revoke <userId>` | Revoke to free tier |
@@ -72,6 +75,9 @@ Set a custom personality for all DM responses:
 | `/mutelist` | List all muted users |
 | `/allow <userId> <model>` | Allow specific model |
 | `/deny <userId> <model>` | Deny specific model |
+| `/allowgroup <chatId> [note]` | Authorize a group to use the bot |
+| `/denygroup <chatId> [reason]` | Block a group from using the bot |
+| `/grouplist` | List known groups and their authorization status |
 | `/ownerhelp` | Show a quick owner-only moderation guide in chat |
 
 ## 🚀 Deployment
@@ -105,9 +111,15 @@ SUPABASE_KEY=your_supabase_key
 
 **Other:**
 ```
-RATE_LIMIT_PER_MINUTE=12
+RATE_LIMIT_PER_MINUTE=12  # Global safety limit (all users, including inline)
 MODEL_VISION=vision_model_id
 ```
+
+**Per-tier slash command cooldowns (built-in):**
+- Free: 1 command every 60 seconds
+- Premium: 1 command every 30 seconds
+- Ultra: 1 command every 10 seconds
+- Owners: no command cooldown or global rate limit
 
 ## 💾 Data Persistence
 
