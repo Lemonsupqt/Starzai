@@ -8477,74 +8477,59 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+              "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. Format your answer in clean Markdown. When you have fully covered the topic and there is nothing essential left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
           },
-          {
-            role: "user",
-            content: `TEXT SO FAR:\n${context}`,
-          },
+          { role: "user", content: `Provide deep analysis on: ${prompt}` },
         ],
         temperature: 0.7,
-        max_tokens: 700,
+        max_tokens: 800,
       });
 
       const END_MARK = "END_OF_BLACKHOLE";
-      let continuation = (out || "").trim();
+      let raw = out || "No results";
       let completed = false;
 
-      if (continuation.includes(END_MARK)) {
+      if (raw.includes(END_MARK)) {
         completed = true;
-        continuation = continuation.replace(END_MARK, "").trim();
-        continuation += "\n\n---\n_End of Blackhole analysis._";
+        raw = raw.replace(END_MARK, "").trim();
+        raw += "\n\n---\n_End of Blackhole analysis._";
       }
 
-      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
-
+      // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
+      const answer = raw.slice(0, 3500);
       const newKey = makeId(6);
-
+      
+      // Store for Regen/Shorter/Longer/Continue buttons
       inlineCache.set(newKey, {
         prompt,
-        answer: continuation.slice(0, MAX_DISPLAY),
-        fullAnswer: newFull,
-        userId: ownerId,
+        answer,
+        fullAnswer: answer,
+        userId: pending.userId,
         model,
         mode: "blackhole",
         completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-
-      // Update base item as well so future continues from any chunk share history
-      baseItem.fullAnswer = newFull;
-      if (completed) baseItem.completed = true;
-      inlineCache.set(baseKey, baseItem);
-
-      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
+      
+      // Track in history
+      addToHistory(pending.userId, prompt, "blackhole");
+      
+      // Convert and update
+      const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
-
+      
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey),
+          reply_markup: inlineAnswerKeyboard(newKey)
         }
       );
-      console.log(`Blackhole continuation updated with AI response`);
+      console.log(`Blackhole updated with AI response`);
+      
     } catch (e) {
-      console.error("Failed to get Blackhole continuation response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-
-    inlineCache.delete(`bh_cont_pending_${contId}`);
-    return;
-  } catch (e) {
       console.error("Failed to get Blackhole response:", e.message);
       const escapedPrompt = escapeHTML(prompt);
       try {
@@ -8614,7 +8599,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end.",
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
           },
           {
             role: "user",
@@ -8625,7 +8610,16 @@ bot.on("chosen_inline_result", async (ctx) => {
         max_tokens: 700,
       });
 
-      const continuation = (out || "").trim();
+      const END_MARK = "END_OF_BLACKHOLE";
+      let continuation = (out || "").trim();
+      let completed = false;
+
+      if (continuation.includes(END_MARK)) {
+        completed = true;
+        continuation = continuation.replace(END_MARK, "").trim();
+        continuation += "\n\n---\n_End of Blackhole analysis._";
+      }
+
       const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
 
       const newKey = makeId(6);
@@ -8637,12 +8631,14 @@ bot.on("chosen_inline_result", async (ctx) => {
         userId: ownerId,
         model,
         mode: "blackhole",
+        completed,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
       // Update base item as well so future continues from any chunk share history
       baseItem.fullAnswer = newFull;
+      if (completed) baseItem.completed = true;
       inlineCache.set(baseKey, baseItem);
 
       const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
