@@ -3152,7 +3152,7 @@ bot.command("websearch", async (ctx) => {
     const searchContext = formatSearchResultsForAI(searchResult);
     
     // Get AI to summarize
-    const model = u.model || "gpt-4.1-mini";
+    const model = ensureChosenModelValid(ctx.from.id);
     const startTime = Date.now();
     
     const aiResponse = await llmText({
@@ -3160,21 +3160,28 @@ bot.command("websearch", async (ctx) => {
       messages: [
         {
           role: "system",
-          content: `You are a helpful assistant with access to real-time web search results. Answer the user's question based on the search results provided. Be concise but informative. Always cite your sources by mentioning which result you got the information from. If the search results don't contain relevant information, say so.`
+          content:
+            "You are a helpful assistant with access to real-time web search results. " +
+            "Use ONLY the search results provided. Prefer concise, well-structured answers with short paragraphs and bullet points. " +
+            "When you use a fact from a result, cite it like [1], [2], etc. If the search results don't contain relevant information, say so."
         },
         {
           role: "user",
-          content: `${searchContext}\\n\\nUser's question: ${query}\\n\\nPlease answer based on the search results above.`
+          content:
+            `${searchContext}\n\n` +
+            `User's question: ${query}\n\n` +
+            "Answer the user's question based only on the search results above."
         }
       ],
-      temperature: 0.7,
-      max_tokens: 1000
+      temperature: 0.6,
+      max_tokens: 800
     });
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    let response = `🔍 <b>Web Search:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
-    response += convertToTelegramHTML(aiResponse.slice(0, 3500));
+    let response = `🔍 <b>AI Web Search</b>\\n\\n`;
+    response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
+    response += convertToTelegramHTML((aiResponse || "").slice(0, 3500));
     response += `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
     
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
@@ -7703,6 +7710,7 @@ bot.on("inline_query", async (ctx) => {
       "🎭 Character - Fun personas",
       "📝 Summarize - Condense text",
       "🤝🏻 Partner - Chat with your AI companion",
+      "🌐 Websearch - Search the web with AI summary (`w:`)",
       "",
       "_Tap a button or type directly!_",
     ].join("\n");
@@ -7712,7 +7720,7 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `ask_ai_${sessionKey}`,
         title: "⚡ Ask AI",
-        description: "Quick • Deep • Code • Explain • Character • Summarize",
+        description: "Quick • Deep • Code • Explain • Web • Character • Summarize",
         thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
         input_message_content: { 
           message_text: askAiText,
@@ -7725,9 +7733,10 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("💻 Code", "code: ")
           .switchInlineCurrent("🧠 Explain", "e: ")
           .row()
-          .switchInlineCurrent("🎭 Character", "as ")
+          .switchInlineCurrent("🌐 Websearch", "w: ")
           .switchInlineCurrent("📝 Summarize", "sum: ")
           .row()
+          .switchInlineCurrent("🎭 Character", "as ")
           .switchInlineCurrent("🤝🏻 Partner", "p: "),
       },
       {
@@ -7869,6 +7878,54 @@ bot.on("inline_query", async (ctx) => {
         },
         // Keyboard is required to get inline_message_id for editing!
         reply_markup: new InlineKeyboard().text("⏳ Loading...", `bh_loading_${bhKey}`),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
+  // "w:" or "w " - Websearch mode (web search + AI summary via Parallel or fallbacks)
+  // Uses deferred response pattern similar to Blackhole so inline result can be edited later.
+  if (qLower.startsWith("w:") || qLower.startsWith("w ")) {
+    const topic = q.slice(2).trim();
+
+    if (!topic) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `w_typing_${sessionKey}`,
+          title: "🌐 Websearch - AI Web Search",
+          description: "Type what you want to search on the web",
+          thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const wKey = makeId(6);
+    const escapedTopic = escapeHTML(topic);
+
+    inlineCache.set(`w_pending_${wKey}`, {
+      type: "websearch",
+      prompt: topic,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`w_pending_${wKey}`), 5 * 60 * 1000);
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `w_start_${wKey}`,
+        title: `🌐 ${topic.slice(0, 40)}`,
+        description: "🔎 Tap to run websearch...",
+        thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+        input_message_content: {
+          message_text: `🌐 <b>Websearch: ${escapedTopic}</b>\n\n⏳ <i>Searching the web and analyzing...</i>\n\n<i>via StarzAI • Websearch • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "w_loading"),
       },
     ], { cache_time: 0, is_personal: true });
   }
@@ -10047,25 +10104,120 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🔍 <b>Research: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${shortModel}</i>`,
+        `🔍 <b>Research: ${escapedPrompt}</b>\\n\\n${formattedAnswer}\\n\\n<i>via StarzAI • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey)
+          reply_markup: inlineAnswerKeyboard(newKey),
         }
       );
-      console.log(`Research updated with AI response`);
-      
+      console.log("Research updated with AI response");
     } catch (e) {
       console.error("Failed to get Research response:", e.message);
-      const escapedPrompt = escapeHTML(prompt);
       try {
         await bot.api.editMessageTextInline(
           inlineMessageId,
-          `🔍 <b>Research: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
+          `🔍 <b>Research</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>\\n\\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
       } catch {}
     }
+    
+    inlineCache.delete(`r_pending_${rKey}`);
+    return;
+  }
+
+  // Handle Websearch deferred response - w_start_KEY
+  if (resultId.startsWith("w_start_")) {
+    const wKey = resultId.replace("w_start_", "");
+    const pending = inlineCache.get(`w_pending_${wKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Websearch pending not found or no inlineMessageId: wKey=${wKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel, userId: ownerId } = pending;
+    console.log(`Processing Websearch: ${prompt}`);
+    
+    try {
+      // Run web search using the same helper as /websearch
+      const searchResult = await webSearch(prompt, 5);
+      
+      if (!searchResult.success) {
+        const errMsg = `❌ Websearch failed: ${escapeHTML(searchResult.error || "Unknown error")}`;
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          errMsg,
+          { parse_mode: "HTML" }
+        );
+        inlineCache.delete(`w_pending_${wKey}`);
+        return;
+      }
+      
+      const searchContext = formatSearchResultsForAI(searchResult);
+      const startTime = Date.now();
+      
+      const aiResponse = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful assistant with access to real-time web search results. " +
+              "Use ONLY the search results provided. Prefer concise, well-structured answers with short paragraphs and bullet points. " +
+              "When you use a fact from a result, cite it like [1], [2], etc. If the search results don't contain relevant information, say so."
+          },
+          {
+            role: "user",
+            content:
+              `${searchContext}\n\n` +
+              `User's question: ${prompt}\n\n` +
+              "Answer the user's question based only on the search results above."
+          }
+        ],
+        temperature: 0.6,
+        max_tokens: 800,
+      });
+      
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const answer = (aiResponse || "No answer generated.").slice(0, 3500);
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      const newKey = makeId(6);
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: String(ownerId),
+        model,
+        mode: "websearch",
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🌐 <b>Websearch</b>\n\n<b>Query:</b> <i>${escapedPrompt}</i>\n\n${formattedAnswer}\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log("Websearch updated with AI response");
+    } catch (e) {
+      console.error("Failed to get Websearch response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🌐 <b>Websearch</b>\n\n⚠️ <i>Error getting response. Try again!</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`w_pending_${wKey}`);
+    return;
+  }
     
     // Clean up pending
     inlineCache.delete(`r_pending_${rKey}`);
