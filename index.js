@@ -1693,7 +1693,7 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
     { role: "user", content: userText },
   ];
 
-  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 350 });
+  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 700 });
   pushHistory(chatId, "user", userText);
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
@@ -6122,7 +6122,6 @@ bot.callbackQuery("menu_char", async (ctx) => {
   }
 });
 
-// Register menu
 // DM/GC AI-Continue button: ask the model to extend its previous answer
 bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -6143,9 +6142,25 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
     return ctx.answerCallbackQuery({ text: "Only the original requester can continue this answer.", show_alert: true });
   }
 
+  // Stop the spinner immediately and show a small toast
+  await ctx.answerCallbackQuery({ text: "Continuing...", show_alert: false });
+
+  // Remove the old Continue button to avoid spam clicks
+  try {
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+  } catch {
+    // ignore if we can't edit the old markup
+  }
+
   dmContinueCache.delete(key);
 
   const { chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml } = entry;
+
+  // Send a temporary status message that we'll edit with the continuation
+  const statusMsg = await ctx.reply("⏳ <i>Continuing...</i>", {
+    parse_mode: "HTML",
+    reply_to_message_id: ctx.callbackQuery.message?.message_id,
+  });
 
   const startTime = Date.now();
 
@@ -6197,14 +6212,22 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
       (sourcesHtml || "") +
       `\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
 
-    await ctx.answerCallbackQuery();
-    await ctx.reply(replyText, {
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, replyText, {
       parse_mode: "HTML",
       reply_markup: replyMarkup,
     });
   } catch (e) {
     console.error("DM AI-continue error:", e);
-    await ctx.answerCallbackQuery({ text: "Error while continuing. Try again.", show_alert: true });
+    try {
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        "❌ <i>Error while continuing. Try again.</i>",
+        { parse_mode: "HTML" }
+      );
+    } catch {
+      // ignore
+    }
   }
 });
 
