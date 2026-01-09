@@ -385,7 +385,9 @@ function savePartners() {
 // =====================
 const chatHistory = new Map(); // chatId -> [{role, content}...]
 const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separate history for partner mode
-const inlineCache = new Map(); // key -> { prompt, answer, model, createdAt, userId }
+const inlineCache = new Map(); // key -&gt; { prompt, answer, model, createdAt, userId }
+// For DM/GC long answers: continuation cache keyed by random id
+const dmContinueCache = new Map(); // key -> { remaining, full, model, userId, chatId, modeLabel, sourcesHtml, createdAt }che = new Map(); // key -> { prompt, answer, model, createdAt, userId }
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
@@ -2498,6 +2500,31 @@ function escapeHTML(text) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Split long DM/GC answers into a visible chunk and remaining text,
+// avoiding cutting mid-word or mid-sentence where possible.
+function splitAnswerForDM(full, maxLen = 3600) {
+  if (!full) {
+    return { visible: "", remaining: "", completed: true };
+  }
+
+  const trimmed = full.trim();
+  if (trimmed.length <= maxLen) {
+    return { visible: trimmed, remaining: "", completed: true };
+  }
+
+  let slice = trimmed.slice(0, maxLen);
+  // Reuse tail trimming helper to avoid ugly mid-sentence endings
+  const cleaned = trimIncompleteTail(slice);
+  const visible = cleaned;
+  const remaining = trimmed.slice(visible.length).trimStart();
+
+  return {
+    visible,
+    remaining,
+    completed: remaining.length === 0,
+  };
 }
 
 // Escape special Markdown characters (for Telegram Markdown)
@@ -6093,6 +6120,74 @@ bot.callbackQuery("menu_char", async (ctx) => {
 });
 
 // Register menu
+// DM/GC Continue button for long answers
+bot.callbackQuery(/^dm_cont:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const data = ctx.callbackQuery.data || "";
+  const match = data.match(/^dm_cont:(.+)$/);
+  if (!match) {
+    return ctx.answerCallbackQuery();
+  }
+
+  const key = match[1];
+  const entry = dmContinueCache.get(key);
+  if (!entry) {
+    return ctx.answerCallbackQuery({ text: "Session expired. Please ask again.", show_alert: true });
+  }
+
+  // Only the original user should be able to continue
+  const callerId = String(ctx.from?.id || "");
+  if (callerId !== String(entry.userId)) {
+    return ctx.answerCallbackQuery({ text: "Only the original requester can continue this answer.", show_alert: true });
+  }
+
+  const { remaining, full, model, modeLabel, sourcesHtml } = entry;
+  const chatId = entry.chatId;
+
+  // Compute next chunk from remaining text
+  const { visible, remaining: nextRemaining, completed } = splitAnswerForDM(remaining, 3600);
+
+  let nextKeyboard;
+  if (!completed && nextRemaining) {
+    const newKey = makeId(8);
+    dmContinueCache.set(newKey, {
+      remaining: nextRemaining,
+      full,
+      model,
+      userId: entry.userId,
+      chatId,
+      modeLabel,
+      sourcesHtml,
+      createdAt: Date.now(),
+    });
+    nextKeyboard = new InlineKeyboard().text("➡️ Continue", `dm_cont:${newKey}`);
+    dmContinueCache.delete(key);
+  } else {
+    // Final chunk: clean up and append end marker + sources footer
+    dmContinueCache.delete(key);
+  }
+
+  let chunkText = visible;
+  if (completed) {
+    chunkText = `${chunkText}\n\n> End of answer.`;
+  }
+
+  const formatted = convertToTelegramHTML(chunkText);
+  const htmlModeLabel = modeLabel
+    ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
+    : "";
+  const footerSources = completed ? (sourcesHtml || "") : "";
+
+  const replyText = `${htmlModeLabel}${formatted}${footerSources}`;
+
+  await ctx.answerCallbackQuery();
+  await ctx.reply(replyText, {
+    parse_mode: "HTML",
+    reply_markup: nextKeyboard,
+  });
+});
+
+// Original menu_register handler
 bot.callbackQuery("menu_register", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -7151,6 +7246,8 @@ bot.on("message:text", async (ctx) => {
     let modeLabel = "";
     // For DM/GC web+AI mode: optional sources footer when web search is used
     let webSourcesFooterHtml = "";
+    // Optional continuation key for long DM/GC answers
+    let dmContinueKey = null;
     
     if (isPartnerMode) {
       // Partner mode - use partner's persona and separate chat history
@@ -7372,33 +7469,67 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    // Convert AI output from standard Markdown to Telegram HTML format
-    const rawOutput =
+    // We may need to chunk very long answers into multiple parts.
+    const fullText =
       out && out.trim()
-        ? out.slice(0, 3600)
-        : "<i>I couldn't generate a response. Try rephrasing or switch models with /model</i>";
-    const formattedOutput = convertToTelegramHTML(rawOutput);
-    
-    // Convert mode label to HTML format
+        ? out.trim()
+        : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
+
+    const { visible, remaining, completed } = splitAnswerForDM(fullText, 3600);
+
+    // If there is remaining content, store it in dmContinueCache and prepare a Continue button
+    let keyboard;
+    if (!completed && remaining) {
+      const key = makeId(8);
+      dmContinueCache.set(key, {
+        remaining,
+        full: fullText,
+        model,
+        userId: u.id,
+        chatId: chat.id,
+        modeLabel,
+        sourcesHtml: webSourcesFooterHtml,
+        createdAt: Date.now(),
+      });
+      dmContinueKey = key;
+      keyboard = new InlineKeyboard().text("➡️ Continue", `dm_cont:${key}`);
+    }
+
+    // For the final chunk, append an end marker quote and sources footer (if any)
+    let chunkText = visible;
+    if (completed) {
+      chunkText = `${chunkText}\n\n> End of answer.`;
+    }
+
+    const formattedOutput = convertToTelegramHTML(chunkText);
+
+    // Convert mode label (which still uses Markdown) into HTML
     const htmlModeLabel = modeLabel
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
-    
-    const response = `${htmlModeLabel}${formattedOutput}${webSourcesFooterHtml}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
+
+    const sourcesFooter = completed ? webSourcesFooterHtml : "";
+
+    const response = `${htmlModeLabel}${formattedOutput}${sourcesFooter}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
       try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
+        await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, {
+          parse_mode: "HTML",
+          reply_markup: keyboard,
+        });
       } catch (editErr) {
         // Fallback to new message if edit fails
         await ctx.reply(response, {
           parse_mode: "HTML",
           reply_to_message_id: msg.message_id,
+          reply_markup: keyboard,
         });
       }
     } else {
       await ctx.reply(response, {
         parse_mode: "HTML",
         reply_to_message_id: msg.message_id,
+        reply_markup: keyboard,
       });
     }
   } catch (e) {
