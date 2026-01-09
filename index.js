@@ -2372,6 +2372,88 @@ function trimIncompleteTail(text, maxTail = 220) {
 }
 
 // =====================
+// PARALLEL EXTRACT API
+// =====================
+
+// Extract and clean content from specific URLs using Parallel.ai Extract API
+async function parallelExtractUrls(urls, objective = "") {
+  if (!PARALLEL_API_KEY) {
+    return {
+      success: false,
+      error: "Parallel API key not configured",
+      urls,
+    };
+  }
+
+  const urlList = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
+  if (!urlList.length) {
+    return {
+      success: false,
+      error: "No URLs provided",
+      urls: [],
+    };
+  }
+
+  try {
+    const res = await fetch("https://api.parallel.ai/v1beta/extract", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": PARALLEL_API_KEY,
+        "parallel-beta": "true",
+      },
+      body: JSON.stringify({
+        urls: urlList,
+        objective: objective || null,
+        // Focus on excerpts by default; include full content for LLM context if needed
+        excerpts: true,
+        full_content: false,
+      }),
+      timeout: 25000,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.log("Parallel extract HTTP error:", res.status, text.slice(0, 200));
+      return {
+        success: false,
+        error: `Parallel extract HTTP ${res.status}`,
+        urls: urlList,
+      };
+    }
+
+    const data = await res.json();
+    const results = Array.isArray(data.results) ? data.results : [];
+
+    const mapped = results.map((r) => {
+      const excerpts =
+        Array.isArray(r.excerpts)
+          ? r.excerpts.join("\n\n")
+          : (typeof r.excerpts === "string" ? r.excerpts : "");
+      const content = excerpts || r.full_content || "";
+      return {
+        url: r.url || "",
+        title: r.title || (r.url || "No title"),
+        content: content || "No content extracted",
+      };
+    });
+
+    return {
+      success: true,
+      results: mapped,
+      urls: urlList,
+    };
+  } catch (e) {
+    console.log("Parallel extract error:", e.message);
+    return {
+      success: false,
+      error: e.message || "Parallel extract failed",
+      urls: Array.isArray(urls) ? urls : [urls],
+    };
+  }
+}
+
+// =====================
 // UI HELPERS
 // =====================
 function helpText() {
@@ -3079,7 +3161,7 @@ bot.command("websearch", async (ctx) => {
         },
         {
           role: "user",
-          content: `${searchContext}\n\nUser's question: ${query}\n\nPlease answer based on the search results above.`
+          content: `${searchContext}\\n\\nUser's question: ${query}\\n\\nPlease answer based on the search results above.`
         }
       ],
       temperature: 0.7,
@@ -3088,9 +3170,9 @@ bot.command("websearch", async (ctx) => {
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
-    let response = `🔍 <b>Web Search:</b> <i>${escapeHTML(query)}</i>\n\n`;
+    let response = `🔍 <b>Web Search:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
     response += convertToTelegramHTML(aiResponse.slice(0, 3500));
-    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
+    response += `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
     
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
       parse_mode: "HTML",
@@ -3104,6 +3186,137 @@ bot.command("websearch", async (ctx) => {
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
       `❌ Error: ${escapeHTML(e.message?.slice(0, 100) || 'Unknown error')}`, 
       { parse_mode: "HTML" });
+  }
+});
+
+// /extract command - Extract content from a specific URL using Parallel.ai
+bot.command("extract", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+
+  const full = ctx.message.text.replace(/^\/extract\s*/i, "").trim();
+
+  if (!full) {
+    const help = [
+      "🧲 <b>Extract content from a URL</b>",
+      "",
+      "Usage:",
+      "<code>/extract https://example.com/article</code>",
+      "<code>/extract https://example.com/article What are the main points?</code>",
+      "",
+      "The bot fetches the page via Parallel.ai Extract API, pulls the important content,",
+      "and (optionally) answers your question about it."
+    ].join("\\n");
+    return ctx.reply(help, {
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
+
+  if (!PARALLEL_API_KEY) {
+    return ctx.reply(
+      "⚠️ Extract API is not configured yet. Set <code>PARALLEL_API_KEY</code> in env to enable it.",
+      {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      }
+    );
+  }
+
+  // Split into URL + optional question
+  const parts = full.split(/\s+/);
+  const url = parts.shift();
+  const question = parts.join(" ").trim();
+
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return ctx.reply(
+      "❌ Please provide a valid URL.\\nExample: <code>/extract https://example.com/article</code>",
+      {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      }
+    );
+  }
+
+  const statusMsg = await ctx.reply(
+    `🧲 Extracting content from: <a href="${escapeHTML(url)}">${escapeHTML(url.slice(0, 60))}${url.length > 60 ? "..." : ""}</a>`,
+    {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
+
+  try {
+    const objective = question || "Summarize the main points of this page.";
+    const extractResult = await parallelExtractUrls(url, objective);
+
+    if (!extractResult.success || !extractResult.results || extractResult.results.length === 0) {
+      const msg = extractResult.error
+        ? `❌ Extract failed: ${escapeHTML(extractResult.error)}`
+        : "❌ Extract failed: no content returned.";
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, msg, {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
+    const first = extractResult.results[0];
+    const pageTitle = first.title || url;
+    const pageContent = first.content || "";
+
+    // If user didn't ask a question, just summarize the page
+    const userQuestion = question || "Summarize the main points of this page.";
+
+    const model = ensureChosenModelValid(ctx.from.id);
+    const startTime = Date.now();
+
+    const prompt = [
+      `You are a helpful assistant. You are given content extracted from a single web page.`,
+      `Answer the user's request using ONLY this content. If something is not in the content, say you don't know.`,
+      ``,
+      `Page URL: ${url}`,
+      `Page title: ${pageTitle}`,
+      ``,
+      `--- START OF EXTRACTED CONTENT ---`,
+      pageContent.slice(0, 8000),
+      `--- END OF EXTRACTED CONTENT ---`,
+      ``,
+      `User request: ${userQuestion}`,
+    ].join("\n");
+
+    const answer = await llmText({
+      model,
+      messages: [
+        { role: "system", content: "You answer questions based only on the provided page content." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 800,
+    });
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const safeTitle = escapeHTML(pageTitle);
+
+    let response = `🧲 <b>Extracted from:</b> <a href="${escapeHTML(url)}">${safeTitle}</a>\\n\\n`;
+    response += convertToTelegramHTML((answer || "").slice(0, 3500));
+    response += `\\n\\n<i>🔗 via Parallel Extract • ${elapsed}s • ${escapeHTML(model)}</i>`;
+
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, {
+      parse_mode: "HTML",
+      disable_web_page_preview: false,
+    });
+
+    trackUsage(ctx.from.id, "message");
+  } catch (e) {
+    console.error("Extract command error:", e);
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      `❌ Error while extracting: ${escapeHTML(e.message?.slice(0, 120) || "Unknown error")}`,
+      { parse_mode: "HTML" }
+    );
   }
 });
 
