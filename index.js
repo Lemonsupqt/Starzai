@@ -2376,7 +2376,7 @@ function trimIncompleteTail(text, maxTail = 220) {
 // =====================
 
 // Extract and clean content from specific URLs using Parallel.ai Extract API
-async function parallelExtractUrls(urls, objective = "") {
+async function parallelExtractUrls(urls) {
   if (!PARALLEL_API_KEY) {
     return {
       success: false,
@@ -2402,23 +2402,23 @@ async function parallelExtractUrls(urls, objective = "") {
         "x-api-key": PARALLEL_API_KEY,
         "parallel-beta": "true",
       },
+      // Match the minimal shape shown in the official Python example:
+      // urls + simple boolean excerpts/full_content flags.
       body: JSON.stringify({
         urls: urlList,
-        objective: objective || null,
-        // Focus on excerpts by default; include full content for LLM context if needed
         excerpts: true,
-        full_content: false,
+        full_content: true,
       }),
-      timeout: 25000,
     });
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      console.log("Parallel extract HTTP error:", res.status, text.slice(0, 200));
+      console.log("Parallel extract HTTP error:", res.status, text.slice(0, 500));
       return {
         success: false,
-        error: `Parallel extract HTTP ${res.status}`,
+        error: `HTTP ${res.status}: ${text.slice(0, 200) || "Unknown error from Parallel Extract API"}`,
         urls: urlList,
+        status: res.status,
       };
     }
 
@@ -3249,8 +3249,8 @@ bot.command("extract", async (ctx) => {
   );
 
   try {
-    const objective = question || "Summarize the main points of this page.";
-    const extractResult = await parallelExtractUrls(url, objective);
+    // Extract full content for this URL
+    const extractResult = await parallelExtractUrls(url);
 
     if (!extractResult.success || !extractResult.results || extractResult.results.length === 0) {
       const msg = extractResult.error
