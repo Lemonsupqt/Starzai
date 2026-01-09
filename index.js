@@ -2229,7 +2229,7 @@ function buildWebsearchSourcesHtml(searchResult, userId) {
     const title = escapeHTML(r.title || url || `Source ${i + 1}`);
 
     if (url) {
-      parts.push(`<a href=\"${url}\">${title}</a>`);
+      parts.push(`<a href="${url}">${title}</a>`);
     } else {
       parts.push(title);
     }
@@ -2262,7 +2262,7 @@ function buildWebsearchSourcesInlineHtml(searchResult, userId) {
     const label = `[${i + 1}]`;
 
     if (url) {
-      parts.push(`<a href=\"${url}\">${label}</a>`);
+      parts.push(`<a href="${url}">${label}</a>`);
     } else {
       parts.push(label);
     }
@@ -2276,7 +2276,22 @@ function buildWebsearchSourcesInlineHtml(searchResult, userId) {
   html += "\n";
 
   return html;
-});
+}
+
+// Turn numeric citations into [1], [2] form and make them clickable links to result URLs.
+function linkifyWebsearchCitations(text, searchResult) {
+  if (!text || !searchResult || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return text;
+  }
+
+  const total = searchResult.results.length;
+
+  // First, normalize bare numeric citations like " 1." or " 2" into "[1]" / "[2]"
+  text = text.replace(/(\s)(\d+)(?=(?:[)\].,!?;:]\s|[)\].,!?;:]?$|\s|$))/g, (match, space, numStr) => {
+    const idx = parseInt(numStr, 10);
+    if (!idx || idx < 1 || idx > total) return match;
+    return `${space}[${idx}]`;
+  });
 
   // Then, convert [1], [2] into Markdown links so convertToTelegramHTML renders them as <a href="...">[1]</a>
   return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
