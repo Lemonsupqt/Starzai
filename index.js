@@ -3308,6 +3308,13 @@ bot.command("websearch", async (ctx) => {
     response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;et aiText = aiResponse || "";
     aiText = linkifyWebsearchCitations(aiText, searchResult);
     
+    let response = `🔍 <b>AI Web Search</b>\n\n`;
+    response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\n\n`;
+    response += convertToTelegramHTML(aiText.slice(0, 3500));
+    response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
+    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;et aiText = aiResponse || "";
+    aiText = linkifyWebsearchCitations(aiText, searchResult);
+    
     let response = `🔍 <b>AI Web Search</b>\\n\\n`;
     response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
     response += convertToTelegramHTML(aiText.slice(0, 3500));
