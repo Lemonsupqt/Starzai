@@ -7476,10 +7476,11 @@ bot.on("message:text", async (ctx) => {
         : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
 
     const { visible, remaining, completed } = splitAnswerForDM(fullText, 3600);
+    const isMultiPart = !completed && !!remaining;
 
     // If there is remaining content, store it in dmContinueCache and prepare a Continue button
     let keyboard;
-    if (!completed && remaining) {
+    if (isMultiPart) {
       const key = makeId(8);
       dmContinueCache.set(key, {
         remaining,
@@ -7495,12 +7496,8 @@ bot.on("message:text", async (ctx) => {
       keyboard = new InlineKeyboard().text("➡️ Continue", `dm_cont:${key}`);
     }
 
-    // For the final chunk, append an end marker quote and sources footer (if any)
-    let chunkText = visible;
-    if (completed) {
-      chunkText = `${chunkText}\n\n> End of answer.`;
-    }
-
+    // Initial chunk: never append "End of answer." here.
+    const chunkText = visible;
     const formattedOutput = convertToTelegramHTML(chunkText);
 
     // Convert mode label (which still uses Markdown) into HTML
@@ -7508,7 +7505,8 @@ bot.on("message:text", async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    const sourcesFooter = completed ? webSourcesFooterHtml : "";
+    // Only show sources footer when the answer fits in a single message (no multi-part)
+    const sourcesFooter = isMultiPart ? "" : webSourcesFooterHtml;
 
     const response = `${htmlModeLabel}${formattedOutput}${sourcesFooter}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
