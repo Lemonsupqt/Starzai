@@ -2504,7 +2504,9 @@ function escapeHTML(text) {
 
 // Split long DM/GC answers into a visible chunk and remaining text,
 // avoiding cutting mid-word or mid-sentence where possible.
-function splitAnswerForDM(full, maxLen = 3600) {
+// We keep maxLen fairly conservative so that after Markdown -> HTML
+// conversion we stay under Telegram's ~4096 character hard limit.
+function splitAnswerForDM(full, maxLen = 2400) {
   if (!full) {
     return { visible: "", remaining: "", completed: true };
   }
@@ -6145,7 +6147,7 @@ bot.callbackQuery(/^dm_cont:(.+)$/, async (ctx) => {
   const chatId = entry.chatId;
 
   // Compute next chunk from remaining text
-  const { visible, remaining: nextRemaining, completed } = splitAnswerForDM(remaining, 3600);
+  const { visible, remaining: nextRemaining, completed } = splitAnswerForDM(remaining, 2400);
 
   let nextKeyboard;
   if (!completed && nextRemaining) {
@@ -7475,7 +7477,7 @@ bot.on("message:text", async (ctx) => {
         ? out.trim()
         : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
 
-    const { visible, remaining, completed } = splitAnswerForDM(fullText, 3600);
+    const { visible, remaining, completed } = splitAnswerForDM(fullText, 2400);
     const isMultiPart = !completed && !!remaining;
 
     // If there is remaining content, store it in dmContinueCache and prepare a Continue button
