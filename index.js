@@ -3579,13 +3579,9 @@ bot.command("extract", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const safeTitle = escapeHTML(pageTitle);
 
-    let response = `🧲 <b>Extracted from:</b> <a href=\"${escapeHTML(url)}\">${safeTitle}</a>\\\\n\\\\n`;
+    let response = `🧲 <b>Extracted from:</b> <a href=\"${escapeHTML(url)}\">${safeTitle}</a>\\n\\n`;
     response += convertToTelegramHTML((answer || "").slice(0, 3500));
-    response += `\\\\n\\\\n<i>🔗 Extract • ${elapsed}s • ${escapeHTML(model)}</i>`;afeTitle = escapeHTML(pageTitle);
-
-    let response = `🧲 <b>Extracted from:</b> <a href="${escapeHTML(url)}">${safeTitle}</a>\\n\\n`;
-    response += convertToTelegramHTML((answer || "").slice(0, 3500));
-    response += `\\n\\n<i>🔗 via Parallel Extract • ${elapsed}s • ${escapeHTML(model)}</i>`;
+    response += `\\n\\n<i>🔗 Extract • ${elapsed}s • ${escapeHTML(model)}</i>`;
 
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, {
       parse_mode: "HTML",
