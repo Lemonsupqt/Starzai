@@ -2187,14 +2187,70 @@ function formatSearchResultsForAI(searchResult) {
     return `[Web search failed: ${searchResult.error}]`;
   }
   
-  let context = `[Web Search Results for "${searchResult.query}"]:\n\n`;
+  let context = `[Web Search Results for \"${searchResult.query}\"]:\\n\\n`;
   searchResult.results.forEach((r, i) => {
-    context += `${i + 1}. ${r.title}\n`;
-    context += `   URL: ${r.url}\n`;
-    context += `   ${r.content}\n\n`;
+    context += `${i + 1}. ${r.title}\\n`;
+    context += `   URL: ${r.url}\\n`;
+    context += `   ${r.content}\\n\\n`;
   });
   
   return context;
+}
+
+// Decide how many sources to show in websearch based on user tier / ownership
+function getWebsearchSourceLimit(userId, totalResults) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) return totalResults; // owners see all sources
+  
+  const user = getUserRecord(idStr);
+  const tier = user?.tier || "free";
+  let limit = 2; // default for free
+  
+  if (tier === "premium") limit = 5;
+  else if (tier === "ultra") limit = 7;
+  
+  return Math.min(totalResults, limit);
+}
+
+// Build HTML-formatted sources list with quoted snippets
+function buildWebsearchSourcesHtml(searchResult, userId) {
+  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return "";
+  }
+  
+  const total = searchResult.results.length;
+  const limit = getWebsearchSourceLimit(userId, total);
+  if (!limit) return "";
+  
+  let html = "\\n\\n<b>📚 Sources:</b>\\n";
+  for (let i = 0; i &lt; limit; i++) {
+    const r = searchResult.results[i];
+    const idx = i + 1;
+    const url = r.url || "";
+    const title = escapeHTML(r.title || url || `Source ${idx}`);
+    
+    html += `[${idx}] `;
+    if (url) {
+      html += `<a href=\"${url}\">${title}</a>`;
+    } else {
+      html += title;
+    }
+    
+    const raw = r.content || "";
+    if (raw) {
+      const snippet = raw.replace(/\\s+/g, " ").slice(0, 160);
+      const safeSnippet = escapeHTML(snippet);
+      html += `\\n<blockquote>${safeSnippet}${raw.length > 160 ? "..." : ""}</blockquote>`;
+    }
+    html += "\\n";
+  }
+  
+  const idStr = String(userId);
+  if (limit &lt; total &amp;&amp; !OWNER_IDS.has(idStr)) {
+    html += `<i>Showing ${limit} of ${total} sources</i>\\n`;
+  }
+  
+  return html;
 }
 
 // =====================
@@ -3182,6 +3238,7 @@ bot.command("websearch", async (ctx) => {
     let response = `🔍 <b>AI Web Search</b>\\n\\n`;
     response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
     response += convertToTelegramHTML((aiResponse || "").slice(0, 3500));
+    response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
     response += `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
     
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
@@ -10183,6 +10240,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       const answer = (aiResponse || "No answer generated.").slice(0, 3500);
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
+      const sourcesHtml = buildWebsearchSourcesHtml(searchResult, ownerId);
       
       const newKey = makeId(6);
       inlineCache.set(newKey, {
@@ -10197,7 +10255,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🌐 <b>Websearch</b>\n\n<b>Query:</b> <i>${escapedPrompt}</i>\n\n${formattedAnswer}\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
+        `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${sourcesHtml}\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey),
@@ -10209,7 +10267,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       try {
         await bot.api.editMessageTextInline(
           inlineMessageId,
-          `🌐 <b>Websearch</b>\n\n⚠️ <i>Error getting response. Try again!</i>`,
+          `🌐 <b>Websearch</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>`,
           { parse_mode: "HTML" }
         );
       } catch {}
