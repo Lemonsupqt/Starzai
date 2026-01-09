@@ -2245,19 +2245,45 @@ function buildWebsearchSourcesHtml(searchResult, userId) {
   return html;
 }
 
-// Turn plain [1], [2] style citations in websearch answers into clickable links pointing to result URLs.
-function linkifyWebsearchCitations(text, searchResult) {
-  if (!text || !searchResult || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
-    return text;
+// Build inline-specific sources list that uses [1], [2] style clickable indices
+function buildWebsearchSourcesInlineHtml(searchResult, userId) {
+  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return "";
   }
 
   const total = searchResult.results.length;
+  const limit = getWebsearchSourceLimit(userId, total);
+  if (!limit) return "";
+
+  const parts = [];
+  for (let i = 0; i < limit; i++) {
+    const r = searchResult.results[i];
+    const url = r.url || "";
+    const label = `[${i + 1}]`;
+
+    if (url) {
+      parts.push(`<a href=\"${url}\">${label}</a>`);
+    } else {
+      parts.push(label);
+    }
+  }
+
+  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
+  const idStr = String(userId);
+  if (limit < total && !OWNER_IDS.has(idStr)) {
+    html += ` <i>(showing ${limit} of ${total})</i>`;
+  }
+  html += "\n";
+
+  return html;
+});
+
+  // Then, convert [1], [2] into Markdown links so convertToTelegramHTML renders them as <a href="...">[1]</a>
   return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
     const idx = parseInt(numStr, 10);
     if (!idx || idx < 1 || idx > total) return match;
     const r = searchResult.results[idx - 1];
     if (!r || !r.url) return match;
-    // Convert to Markdown link so convertToTelegramHTML will render <a href="url">[n]</a>
     return `[${idx}](${r.url})`;
   });
 }
@@ -10280,7 +10306,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       answerRaw = linkifyWebsearchCitations(answerRaw, searchResult);
 
       const escapedPrompt = escapeHTML(prompt);
-      const sourcesHtml = buildWebsearchSourcesHtml(searchResult, ownerId);
+      const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerId);
       const formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
       
       const newKey = makeId(6);
