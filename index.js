@@ -6220,38 +6220,6 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
     const replyText =
       `${htmlModeLabel}${formatted}` +
       (sourcesHtml || "") +
-      `\n\n<i>⚡ ${elapsed}s • ${model}${finished ? " • end" : ""}</i>`;awOutput =
-      more && more.trim()
-        ? more.slice(0, 3600)
-        : "_No further details were generated._";
-    const formatted = convertToTelegramHTML(rawOutput);
-    const htmlModeLabel = modeLabel
-      ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
-      : "";
-
-    // Offer another Continue button only if:
-    // 1) the model did not signal completion, and
-    // 2) the continuation was actually truncated for Telegram (raw length > 3600).
-    let replyMarkup;
-    const wasTruncated = !finished && typeof more === "string" && more.length > 3600;
-    if (wasTruncated) {
-      const newKey = makeId(8);
-      dmContinueCache.set(newKey, {
-        userId: entry.userId,
-        chatId,
-        model,
-        systemPrompt,
-        userTextWithContext,
-        modeLabel,
-        sourcesHtml,
-        createdAt: Date.now(),
-      });
-      replyMarkup = new InlineKeyboard().text("➡️ Continue", `dm_ai_cont:${newKey}`);
-    }
-
-    const replyText =
-      `${htmlModeLabel}${formatted}` +
-      (sourcesHtml || "") +
       `\n\n<i>⚡ ${elapsed}s • ${model}${finished ? " • end" : ""}</i>`;
 
     await ctx.api.editMessageText(chatId, statusMsg.message_id, replyText, {
