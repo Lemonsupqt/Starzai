@@ -6167,18 +6167,26 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
   try {
     const continuedSystemPrompt =
       systemPrompt +
-      " You are continuing your previous answer for the same request. Do not repeat what you've already said; just continue from where you left off.";
+      " You are continuing your previous answer for the same request. Do not repeat what you've already said; just continue from where you left off. " +
+      "When you believe the answer is fully complete, append the exact token END_OF_ANSWER on its own line at the very end of your message.";
 
     const continuedUserText =
       `${userTextWithContext}\n\nContinue the answer from where you left off. ` +
       "Add further important details or sections that you didn't reach yet.";
 
-    const more = await llmChatReply({
+    let more = await llmChatReply({
       chatId,
       userText: continuedUserText,
       systemPrompt: continuedSystemPrompt,
       model,
     });
+
+    let finished = false;
+    if (typeof more === "string" && more.includes("END_OF_ANSWER")) {
+      finished = true;
+      // Strip the marker from the visible text
+      more = more.replace(/END_OF_ANSWER\s*$/g, "").replace(/END_OF_ANSWER/g, "").trimEnd();
+    }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const rawOutput =
@@ -6190,9 +6198,10 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Heuristic: if the continuation is also long, offer another Continue button
+    // Offer another Continue button only if the model didn't signal completion
+    // and the continuation is still quite long.
     let replyMarkup;
-    if (more && more.trim().length > 800) {
+    if (!finished && more && more.trim().length > 800) {
       const newKey = makeId(8);
       dmContinueCache.set(newKey, {
         userId: entry.userId,
