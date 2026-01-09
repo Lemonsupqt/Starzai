@@ -7357,7 +7357,8 @@ bot.on("message:text", async (ctx) => {
       // If we used web search, post-process the answer to add clickable [n] citations
       if (searchResultForCitations && typeof out === "string" && out.length > 0) {
         out = linkifyWebsearchCitations(out, searchResultForCitations);
-        webSourcesFooterHtml = buildWebsearchSourcesHtml(searchResultForCitations, u.id);
+        // Use [1], [2] style clickable indices in DM/GC sources footer, same as inline
+        webSourcesFooterHtml = buildWebsearchSourcesInlineHtml(searchResultForCitations, u.id);
       }
     }
 
