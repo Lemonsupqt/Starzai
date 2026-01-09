@@ -6199,6 +6199,36 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
+    // Offer another Continue button only if the model did NOT signal completion.
+    // We rely on the END_OF_ANSWER marker instead of length heuristics.
+    let replyMarkup;
+    if (!finished) {
+      const newKey = makeId(8);
+      dmContinueCache.set(newKey, {
+        userId: entry.userId,
+        chatId,
+        model,
+        systemPrompt,
+        userTextWithContext,
+        modeLabel,
+        sourcesHtml,
+        createdAt: Date.now(),
+      });
+      replyMarkup = new InlineKeyboard().text("➡️ Continue", `dm_ai_cont:${newKey}`);
+    }
+
+    const replyText =
+      `${htmlModeLabel}${formatted}` +
+      (sourcesHtml || "") +
+      `\n\n<i>⚡ ${elapsed}s • ${model}${finished ? " • end" : ""}</i>`;awOutput =
+      more && more.trim()
+        ? more.slice(0, 3600)
+        : "_No further details were generated._";
+    const formatted = convertToTelegramHTML(rawOutput);
+    const htmlModeLabel = modeLabel
+      ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
+      : "";
+
     // Offer another Continue button only if:
     // 1) the model did not signal completion, and
     // 2) the continuation was actually truncated for Telegram (raw length > 3600).
@@ -7302,8 +7332,10 @@ bot.on("message:text", async (ctx) => {
     let modeLabel = "";
     // For DM/GC web+AI mode: optional sources footer when web search is used
     let webSourcesFooterHtml = "";
-    // For DM/GC: context for simple AI continuation (\"Continue\" button)
+    // For DM/GC: context for simple AI continuation ("Continue" button)
     let dmContinueContext = null;
+    // Tracks whether the model explicitly signaled that the answer is finished
+    let answerFinished = false;
     
     if (isPartnerMode) {
       // Partner mode - use partner's persona and separate chat history
@@ -7497,6 +7529,8 @@ bot.on("message:text", async (ctx) => {
 
       systemPrompt +=
         " When genuinely helpful, you may briefly mention that users can change models with /model or use inline mode by typing @starztechbot with prefixes like q:, b:, code:, e:, as, sum, or p:.";
+      systemPrompt +=
+        " When you have fully answered the user's current request and there are no important points left to add, append the exact token END_OF_ANSWER at the very end of your reply. Omit this token if you believe a follow-up continuation could still be genuinely helpful.";
 
       const userTextWithContext = replyContext + (extractContext || "") + text + searchContext;
 
@@ -7507,7 +7541,16 @@ bot.on("message:text", async (ctx) => {
         model,
       });
 
-      // Store context so we can offer a simple \"Continue\" button later
+      // Check if the model explicitly marked the answer as finished
+      if (typeof out === "string" && out.includes("END_OF_ANSWER")) {
+        answerFinished = true;
+        out = out
+          .replace(/END_OF_ANSWER\s*$/g, "")
+          .replace(/END_OF_ANSWER/g, "")
+          .trimEnd();
+      }
+
+      // Store context so we can offer a simple "Continue" button later
       dmContinueContext = {
         systemPrompt,
         userTextWithContext,
@@ -7547,16 +7590,12 @@ bot.on("message:text", async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Offer a simple "Continue" button only when the raw answer exceeded
-    // our Telegram-safe slice (i.e., we had to truncate it). This keeps
-    // the button focused on cases where the message was actually cut.
+    // Offer a simple "Continue" button only when the model did NOT explicitly
+    // mark the answer as finished (no END_OF_ANSWER marker).
     let replyMarkup;
-    const isTruncated =
-      dmContinueContext &&
-      typeof out === "string" &&
-      out.length > 3600;
+    const canOfferContinue = dmContinueContext && !answerFinished;
 
-    if (isTruncated) {
+    if (canOfferContinue) {
       const key = makeId(8);
       dmContinueCache.set(key, {
         userId: u.id,
