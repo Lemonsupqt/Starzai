@@ -109,11 +109,6 @@ SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 ```
 
-**Web Search (Optional, Parallel AI):**
-```
-PARALLEL_API_KEY=your_parallel_api_key  # If set, /search, /websearch, and auto web search use Parallel Search API
-```
-
 **Other:**
 ```
 RATE_LIMIT_PER_MINUTE=12  # Global safety limit (all users, including inline)
