@@ -10076,6 +10076,7 @@ bot.on("chosen_inline_result", async (ctx) => {
   }
   
   // Handle Blackhole deferred response - bh_start_KEY
+  // Now optionally uses web search when Web mode is ON or the topic looks time-sensitive.
   if (resultId.startsWith("bh_start_")) {
     const bhKey = resultId.replace("bh_start_", "");
     const pending = inlineCache.get(`bh_pending_${bhKey}`);
@@ -10085,19 +10086,66 @@ bot.on("chosen_inline_result", async (ctx) => {
       return;
     }
     
-    const { prompt, model, shortModel } = pending;
+    const { prompt, model, shortModel, userId: ownerId } = pending;
+    const ownerStr = String(ownerId || pending.userId || "");
     console.log(`Processing Blackhole: ${prompt}`);
     
     try {
+      let searchResult = null;
+      const userRec = ownerStr ? getUserRecord(ownerStr) : null;
+      const wantsWebsearch = (userRec?.webSearch || needsWebSearch(prompt));
+      
+      // Try to fetch web search context if desired and quota allows
+      if (wantsWebsearch && ownerStr) {
+        const quota = consumeWebsearchQuota(ownerId || ownerStr);
+        if (quota.allowed) {
+          try {
+            const result = await webSearch(prompt, 5);
+            if (result.success && Array.isArray(result.results) && result.results.length > 0) {
+              searchResult = result;
+            }
+          } catch (err) {
+            console.log("Blackhole websearch failed:", err.message || err);
+          }
+        } else {
+          console.log(
+            `Blackhole websearch quota exhausted for user ${ownerStr}: used=${quota.used}, limit=${quota.limit}`
+          );
+        }
+      }
+
+      let systemContent;
+      let userContent;
+
+      if (searchResult) {
+        const searchContext = formatSearchResultsForAI(searchResult);
+        systemContent =
+          "You are a research expert with access to real-time web search results. " +
+          "Provide comprehensive, well-structured analysis with multiple perspectives. " +
+          "Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. " +
+          "Base your answer ONLY on the search results provided. " +
+          "Every non-obvious factual claim must be backed by a source index like [1], [2], etc. " +
+          "When you summarize multiple sources, include multiple indices, e.g. [1][3]. " +
+          "For specific numbers, dates, or names, always attach the source index. " +
+          "Never invent citations or sources. " +
+          "When you have fully covered the topic and there is nothing essential left to add, end your answer with a line containing only END_OF_BLACKHOLE.";
+        userContent =
+          `${searchContext}\n\n` +
+          `User's topic for deep analysis: ${prompt}\n\n` +
+          "Write a detailed analysis based ONLY on the search results above, with clear [n] citations tied to the numbered sources.";
+      } else {
+        systemContent =
+          "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. " +
+          "Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. " +
+          "Format your answer in clean Markdown. When you have fully covered the topic and there is nothing essential left to add, end your answer with a line containing only END_OF_BLACKHOLE.";
+        userContent = `Provide deep analysis on: ${prompt}`;
+      }
+
       const out = await llmText({
         model,
         messages: [
-          {
-            role: "system",
-            content:
-              "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances. Use headings, bullet points, and quote blocks (lines starting with '>') for key takeaways. Format your answer in clean Markdown. When you have fully covered the topic and there is nothing essential left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
-          },
-          { role: "user", content: `Provide deep analysis on: ${prompt}` },
+          { role: "system", content: systemContent },
+          { role: "user", content: userContent },
         ],
         temperature: 0.7,
         max_tokens: 800,
@@ -10105,6 +10153,9 @@ bot.on("chosen_inline_result", async (ctx) => {
 
       const END_MARK = "END_OF_BLACKHOLE";
       let raw = out || "No results";
+      if (searchResult) {
+        raw = linkifyWebsearchCitations(raw, searchResult);
+      }
       let completed = false;
 
       if (raw.includes(END_MARK)) {
@@ -10140,10 +10191,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
       const partLabel = completed ? "Part 1 – final" : "Part 1";
+      const sourcesHtml = searchResult
+        ? buildWebsearchSourcesInlineHtml(searchResult, ownerStr || pending.userId)
+        : "";
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey)
@@ -10731,6 +10785,7 @@ bot.on("chosen_inline_result", async (ctx) => {
   }
   
   // Handle Quark deferred response - q_start_KEY
+  // Now optionally uses web search when Web mode is ON or the question looks time-sensitive.
   if (resultId.startsWith("q_start_")) {
     const qKey = resultId.replace("q_start_", "");
     const pending = inlineCache.get(`q_pending_${qKey}`);
@@ -10740,10 +10795,96 @@ bot.on("chosen_inline_result", async (ctx) => {
       return;
     }
     
-    const { prompt, model, shortModel } = pending;
+    const { prompt, model, shortModel, userId: ownerId } = pending;
+    const ownerStr = String(ownerId || pending.userId || "");
     console.log(`Processing Quark: ${prompt}`);
     
     try {
+      const userRec = ownerStr ? getUserRecord(ownerStr) : null;
+      const wantsWebsearch = (userRec?.webSearch || needsWebSearch(prompt));
+      
+      // Try websearch-backed Quark answer first if desired and quota available
+      if (wantsWebsearch && ownerStr) {
+        const quota = consumeWebsearchQuota(ownerId || ownerStr);
+        if (quota.allowed) {
+          try {
+            const searchResult = await webSearch(prompt, 5);
+            if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
+              const searchContext = formatSearchResultsForAI(searchResult);
+  
+              const aiResponse = await llmText({
+                model,
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "You are a helpful assistant with access to real-time web search results.\n" +
+                      "Answer in at most 2 short sentences while staying accurate.\n" +
+                      "\n" +
+                      "CRITICAL CITATION INSTRUCTIONS:\n" +
+                      "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+                      "• If you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+                      "• For concrete numbers, dates, or names, always attach the source index.\n" +
+                      "• Never invent citations; only use indices that exist in the search results."
+                  },
+                  {
+                    role: "user",
+                    content:
+                      `${searchContext}\n\n` +
+                      `User's question: ${prompt}\n\n` +
+                      "Write a direct, compact answer (1–2 sentences maximum) based ONLY on the search results above, and attach [n] citations to the key factual claims."
+                  }
+                ],
+                temperature: 0.5,
+                max_tokens: 220,
+              });
+  
+              let answer = aiResponse || "No answer";
+              answer = linkifyWebsearchCitations(answer, searchResult).slice(0, 600);
+  
+              const newKey = makeId(6);
+  
+              inlineCache.set(newKey, {
+                prompt,
+                answer,
+                userId: ownerStr,
+                model,
+                mode: "quark",
+                createdAt: Date.now(),
+              });
+              setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+  
+              addToHistory(ownerStr, prompt, "quark");
+  
+              const formattedAnswer = convertToTelegramHTML(answer);
+              const escapedPrompt = escapeHTML(prompt);
+              const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerStr);
+  
+              await bot.api.editMessageTextInline(
+                inlineMessageId,
+                `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
+                { 
+                  parse_mode: "HTML",
+                  // Quark intentionally has no Continue button
+                  reply_markup: inlineAnswerKeyboard(newKey)
+                }
+              );
+              console.log("Quark (websearch) updated with AI response");
+              inlineCache.delete(`q_pending_${qKey}`);
+              return;
+            }
+          } catch (webErr) {
+            console.log("Quark websearch failed:", webErr.message || webErr);
+            // Fall through to offline Quark
+          }
+        } else {
+          console.log(
+            `Quark websearch quota exhausted for user ${ownerStr}: used=${quota.used}, limit=${quota.limit}`
+          );
+        }
+      }
+    
+      // Offline Quark answer (fallback)
       const out = await llmText({
         model,
         messages: [
