@@ -2212,7 +2212,7 @@ function getWebsearchSourceLimit(userId, totalResults) {
   return Math.min(totalResults, limit);
 }
 
-// Build HTML-formatted sources list with quoted snippets
+// Build HTML-formatted sources list with clickable titles (one line, like: Sources: Title1, Title2)
 function buildWebsearchSourcesHtml(searchResult, userId) {
   if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
     return "";
@@ -2222,35 +2222,44 @@ function buildWebsearchSourcesHtml(searchResult, userId) {
   const limit = getWebsearchSourceLimit(userId, total);
   if (!limit) return "";
 
-  let html = "\n\n<b>📚 Sources:</b>\n";
+  const parts = [];
   for (let i = 0; i < limit; i++) {
     const r = searchResult.results[i];
-    const idx = i + 1;
     const url = r.url || "";
-    const title = escapeHTML(r.title || url || `Source ${idx}`);
+    const title = escapeHTML(r.title || url || `Source ${i + 1}`);
 
-    html += `[${idx}] `;
     if (url) {
-      html += `<a href="${url}">${title}</a>`;
+      parts.push(`<a href=\"${url}\">${title}</a>`);
     } else {
-      html += title;
+      parts.push(title);
     }
-
-    const raw = r.content || "";
-    if (raw) {
-      const snippet = raw.replace(/\s+/g, " ").slice(0, 160);
-      const safeSnippet = escapeHTML(snippet);
-      html += `\n<blockquote>${safeSnippet}${raw.length > 160 ? "..." : ""}</blockquote>`;
-    }
-    html += "\n";
   }
 
+  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
   const idStr = String(userId);
   if (limit < total && !OWNER_IDS.has(idStr)) {
-    html += `<i>Showing ${limit} of ${total} sources</i>\n`;
+    html += ` <i>(showing ${limit} of ${total})</i>`;
   }
+  html += "\n";
 
   return html;
+}
+
+// Turn plain [1], [2] style citations in websearch answers into clickable links pointing to result URLs.
+function linkifyWebsearchCitations(text, searchResult) {
+  if (!text || !searchResult || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return text;
+  }
+
+  const total = searchResult.results.length;
+  return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
+    const idx = parseInt(numStr, 10);
+    if (!idx || idx < 1 || idx > total) return match;
+    const r = searchResult.results[idx - 1];
+    if (!r || !r.url) return match;
+    // Convert to Markdown link so convertToTelegramHTML will render <a href="url">[n]</a>
+    return `[${idx}](${r.url})`;
+  });
 }
 
 // =====================
@@ -3248,9 +3257,12 @@ bot.command("websearch", async (ctx) => {
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
+    let aiText = aiResponse || "";
+    aiText = linkifyWebsearchCitations(aiText, searchResult);
+    
     let response = `🔍 <b>AI Web Search</b>\\n\\n`;
     response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
-    response += convertToTelegramHTML((aiResponse || "").slice(0, 3500));
+    response += convertToTelegramHTML(aiText.slice(0, 3500));
     response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
     response += `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
     
@@ -10263,15 +10275,18 @@ bot.on("chosen_inline_result", async (ctx) => {
       });
       
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const answer = (aiResponse || "No answer generated.").slice(0, 3500);
-      const formattedAnswer = convertToTelegramHTML(answer);
+
+      let answerRaw = aiResponse || "No answer generated.";
+      answerRaw = linkifyWebsearchCitations(answerRaw, searchResult);
+
       const escapedPrompt = escapeHTML(prompt);
       const sourcesHtml = buildWebsearchSourcesHtml(searchResult, ownerId);
+      const formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
       
       const newKey = makeId(6);
       inlineCache.set(newKey, {
         prompt,
-        answer,
+        answer: answerRaw,
         userId: String(ownerId),
         model,
         mode: "websearch",
@@ -10281,7 +10296,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${sourcesHtml}\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
+        `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${sourcesHtml}\\\\n\\\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey),
