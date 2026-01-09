@@ -2400,7 +2400,9 @@ async function parallelExtractUrls(urls) {
       headers: {
         "Content-Type": "application/json",
         "x-api-key": PARALLEL_API_KEY,
-        "parallel-beta": "true",
+        // Official beta header for Extract API as per docs:
+        // "valid values are: search-extract-2025-10-10"
+        "parallel-beta": "search-extract-2025-10-10",
       },
       // Match the minimal shape shown in the official Python example:
       // urls + simple boolean excerpts/full_content flags.
