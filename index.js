@@ -1958,26 +1958,27 @@ async function parallelWebSearch(query, numResults = 5) {
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': PARALLEL_API_KEY,
-        'parallel-beta': 'true',
+        // Search API is also beta; use the documented header for search/extract.
+        'parallel-beta': 'search-extract-2025-10-10',
       },
       body: JSON.stringify({
         objective: query,
-        max_results: numResults,
-        mode: 'one-shot',
+        mode: 'one-shot',           // richer, single-shot answers
+        max_results: numResults,    // upper bound on results
         excerpts: {
           max_chars_per_result: 1500,
         },
       }),
-      timeout: 15000,
     });
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      console.log('Parallel web search HTTP error:', response.status, text.slice(0, 200));
+      console.log('Parallel web search HTTP error:', response.status, text.slice(0, 500));
       return {
         success: false,
-        error: `Parallel search HTTP ${response.status}`,
+        error: `HTTP ${response.status}: ${text.slice(0, 200) || "Unknown error from Parallel Search API"}`,
         query,
+        status: response.status,
       };
     }
 
@@ -1989,7 +1990,7 @@ async function parallelWebSearch(query, numResults = 5) {
         Array.isArray(r.excerpts)
           ? r.excerpts.join("\n\n")
           : (typeof r.excerpts === "string" ? r.excerpts : "");
-      const content = excerpts || r.full_content || "";
+      const content = excerpts || "";
       return {
         title: r.title || r.url || "No title",
         url: r.url || "",
