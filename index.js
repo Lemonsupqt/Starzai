@@ -386,8 +386,9 @@ function savePartners() {
 const chatHistory = new Map(); // chatId -> [{role, content}...]
 const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separate history for partner mode
 const inlineCache = new Map(); // key -&gt; { prompt, answer, model, createdAt, userId }
-// For DM/GC long answers: continuation cache keyed by random id
-const dmContinueCache = new Map(); // key -> { remaining, full, model, userId, chatId, modeLabel, sourcesHtml, createdAt }che = new Map(); // key -> { prompt, answer, model, createdAt, userId }
+// For DM/GC answers: simple continuation cache keyed by random id
+// Used when the user taps the "Continue" button to ask the AI to extend its answer.
+const dmContinueCache = new Map(); // key -> { userId, chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml, createdAt }che = new Map(); // key -> { prompt, answer, model, createdAt, userId }
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
@@ -6122,11 +6123,11 @@ bot.callbackQuery("menu_char", async (ctx) => {
 });
 
 // Register menu
-// DM/GC Continue button for long answers
-bot.callbackQuery(/^dm_cont:(.+)$/, async (ctx) => {
+// DM/GC AI-Continue button: ask the model to extend its previous answer
+bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   const data = ctx.callbackQuery.data || "";
-  const match = data.match(/^dm_cont:(.+)$/);
+  const match = data.match(/^dm_ai_cont:(.+)$/);
   if (!match) {
     return ctx.answerCallbackQuery();
   }
@@ -6137,56 +6138,74 @@ bot.callbackQuery(/^dm_cont:(.+)$/, async (ctx) => {
     return ctx.answerCallbackQuery({ text: "Session expired. Please ask again.", show_alert: true });
   }
 
-  // Only the original user should be able to continue
   const callerId = String(ctx.from?.id || "");
   if (callerId !== String(entry.userId)) {
     return ctx.answerCallbackQuery({ text: "Only the original requester can continue this answer.", show_alert: true });
   }
 
-  const { remaining, full, model, modeLabel, sourcesHtml } = entry;
-  const chatId = entry.chatId;
+  dmContinueCache.delete(key);
 
-  // Compute next chunk from remaining text
-  const { visible, remaining: nextRemaining, completed } = splitAnswerForDM(remaining, 2400);
+  const { chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml } = entry;
 
-  let nextKeyboard;
-  if (!completed && nextRemaining) {
-    const newKey = makeId(8);
-    dmContinueCache.set(newKey, {
-      remaining: nextRemaining,
-      full,
-      model,
-      userId: entry.userId,
+  const startTime = Date.now();
+
+  try {
+    const continuedSystemPrompt =
+      systemPrompt +
+      " You are continuing your previous answer for the same request. Do not repeat what you've already said; just continue from where you left off.";
+
+    const continuedUserText =
+      `${userTextWithContext}\n\nContinue the answer from where you left off. ` +
+      "Add further important details or sections that you didn't reach yet.";
+
+    const more = await llmChatReply({
       chatId,
-      modeLabel,
-      sourcesHtml,
-      createdAt: Date.now(),
+      userText: continuedUserText,
+      systemPrompt: continuedSystemPrompt,
+      model,
     });
-    nextKeyboard = new InlineKeyboard().text("➡️ Continue", `dm_cont:${newKey}`);
-    dmContinueCache.delete(key);
-  } else {
-    // Final chunk: clean up and append end marker + sources footer
-    dmContinueCache.delete(key);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const rawOutput =
+      more && more.trim()
+        ? more.slice(0, 3600)
+        : "_No further details were generated._";
+    const formatted = convertToTelegramHTML(rawOutput);
+    const htmlModeLabel = modeLabel
+      ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
+      : "";
+
+    // Heuristic: if the continuation is also long, offer another Continue button
+    let replyMarkup;
+    if (more && more.trim().length > 800) {
+      const newKey = makeId(8);
+      dmContinueCache.set(newKey, {
+        userId: entry.userId,
+        chatId,
+        model,
+        systemPrompt,
+        userTextWithContext,
+        modeLabel,
+        sourcesHtml,
+        createdAt: Date.now(),
+      });
+      replyMarkup = new InlineKeyboard().text("➡️ Continue", `dm_ai_cont:${newKey}`);
+    }
+
+    const replyText =
+      `${htmlModeLabel}${formatted}` +
+      (sourcesHtml || "") +
+      `\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
+
+    await ctx.answerCallbackQuery();
+    await ctx.reply(replyText, {
+      parse_mode: "HTML",
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    console.error("DM AI-continue error:", e);
+    await ctx.answerCallbackQuery({ text: "Error while continuing. Try again.", show_alert: true });
   }
-
-  let chunkText = visible;
-  if (completed) {
-    chunkText = `${chunkText}\n\n> End of answer.`;
-  }
-
-  const formatted = convertToTelegramHTML(chunkText);
-  const htmlModeLabel = modeLabel
-    ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
-    : "";
-  const footerSources = completed ? (sourcesHtml || "") : "";
-
-  const replyText = `${htmlModeLabel}${formatted}${footerSources}`;
-
-  await ctx.answerCallbackQuery();
-  await ctx.reply(replyText, {
-    parse_mode: "HTML",
-    reply_markup: nextKeyboard,
-  });
 });
 
 // Original menu_register handler
@@ -7248,8 +7267,8 @@ bot.on("message:text", async (ctx) => {
     let modeLabel = "";
     // For DM/GC web+AI mode: optional sources footer when web search is used
     let webSourcesFooterHtml = "";
-    // Optional continuation key for long DM/GC answers
-    let dmContinueKey = null;
+    // For DM/GC: context for simple AI continuation (\"Continue\" button)
+    let dmContinueContext = null;
     
     if (isPartnerMode) {
       // Partner mode - use partner's persona and separate chat history
@@ -7453,11 +7472,22 @@ bot.on("message:text", async (ctx) => {
         model,
       });
 
+      // Store context so we can offer a simple \"Continue\" button later
+      dmContinueContext = {
+        systemPrompt,
+        userTextWithContext,
+        model,
+        modeLabel,
+      };
+
       // If we used web search, post-process the answer to add clickable [n] citations
       if (searchResultForCitations && typeof out === "string" && out.length > 0) {
         out = linkifyWebsearchCitations(out, searchResultForCitations);
         // Use [1], [2] style clickable indices in DM/GC sources footer, same as inline
         webSourcesFooterHtml = buildWebsearchSourcesInlineHtml(searchResultForCitations, u.id);
+        if (dmContinueContext) {
+          dmContinueContext.sourcesHtml = webSourcesFooterHtml;
+        }
       }
     }
 
@@ -7471,65 +7501,59 @@ bot.on("message:text", async (ctx) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     // Edit status message with response (cleaner than delete+send)
-    // We may need to chunk very long answers into multiple parts.
-    const fullText =
+    const rawOutput =
       out && out.trim()
-        ? out.trim()
-        : "_I couldn't generate a response. Try rephrasing or switch models with /model_";
-
-    const { visible, remaining, completed } = splitAnswerForDM(fullText, 2400);
-    const isMultiPart = !completed && !!remaining;
-
-    // If there is remaining content, store it in dmContinueCache and prepare a Continue button
-    let keyboard;
-    if (isMultiPart) {
-      const key = makeId(8);
-      dmContinueCache.set(key, {
-        remaining,
-        full: fullText,
-        model,
-        userId: u.id,
-        chatId: chat.id,
-        modeLabel,
-        sourcesHtml: webSourcesFooterHtml,
-        createdAt: Date.now(),
-      });
-      dmContinueKey = key;
-      keyboard = new InlineKeyboard().text("➡️ Continue", `dm_cont:${key}`);
-    }
-
-    // Initial chunk: never append "End of answer." here.
-    const chunkText = visible;
-    const formattedOutput = convertToTelegramHTML(chunkText);
-
+        ? out.slice(0, 3600)
+        : "<i>I couldn't generate a response. Try rephrasing or switch models with /model</i>";
+    const formattedOutput = convertToTelegramHTML(rawOutput);
+    
     // Convert mode label (which still uses Markdown) into HTML
     const htmlModeLabel = modeLabel
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Only show sources footer when the answer fits in a single message (no multi-part)
-    const sourcesFooter = isMultiPart ? "" : webSourcesFooterHtml;
+    // Offer a simple \"Continue\" button for longer answers in normal mode
+    let replyMarkup;
+    const canOfferContinue =
+      dmContinueContext &&
+      typeof out === "string" &&
+      out.trim().length > 800; // heuristic: long answer
 
-    const response = `${htmlModeLabel}${formattedOutput}${sourcesFooter}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
+    if (canOfferContinue) {
+      const key = makeId(8);
+      dmContinueCache.set(key, {
+        userId: u.id,
+        chatId: chat.id,
+        model: dmContinueContext.model,
+        systemPrompt: dmContinueContext.systemPrompt,
+        userTextWithContext: dmContinueContext.userTextWithContext,
+        modeLabel: dmContinueContext.modeLabel,
+        sourcesHtml: dmContinueContext.sourcesHtml || "",
+        createdAt: Date.now(),
+      });
+      replyMarkup = new InlineKeyboard().text("➡️ Continue", `dm_ai_cont:${key}`);
+    }
+
+    const response = `${htmlModeLabel}${formattedOutput}${webSourcesFooterHtml}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, {
           parse_mode: "HTML",
-          reply_markup: keyboard,
+          reply_markup: replyMarkup,
         });
       } catch (editErr) {
         // Fallback to new message if edit fails
         await ctx.reply(response, {
           parse_mode: "HTML",
           reply_to_message_id: msg.message_id,
-          reply_markup: keyboard,
+          reply_markup: replyMarkup,
         });
       }
     } else {
       await ctx.reply(response, {
         parse_mode: "HTML",
         reply_to_message_id: msg.message_id,
-        reply_markup: keyboard,
+        reply_markup: replyMarkup,
       });
     }
   } catch (e) {
