@@ -2381,6 +2381,14 @@ function convertToTelegramHTML(text) {
   result = result.replace(/<\/blockquote>\n<blockquote>/g, '\n');
   
   // Links [text](url)
+  // If the link text is purely numeric (e.g. "1"), render it as a bracketed citation "[1]".
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) =&gt; {
+    const trimmed = String(text).trim();
+    if (/^\d+$/.test(trimmed)) {
+      return `<a href=\"${url}\">[${trimmed}]</a>`;
+    }
+    return `<a href=\"${url}\">${trimmed}</a>`;
+  });ks [text](url)
   result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   
   // Horizontal rules (--- or ***)
@@ -3284,6 +3292,7 @@ bot.command("websearch", async (ctx) => {
             "GENERAL STYLE:\n" +
             "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
             "• Make it clear which parts come from which sources via [index] references.\n" +
+            "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
             "• If the search results don't contain relevant information, say so explicitly."
         },
         {
@@ -10306,6 +10315,7 @@ bot.on("chosen_inline_result", async (ctx) => {
               "GENERAL STYLE:\n" +
               "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
               "• Make it clear which parts come from which sources via [index] references.\n" +
+              "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
               "• If the search results don't contain relevant information, say so explicitly."
           },
           {
