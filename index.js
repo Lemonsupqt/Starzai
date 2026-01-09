@@ -3217,16 +3217,29 @@ bot.command("websearch", async (ctx) => {
         {
           role: "system",
           content:
-            "You are a helpful assistant with access to real-time web search results. " +
-            "Use ONLY the search results provided. Prefer concise, well-structured answers with short paragraphs and bullet points. " +
-            "When you use a fact from a result, cite it like [1], [2], etc. If the search results don't contain relevant information, say so."
+            "You are a helpful assistant with access to real-time web search results.\n" +
+            "\n" +
+            "CRITICAL CITATION INSTRUCTIONS:\n" +
+            "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+            "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+            "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
+            "• Never invent citations; only use indices that exist in the search results.\n" +
+            "\n" +
+            "GENERAL STYLE:\n" +
+            "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
+            "• Make it clear which parts come from which sources via [index] references.\n" +
+            "• If the search results don't contain relevant information, say so explicitly."
         },
         {
           role: "user",
           content:
-            `${searchContext}\n\n` +
-            `User's question: ${query}\n\n` +
-            "Answer the user's question based only on the search results above."
+            `${searchContext}\\n\\n` +
+            `User's question: ${query}\\n\\n` +
+            "The numbered search results above are your ONLY sources of truth. " +
+            "Write an answer that:\n" +
+            "1) Directly answers the user's question, and\n" +
+            "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
+            "Do not cite sources that are not provided."
         }
       ],
       temperature: 0.6,
@@ -10220,16 +10233,29 @@ bot.on("chosen_inline_result", async (ctx) => {
           {
             role: "system",
             content:
-              "You are a helpful assistant with access to real-time web search results. " +
-              "Use ONLY the search results provided. Prefer concise, well-structured answers with short paragraphs and bullet points. " +
-              "When you use a fact from a result, cite it like [1], [2], etc. If the search results don't contain relevant information, say so."
+              "You are a helpful assistant with access to real-time web search results.\n" +
+              "\n" +
+              "CRITICAL CITATION INSTRUCTIONS:\n" +
+              "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+              "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+              "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
+              "• Never invent citations; only use indices that exist in the search results.\n" +
+              "\n" +
+              "GENERAL STYLE:\n" +
+              "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
+              "• Make it clear which parts come from which sources via [index] references.\n" +
+              "• If the search results don't contain relevant information, say so explicitly."
           },
           {
             role: "user",
             content:
-              `${searchContext}\n\n` +
-              `User's question: ${prompt}\n\n` +
-              "Answer the user's question based only on the search results above."
+              `${searchContext}\\n\\n` +
+              `User's question: ${prompt}\\n\\n` +
+              "The numbered search results above are your ONLY sources of truth. " +
+              "Write an answer that:\n" +
+              "1) Directly answers the user's question, and\n" +
+              "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
+              "Do not cite sources that are not provided."
           }
         ],
         temperature: 0.6,
