@@ -3218,13 +3218,13 @@ bot.command("search", async (ctx) => {
 bot.command("websearch", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
-  const u = ensureUser(ctx.from.id, ctx.from);
+  ensureUser(ctx.from.id, ctx.from);
   
   const query = ctx.message.text.replace(/^\/websearch\s*/i, "").trim();
   
   if (!query) {
     return ctx.reply(
-      "🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>",
+      "🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>",
       {
         parse_mode: "HTML",
         reply_to_message_id: ctx.message?.message_id,
@@ -3245,14 +3245,20 @@ bot.command("websearch", async (ctx) => {
     const searchResult = await webSearch(query, 5);
     
     if (!searchResult.success) {
-      return ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+      return ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id, 
         `❌ Search failed: ${escapeHTML(searchResult.error)}`, 
-        { parse_mode: "HTML" });
+        { parse_mode: "HTML" }
+      );
     }
     
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id, 
       `🔍 Found ${searchResult.results.length} results, analyzing with AI...`, 
-      { parse_mode: "HTML" });
+      { parse_mode: "HTML" }
+    );
     
     // Format search results for AI
     const searchContext = formatSearchResultsForAI(searchResult);
@@ -3283,8 +3289,8 @@ bot.command("websearch", async (ctx) => {
         {
           role: "user",
           content:
-            `${searchContext}\\n\\n` +
-            `User's question: ${query}\\n\\n` +
+            `${searchContext}\n\n` +
+            `User's question: ${query}\n\n` +
             "The numbered search results above are your ONLY sources of truth. " +
             "Write an answer that:\n" +
             "1) Directly answers the user's question, and\n" +
@@ -3305,21 +3311,7 @@ bot.command("websearch", async (ctx) => {
     response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\n\n`;
     response += convertToTelegramHTML(aiText.slice(0, 3500));
     response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
-    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;et aiText = aiResponse || "";
-    aiText = linkifyWebsearchCitations(aiText, searchResult);
-    
-    let response = `🔍 <b>AI Web Search</b>\n\n`;
-    response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\n\n`;
-    response += convertToTelegramHTML(aiText.slice(0, 3500));
-    response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
-    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;et aiText = aiResponse || "";
-    aiText = linkifyWebsearchCitations(aiText, searchResult);
-    
-    let response = `🔍 <b>AI Web Search</b>\\n\\n`;
-    response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
-    response += convertToTelegramHTML(aiText.slice(0, 3500));
-    response += buildWebsearchSourcesHtml(searchResult, ctx.from.id);
-    response += `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
+    response += `\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${escapeHTML(model)}</i>`;
     
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { 
       parse_mode: "HTML",
@@ -3330,9 +3322,12 @@ bot.command("websearch", async (ctx) => {
     
   } catch (e) {
     console.error("Websearch error:", e);
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
-      `❌ Error: ${escapeHTML(e.message?.slice(0, 100) || 'Unknown error')}`, 
-      { parse_mode: "HTML" });
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id, 
+      `❌ Error: ${escapeHTML(e.message?.slice(0, 100) || "Unknown error")}`, 
+      { parse_mode: "HTML" }
+    );
   }
 });
 
