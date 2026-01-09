@@ -10161,7 +10161,8 @@ bot.on("chosen_inline_result", async (ctx) => {
       if (raw.includes(END_MARK)) {
         completed = true;
         raw = raw.replace(END_MARK, "").trim();
-        raw += "\n\n---\n_End of Blackhole analysis._";
+        // Nicely formatted closing marker for Telegram (horizontal rule + bold text)
+        raw += "\n\n---\n**End of Blackhole analysis.**";
       }
 
       // Telegram messages are limited to ~4096 characters; keep Blackhole answers near that.
@@ -10180,6 +10181,8 @@ bot.on("chosen_inline_result", async (ctx) => {
         mode: "blackhole",
         completed,
         part: 1,
+        // Persist searchResult so future parts can reuse the same sources list
+        searchResult: searchResult || null,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -10191,10 +10194,13 @@ bot.on("chosen_inline_result", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(answer);
       const escapedPrompt = escapeHTML(prompt);
       const partLabel = completed ? "Part 1 – final" : "Part 1";
-      const sourcesHtml = searchResult
-        ? buildWebsearchSourcesInlineHtml(searchResult, ownerStr || pending.userId)
-        : "";
-      
+
+      // Only show sources inline when the analysis is complete
+      const sourcesHtml =
+        completed && searchResult
+          ? buildWebsearchSourcesInlineHtml(searchResult, ownerStr || pending.userId)
+          : "";
+
       await bot.api.editMessageTextInline(
         inlineMessageId,
         `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
@@ -10293,7 +10299,8 @@ bot.on("chosen_inline_result", async (ctx) => {
       if (continuation.includes(END_MARK)) {
         completed = true;
         continuation = continuation.replace(END_MARK, "").trim();
-        continuation += "\n\n---\n_End of Blackhole analysis._";
+        // Nicely formatted closing marker for Telegram (horizontal rule + bold text)
+        continuation += "\n\n---\n**End of Blackhole analysis.**";
       }
 
       // Clean tail of continuation to avoid ending mid-word/mid-sentence when possible.
@@ -10313,6 +10320,8 @@ bot.on("chosen_inline_result", async (ctx) => {
         mode: "blackhole",
         completed,
         part,
+        // Carry forward any searchResult from the base item so final part can show sources
+        searchResult: baseItem.searchResult || null,
         createdAt: Date.now(),
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
@@ -10326,10 +10335,14 @@ bot.on("chosen_inline_result", async (ctx) => {
       const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
       const escapedPrompt = escapeHTML(prompt);
       const partLabel = completed ? `Part ${part} – final` : `Part ${part}`;
+      const sourcesHtml =
+        completed && baseItem.searchResult
+          ? buildWebsearchSourcesInlineHtml(baseItem.searchResult, ownerId)
+          : "";
 
       await bot.api.editMessageTextInline(
         inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
         { 
           parse_mode: "HTML",
           reply_markup: inlineAnswerKeyboard(newKey),
