@@ -7149,6 +7149,8 @@ bot.on("message:text", async (ctx) => {
     let systemPrompt;
     let out;
     let modeLabel = "";
+    // For DM/GC web+AI mode: optional sources footer when web search is used
+    let webSourcesFooterHtml = "";
     
     if (isPartnerMode) {
       // Partner mode - use partner's persona and separate chat history
@@ -7269,30 +7271,36 @@ bot.on("message:text", async (ctx) => {
       // Check if query needs real-time web search
       // Either: user has webSearch toggle ON, or auto-detect triggers
       let searchContext = "";
+      let searchResultForCitations = null;
       const wantsSearch = userRecord?.webSearch || needsWebSearch(text);
       if (wantsSearch) {
         const quota = consumeWebsearchQuota(u.id);
         if (quota.allowed) {
           try {
-            await ctx.api.editMessageText(
-              chat.id,
-              statusMsg.message_id,
-              `🔍 Searching the web for current info...`,
-              { parse_mode: "HTML" }
-            ).catch(() => {});
+            await ctx.api
+              .editMessageText(
+                chat.id,
+                statusMsg.message_id,
+                `🔍 Searching the web for current info...`,
+                { parse_mode: "HTML" }
+              )
+              .catch(() => {});
             
-            const searchResult = await webSearch(text, 3);
+            const searchResult = await webSearch(text, 5);
             if (searchResult.success) {
               searchContext = "\n\n" + formatSearchResultsForAI(searchResult);
+              searchResultForCitations = searchResult;
               modeLabel = "🌐 ";
             }
             
-            await ctx.api.editMessageText(
-              chat.id,
-              statusMsg.message_id,
-              `⏳ Processing with <b>${model}</b>...`,
-              { parse_mode: "HTML" }
-            ).catch(() => {});
+            await ctx.api
+              .editMessageText(
+                chat.id,
+                statusMsg.message_id,
+                `⏳ Processing with <b>${model}</b>...`,
+                { parse_mode: "HTML" }
+              )
+              .catch(() => {});
           } catch (searchErr) {
             console.log("Auto-search failed:", searchErr.message);
           }
@@ -7324,10 +7332,14 @@ bot.on("message:text", async (ctx) => {
             : "");
       }
 
-      // Add search context instruction if we have search results
+      // Add search context instruction and stricter citation rules if we have search results
       if (searchContext) {
         systemPrompt +=
-          " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. Cite sources when relevant.";
+          " You have access to real-time web search results below. Use them to provide accurate, up-to-date information. " +
+          "Every non-obvious factual claim should be backed by a source index like [1], [2], etc. " +
+          "When you summarize multiple sources, include multiple indices, e.g. [1][3]. " +
+          "If you mention a specific number, date, name, or quote, always attach the source index. " +
+          "Never invent citations; only use indices that exist in the search results.";
       }
 
       systemPrompt +=
@@ -7341,6 +7353,12 @@ bot.on("message:text", async (ctx) => {
         systemPrompt,
         model,
       });
+
+      // If we used web search, post-process the answer to add clickable [n] citations
+      if (searchResultForCitations && typeof out === "string" && out.length > 0) {
+        out = linkifyWebsearchCitations(out, searchResultForCitations);
+        webSourcesFooterHtml = buildWebsearchSourcesHtml(searchResultForCitations, u.id);
+      }
     }
 
     // Mark response as sent to stop typing
@@ -7354,13 +7372,18 @@ bot.on("message:text", async (ctx) => {
 
     // Edit status message with response (cleaner than delete+send)
     // Convert AI output from standard Markdown to Telegram HTML format
-    const rawOutput = (out && out.trim()) ? out.slice(0, 3600) : "<i>I couldn't generate a response. Try rephrasing or switch models with /model</i>";
+    const rawOutput =
+      out && out.trim()
+        ? out.slice(0, 3600)
+        : "<i>I couldn't generate a response. Try rephrasing or switch models with /model</i>";
     const formattedOutput = convertToTelegramHTML(rawOutput);
     
     // Convert mode label to HTML format
-    const htmlModeLabel = modeLabel ? modeLabel.replace(/\*([^*]+)\*/g, '<b>$1</b>').replace(/_([^_]+)_/g, '<i>$1</i>') : '';
+    const htmlModeLabel = modeLabel
+      ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
+      : "";
     
-    const response = `${htmlModeLabel}${formattedOutput}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
+    const response = `${htmlModeLabel}${formattedOutput}${webSourcesFooterHtml}\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
     if (statusMsg) {
       try {
         await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
@@ -7387,7 +7410,7 @@ bot.on("message:text", async (ctx) => {
     
     // Edit status message with error (cleaner than delete+send)
     const errMsg = isTimeout 
-      ? `⏱️ Model &lt;b&gt;${model}&lt;/b&gt; timed out after ${elapsed}s. Try /model to switch, or try again.`
+      ? `⏱️ Model <b>${model}</b> timed out after ${elapsed}s. Try /model to switch, or try again.`
       : `❌ Error after ${elapsed}s. Try again in a moment.`;
     if (statusMsg) {
       try {
