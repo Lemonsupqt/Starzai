@@ -2027,10 +2027,11 @@ async function searxngSearch(query, numResults = 5) {
   return { success: false, errors };
 }
 
-// Parallel AI Search API (web search + extraction in one call)
+// External Search API (web search + extraction in one call)
+// Note: we intentionally do not expose the underlying provider name in user-facing text.
 async function parallelWebSearch(query, numResults = 5) {
   if (!PARALLEL_API_KEY) {
-    return { success: false, error: 'Parallel API key not configured', query };
+    return { success: false, error: 'Search API key not configured', query };
   }
 
   try {
@@ -2039,13 +2040,12 @@ async function parallelWebSearch(query, numResults = 5) {
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': PARALLEL_API_KEY,
-        // Search API is also beta; use the documented header for search/extract.
         'parallel-beta': 'search-extract-2025-10-10',
       },
       body: JSON.stringify({
         objective: query,
-        mode: 'one-shot',           // richer, single-shot answers
-        max_results: numResults,    // upper bound on results
+        mode: 'one-shot',
+        max_results: numResults,
         excerpts: {
           max_chars_per_result: 1500,
         },
@@ -2054,10 +2054,10 @@ async function parallelWebSearch(query, numResults = 5) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      console.log('Parallel web search HTTP error:', response.status, text.slice(0, 500));
+      console.log('External web search HTTP error:', response.status, text.slice(0, 500));
       return {
         success: false,
-        error: `HTTP ${response.status}: ${text.slice(0, 200) || "Unknown error from Parallel Search API"}`,
+        error: `HTTP ${response.status}: ${text.slice(0, 200) || "Unknown error from search API"}`,
         query,
         status: response.status,
       };
@@ -2076,7 +2076,7 @@ async function parallelWebSearch(query, numResults = 5) {
         title: r.title || r.url || "No title",
         url: r.url || "",
         content: content || "No description",
-        engine: "Parallel.ai",
+        engine: "external-search",
       };
     });
 
@@ -2084,13 +2084,13 @@ async function parallelWebSearch(query, numResults = 5) {
       success: true,
       results,
       query,
-      instance: 'Parallel.ai',
+      instance: 'external-search',
     };
   } catch (e) {
-    console.log('Parallel web search error:', e.message);
+    console.log('External web search error:', e.message);
     return {
       success: false,
-      error: e.message || 'Parallel web search failed',
+      error: e.message || 'External web search failed',
       query,
     };
   }
@@ -2563,9 +2563,8 @@ function trimIncompleteTail(text, maxTail = 220) {
 
 // =====================
 // PARALLEL EXTRACT API
-// =====================
-
-// Extract and clean content from specific URLs using Parallel.ai Extract API
+// Extract and clean content from specific URLs using an external Extract API.
+// NOTE: We intentionally avoid naming the provider in user-visible text for privacy.
 async function parallelExtractUrls(urls) {
   if (!PARALLEL_API_KEY) {
     return {
@@ -3470,7 +3469,7 @@ bot.command("websearch", async (ctx) => {
   }
 });
 
-// /extract command - Extract content from a specific URL using Parallel.ai
+// /extract command - Extract content from a specific URL using an external Extract API
 bot.command("extract", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
@@ -3486,7 +3485,7 @@ bot.command("extract", async (ctx) => {
       "<code>/extract https://example.com/article</code>",
       "<code>/extract https://example.com/article What are the main points?</code>",
       "",
-      "The bot fetches the page via Parallel.ai Extract API, pulls the important content,",
+      "The bot fetches the page via an Extract API, pulls the important content,",
       "and (optionally) answers your question about it."
     ].join("\\n");
     return ctx.reply(help, {
@@ -3497,6 +3496,7 @@ bot.command("extract", async (ctx) => {
 
   if (!PARALLEL_API_KEY) {
     return ctx.reply(
+      "⚠️ Extract API is not configured yet. Set the appropriate API key in env to enable it.",tx.reply(
       "⚠️ Extract API is not configured yet. Set <code>PARALLEL_API_KEY</code> in env to enable it.",
       {
         parse_mode: "HTML",
