@@ -3496,8 +3496,7 @@ bot.command("extract", async (ctx) => {
 
   if (!PARALLEL_API_KEY) {
     return ctx.reply(
-      "⚠️ Extract API is not configured yet. Set the appropriate API key in env to enable it.",tx.reply(
-      "⚠️ Extract API is not configured yet. Set <code>PARALLEL_API_KEY</code> in env to enable it.",
+      "⚠️ Extract API is not configured yet. Set the appropriate API key in env to enable it.",
       {
         parse_mode: "HTML",
         reply_to_message_id: ctx.message?.message_id,
