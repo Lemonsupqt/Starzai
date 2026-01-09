@@ -6168,8 +6168,8 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
   try {
     const continuedSystemPrompt =
       systemPrompt +
-      " You are continuing your previous answer for the same request. Do not repeat what you've already said; just continue from where you left off. " +
-      "When you believe the answer is fully complete, append the exact token END_OF_ANSWER on its own line at the very end of your message.";
+      " You are continuing your previous answer for the same request. Do not repeat what you've already said; just continue from where you left off." +
+      " When you have fully covered all essential points and there is nothing important left to add, append the exact token END_OF_ANSWER at the very end of your final continuation. Do not use this token on partial continuations.";
 
     const continuedUserText =
       `${userTextWithContext}\n\nContinue the answer from where you left off. ` +
@@ -6199,10 +6199,12 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Offer another Continue button only if the model didn't signal completion
-    // and the continuation is still quite long.
+    // Offer another Continue button only if:
+    // 1) the model did not signal completion, and
+    // 2) the continuation was actually truncated for Telegram (raw length > 3600).
     let replyMarkup;
-    if (!finished && more && more.trim().length > 800) {
+    const wasTruncated = !finished && typeof more === "string" && more.length > 3600;
+    if (wasTruncated) {
       const newKey = makeId(8);
       dmContinueCache.set(newKey, {
         userId: entry.userId,
@@ -6220,7 +6222,7 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
     const replyText =
       `${htmlModeLabel}${formatted}` +
       (sourcesHtml || "") +
-      `\n\n<i>⚡ ${elapsed}s • ${model}</i>`;
+      `\n\n<i>⚡ ${elapsed}s • ${model}${finished ? " • end" : ""}</i>`;
 
     await ctx.api.editMessageText(chatId, statusMsg.message_id, replyText, {
       parse_mode: "HTML",
@@ -7545,14 +7547,16 @@ bot.on("message:text", async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Offer a simple \"Continue\" button for longer answers in normal mode
+    // Offer a simple "Continue" button only when the raw answer exceeded
+    // our Telegram-safe slice (i.e., we had to truncate it). This keeps
+    // the button focused on cases where the message was actually cut.
     let replyMarkup;
-    const canOfferContinue =
+    const isTruncated =
       dmContinueContext &&
       typeof out === "string" &&
-      out.trim().length > 800; // heuristic: long answer
+      out.length > 3600;
 
-    if (canOfferContinue) {
+    if (isTruncated) {
       const key = makeId(8);
       dmContinueCache.set(key, {
         userId: u.id,
