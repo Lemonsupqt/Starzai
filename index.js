@@ -10218,11 +10218,6 @@ bot.on("chosen_inline_result", async (ctx) => {
     inlineCache.delete(`w_pending_${wKey}`);
     return;
   }
-    
-    // Clean up pending
-    inlineCache.delete(`r_pending_${rKey}`);
-    return;
-  }
   
   // Handle Quark deferred response - q_start_KEY
   if (resultId.startsWith("q_start_")) {
