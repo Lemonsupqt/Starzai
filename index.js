@@ -9670,11 +9670,119 @@ bot.on("inline_query", async (ctx) => {
   }
 
   // Regular query - quick one-shot answer
-  // Wait for AI response, then show send button (works in private DMs and groups)
+  // If web mode is enabled (or the query looks time-sensitive), try websearch + AI summary first.
+  // Otherwise, fall back to offline quick answer.
   const quickKey = makeId(6);
   const quickShortModel = model.split("/").pop();
+  const userRecord = getUserRecord(userId);
+  const wantsWebsearch = userRecord?.webSearch || needsWebSearch(q);
   
   try {
+    // Attempt websearch-backed answer if desired and quota allows
+    if (wantsWebsearch) {
+      const quota = consumeWebsearchQuota(userId);
+      if (quota.allowed) {
+        try {
+          const searchResult = await webSearch(q, 5);
+          if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
+            const searchContext = formatSearchResultsForAI(searchResult);
+            const startTime = Date.now();
+  
+            const aiResponse = await llmText({
+              model,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You are a helpful assistant with access to real-time web search results.\n" +
+                    "\n" +
+                    "CRITICAL CITATION INSTRUCTIONS:\n" +
+                    "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+                    "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+                    "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
+                    "• Never invent citations; only use indices that exist in the search results.\n" +
+                    "\n" +
+                    "GENERAL STYLE:\n" +
+                    "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
+                    "• Make it clear which parts come from which sources via [index] references.\n" +
+                    "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
+                    "• If the search results don't contain relevant information, say so explicitly."
+                },
+                {
+                  role: "user",
+                  content:
+                    `${searchContext}\n\n` +
+                    `User's question: ${q}\n\n` +
+                    "The numbered search results above are your ONLY sources of truth. " +
+                    "Write an answer that:\n" +
+                    "1) Directly answers the user's question, and\n" +
+                    "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
+                    "Do not cite sources that are not provided."
+                }
+              ],
+              temperature: 0.6,
+              max_tokens: 800,
+              timeout: 15000,
+              retries: 1,
+            });
+  
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  
+            let aiText = aiResponse || "No answer generated.";
+            aiText = linkifyWebsearchCitations(aiText, searchResult);
+  
+            // Store the full AI text (with citations) for regen / transforms
+            inlineCache.set(quickKey, {
+              prompt: q,
+              answer: aiText,
+              userId: String(userId),
+              model,
+              mode: "websearch",
+              createdAt: Date.now(),
+            });
+            setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
+  
+            // Track in history
+            addToHistory(userId, q, "websearch");
+  
+            const formattedAnswer = convertToTelegramHTML(aiText.slice(0, 3500));
+            const escapedQ = escapeHTML(q);
+            const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, userId);
+  
+            await safeAnswerInline(ctx, [
+              {
+                type: "article",
+                id: `answer_${quickKey}`,
+                title: `🌐 ${q.slice(0, 40)}`,
+                description: aiText.replace(/\s+/g, " ").slice(0, 80),
+                thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+                input_message_content: {
+                  message_text:
+                    `🌐 <b>Websearch</b>\n\n` +
+                    `<b>Query:</b> <i>${escapedQ}</i>\n\n` +
+                    `${formattedAnswer}${sourcesHtml}\n\n` +
+                    `<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${quickShortModel}</i>`,
+                  parse_mode: "HTML",
+                },
+                reply_markup: inlineAnswerKeyboard(quickKey),
+              },
+            ], { cache_time: 0, is_personal: true });
+  
+            trackUsage(userId, "inline");
+            return;
+          }
+        } catch (searchErr) {
+          console.log("Inline quick websearch failed:", searchErr.message || searchErr);
+          // Fall through to offline answer
+        }
+      } else {
+        console.log(
+          `Inline quick websearch quota exhausted for user ${userId}: used=${quota.used}, limit=${quota.limit}`
+        );
+      }
+    }
+  
+    // Fallback: offline quick answer (no websearch or websearch unavailable)
     const out = await llmText({
       model,
       messages: [
@@ -9686,9 +9794,9 @@ bot.on("inline_query", async (ctx) => {
       timeout: 12000,
       retries: 1,
     });
-    
+  
     const answer = (out || "I couldn't generate a response.").slice(0, 2000);
-    
+  
     // Store for Reply/Regen/Shorter/Longer/Continue buttons
     inlineCache.set(quickKey, {
       prompt: q,
@@ -9698,17 +9806,17 @@ bot.on("inline_query", async (ctx) => {
       mode: "quick",
       createdAt: Date.now(),
     });
-    
+  
     // Schedule cleanup
     setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
-    
+  
     // Track in history
     addToHistory(userId, q, "default");
-    
+  
     // Convert AI answer to Telegram HTML format
     const formattedAnswer = convertToTelegramHTML(answer);
     const escapedQ = escapeHTML(q);
-    
+  
     await safeAnswerInline(ctx, [
       {
         type: "article",
@@ -9723,7 +9831,7 @@ bot.on("inline_query", async (ctx) => {
         reply_markup: inlineAnswerKeyboard(quickKey),
       },
     ], { cache_time: 0, is_personal: true });
-    
+  
   } catch (e) {
     console.error("Quick answer error:", e.message);
     const escapedQ = escapeHTML(q);
