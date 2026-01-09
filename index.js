@@ -925,6 +925,11 @@ function ensureUser(userId, from = null) {
       activeCharacter: null,
       // Web search toggle - when ON, all messages get web search
       webSearch: false,
+      // Per-user websearch usage (daily)
+      webSearchUsage: {
+        date: new Date().toISOString().slice(0, 10),
+        used: 0,
+      },
       // Warning history (for /warn)
       warnings: [],
     };
@@ -971,6 +976,13 @@ function ensureUser(userId, from = null) {
     // migration: add warnings array if missing
     if (!usersDb.users[id].warnings) {
       usersDb.users[id].warnings = [];
+    }
+    // migration: add webSearchUsage if missing
+    if (!usersDb.users[id].webSearchUsage) {
+      usersDb.users[id].webSearchUsage = {
+        date: new Date().toISOString().slice(0, 10),
+        used: 0,
+      };
     }
     saveUsers();
   }
@@ -1163,6 +1175,75 @@ function trackUsage(userId, type = "message", tokens = 0) {
   u.stats.lastActive = new Date().toISOString();
   u.stats.lastModel = u.model;
   saveUsers();
+}
+
+// Websearch quota helpers
+
+function getTodayDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getWebsearchDailyLimitForTier(tier) {
+  if (tier === "ultra") return 18;
+  if (tier === "premium") return 6;
+  // free and unknown
+  return 2;
+}
+
+function getWebsearchDailyLimitForUser(userId) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) {
+    // Owners: effectively unlimited
+    return Infinity;
+  }
+  const user = getUserRecord(idStr);
+  const tier = user?.tier || "free";
+  return getWebsearchDailyLimitForTier(tier);
+}
+
+function getWebsearchUsage(user) {
+  const today = getTodayDateKey();
+  if (!user.webSearchUsage || user.webSearchUsage.date !== today) {
+    user.webSearchUsage = { date: today, used: 0 };
+  }
+  return user.webSearchUsage;
+}
+
+// Consume one websearch from the user's daily quota.
+// Returns { allowed, limit, used, remaining }.
+function consumeWebsearchQuota(userId) {
+  const u = ensureUser(userId);
+  const limit = getWebsearchDailyLimitForUser(userId);
+
+  // Owners: no quota enforcement
+  if (!Number.isFinite(limit)) {
+    return { allowed: true, limit, used: 0, remaining: Infinity };
+  }
+
+  const usage = getWebsearchUsage(u);
+  if (usage.used >= limit) {
+    return { allowed: false, limit, used: usage.used, remaining: 0 };
+  }
+
+  usage.used += 1;
+  saveUsers();
+
+  const remaining = Math.max(0, limit - usage.used);
+  return { allowed: true, limit, used: usage.used, remaining };
+}
+
+// Read-only view of current quota status.
+function getWebsearchQuotaStatus(userId) {
+  const u = ensureUser(userId);
+  const limit = getWebsearchDailyLimitForUser(userId);
+
+  if (!Number.isFinite(limit)) {
+    return { limit, used: 0, remaining: Infinity };
+  }
+
+  const usage = getWebsearchUsage(u);
+  const remaining = Math.max(0, limit - usage.used);
+  return { limit, used: usage.used, remaining };
 }
 
 // Add prompt to user's history (max 10 recent)
@@ -3161,7 +3242,7 @@ bot.command("help", async (ctx) => {
   });
 });
 
-// /search command - Web search
+// /search command - Web search (counts against daily websearch quota)
 bot.command("search", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
@@ -3182,6 +3263,23 @@ bot.command("search", async (ctx) => {
   });
   
   try {
+    const quota = consumeWebsearchQuota(ctx.from.id);
+    if (!quota.allowed) {
+      const user = getUserRecord(ctx.from.id);
+      const tierLabel = (user?.tier || "free").toUpperCase();
+      const limit = quota.limit ?? 0;
+      const used = quota.used ?? limit;
+      const msg =
+        `🌐 <b>Daily websearch limit reached</b>\\n\\n` +
+        `Tier: <b>${escapeHTML(tierLabel)}</b>\\n` +
+        `Today: <b>${used}/${limit}</b> websearches used.\\n\\n` +
+        `<i>Try again tomorrow or upgrade your plan for more websearches.</i>`;
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, msg, {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
     const searchResult = await webSearch(query, 5);
     
     if (!searchResult.success) {
@@ -3191,12 +3289,12 @@ bot.command("search", async (ctx) => {
     }
     
     // Format results for display
-    let response = `🔍 <b>Search Results for:</b> <i>${escapeHTML(query)}</i>\n\n`;
+    let response = `🔍 <b>Search Results for:</b> <i>${escapeHTML(query)}</i>\\n\\n`;
     
     searchResult.results.forEach((r, i) => {
-      response += `<b>${i + 1}. ${escapeHTML(r.title)}</b>\n`;
-      response += `<a href="${r.url}">${escapeHTML(r.url.slice(0, 50))}${r.url.length > 50 ? '...' : ''}</a>\n`;
-      response += `${escapeHTML(r.content.slice(0, 150))}${r.content.length > 150 ? '...' : ''}\n\n`;
+      response += `<b>${i + 1}. ${escapeHTML(r.title)}</b>\\n`;
+      response += `<a href="${r.url}">${escapeHTML(r.url.slice(0, 50))}${r.url.length > 50 ? '...' : ''}</a>\\n`;
+      response += `${escapeHTML(r.content.slice(0, 150))}${r.content.length > 150 ? '...' : ''}\\n\\n`;
     });
     
     response += `<i>🌐 via ${searchResult.instance.replace('https://', '')}</i>`;
@@ -3216,7 +3314,7 @@ bot.command("search", async (ctx) => {
   }
 });
 
-// /websearch command - Search and get AI summary
+// /websearch command - Search and get AI summary (uses daily websearch quota)
 bot.command("websearch", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
@@ -3226,7 +3324,7 @@ bot.command("websearch", async (ctx) => {
   
   if (!query) {
     return ctx.reply(
-      "🔍 <b>AI Web Search</b>\n\nUsage: <code>/websearch your question</code>\n\nSearches the web and gives you an AI-summarized answer.\n\nExample: <code>/websearch What's the latest news about Tesla?</code>",
+      "🔍 <b>AI Web Search</b>\\n\\nUsage: <code>/websearch your question</code>\\n\\nSearches the web and gives you an AI-summarized answer.\\n\\nExample: <code>/websearch What's the latest news about Tesla?</code>",
       {
         parse_mode: "HTML",
         reply_to_message_id: ctx.message?.message_id,
@@ -3243,7 +3341,48 @@ bot.command("websearch", async (ctx) => {
   );
   
   try {
-    // Search the web
+    const model = ensureChosenModelValid(ctx.from.id);
+    const quota = consumeWebsearchQuota(ctx.from.id);
+    const startTime = Date.now();
+
+    // If quota is exhausted, fall back to an offline-style answer without live web results
+    if (!quota.allowed) {
+      const offlineResponse = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful assistant. You do NOT have access to live web search for this request. " +
+              "Answer based on your existing knowledge only. If you are unsure or information may be outdated, say so clearly."
+          },
+          {
+            role: "user",
+            content: `Question (no live websearch available): ${query}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+      });
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const aiText = offlineResponse || "";
+
+      let response = `🔍 <b>AI Web Search</b>\n\n`;
+      response += `<b>Query:</b> <i>${escapeHTML(query)}</i>\n\n`;
+      response += convertToTelegramHTML(aiText.slice(0, 3500));
+      response += `\n\n<i>⚠️ Daily websearch limit reached — answered without live web results • ${elapsed}s • ${escapeHTML(model)}</i>`;
+
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+
+      trackUsage(ctx.from.id, "message");
+      return;
+    }
+
+    // Search the web (quota available)
     const searchResult = await webSearch(query, 5);
     
     if (!searchResult.success) {
@@ -3266,9 +3405,6 @@ bot.command("websearch", async (ctx) => {
     const searchContext = formatSearchResultsForAI(searchResult);
     
     // Get AI to summarize
-    const model = ensureChosenModelValid(ctx.from.id);
-    const startTime = Date.now();
-    
     const aiResponse = await llmText({
       model,
       messages: [
@@ -7082,33 +7218,89 @@ bot.on("message:text", async (ctx) => {
         
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         await ctx.reply(
-          `${timeResult.response}\n\n⚡ ${elapsed}s`,
+          `${timeResult.response}\\n\\n⚡ ${elapsed}s`,
           { parse_mode: "HTML", reply_to_message_id: msg.message_id }
         );
         return;
+      }
+
+      // Owner-only smart extraction when replying to messages with links
+      let extractContext = "";
+      const isOwnerUser = OWNER_IDS.has(String(u.id));
+      if (isOwnerUser && replyToMsg && PARALLEL_API_KEY) {
+        try {
+          const combined =
+            (replyToMsg.text || "") + " " + (replyToMsg.caption || "");
+          const urlMatches = combined.match(/https?:\/\/\S+/gi) || [];
+          const urls = Array.from(
+            new Set(
+              urlMatches
+                .map((uStr) => uStr.replace(/[),.]+$/g, ""))
+                .filter(Boolean)
+            )
+          );
+
+          if (urls.length > 0) {
+            const extractResult = await parallelExtractUrls(
+              urls.slice(0, 3)
+            );
+            if (
+              extractResult.success &&
+              Array.isArray(extractResult.results) &&
+              extractResult.results.length > 0
+            ) {
+              const parts = extractResult.results.slice(0, 3).map((r, idx) => {
+                const title = r.title || r.url || `Link ${idx + 1}`;
+                const content = (r.content || "").slice(0, 4000);
+                return `SOURCE ${idx + 1}: ${title}\\n${content}`;
+              });
+              extractContext =
+                "\\n\\n[Extracted content from linked pages]\\n\\n" +
+                parts.join("\\n\\n");
+            }
+          }
+        } catch (extractErr) {
+          console.log(
+            "Smart extract (reply) failed:",
+            extractErr.message || extractErr
+          );
+        }
       }
       
       // Check if query needs real-time web search
       // Either: user has webSearch toggle ON, or auto-detect triggers
       let searchContext = "";
-      const shouldSearch = userRecord?.webSearch || needsWebSearch(text);
-      if (shouldSearch) {
-        try {
-          await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-            `🔍 Searching the web for current info...`, 
-            { parse_mode: "HTML" }).catch(() => {});
-          
-          const searchResult = await webSearch(text, 3);
-          if (searchResult.success) {
-            searchContext = "\n\n" + formatSearchResultsForAI(searchResult);
-            modeLabel = "🌐 ";
+      const wantsSearch = userRecord?.webSearch || needsWebSearch(text);
+      if (wantsSearch) {
+        const quota = consumeWebsearchQuota(u.id);
+        if (quota.allowed) {
+          try {
+            await ctx.api.editMessageText(
+              chat.id,
+              statusMsg.message_id,
+              `🔍 Searching the web for current info...`,
+              { parse_mode: "HTML" }
+            ).catch(() => {});
+            
+            const searchResult = await webSearch(text, 3);
+            if (searchResult.success) {
+              searchContext = "\n\n" + formatSearchResultsForAI(searchResult);
+              modeLabel = "🌐 ";
+            }
+            
+            await ctx.api.editMessageText(
+              chat.id,
+              statusMsg.message_id,
+              `⏳ Processing with <b>${model}</b>...`,
+              { parse_mode: "HTML" }
+            ).catch(() => {});
+          } catch (searchErr) {
+            console.log("Auto-search failed:", searchErr.message);
           }
-          
-          await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-            `⏳ Processing with <b>${model}</b>...`, 
-            { parse_mode: "HTML" }).catch(() => {});
-        } catch (searchErr) {
-          console.log("Auto-search failed:", searchErr.message);
+        } else {
+          console.log(
+            `Websearch quota exhausted for user ${u.id}: used=${quota.used}, limit=${quota.limit}`
+          );
         }
       }
       
@@ -7142,7 +7334,7 @@ bot.on("message:text", async (ctx) => {
       systemPrompt +=
         " When genuinely helpful, you may briefly mention that users can change models with /model or use inline mode by typing @starztechbot with prefixes like q:, b:, code:, e:, as, sum, or p:.";
 
-      const userTextWithContext = replyContext + text + searchContext;
+      const userTextWithContext = replyContext + (extractContext || "") + text + searchContext;
 
       out = await llmChatReply({
         chatId: chat.id,
@@ -10275,88 +10467,147 @@ bot.on("chosen_inline_result", async (ctx) => {
     console.log(`Processing Websearch: ${prompt}`);
     
     try {
-      // Run web search using the same helper as /websearch
-      const searchResult = await webSearch(prompt, 5);
-      
-      if (!searchResult.success) {
-        const errMsg = `❌ Websearch failed: ${escapeHTML(searchResult.error || "Unknown error")}`;
+      const quota = consumeWebsearchQuota(ownerId);
+      const startTime = Date.now();
+      let answerRaw = "";
+      let footerHtml = "";
+      let sourcesHtml = "";
+      let formattedAnswer = "";
+
+      if (!quota.allowed) {
+        // Quota exhausted: answer without live websearch
+        console.log(
+          `Websearch quota exhausted for user ${ownerId} in inline mode: used=${quota.used}, limit=${quota.limit}`
+        );
+
+        const offline = await llmText({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant. You currently do NOT have access to live web search for this request. " +
+                "Answer based on your existing knowledge only. If you are unsure or information may be outdated, say so clearly.",
+            },
+            {
+              role: "user",
+              content: `Question (no live websearch available): ${prompt}`,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: 800,
+        });
+
+        answerRaw = offline || "No answer generated.";
+        const escapedPrompt = escapeHTML(prompt);
+        formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        footerHtml = `\\n\\n<i>⚠️ Daily websearch limit reached — answered without live web results • ${elapsed}s • ${shortModel}</i>`;
+        
+        const newKey = makeId(6);
+        inlineCache.set(newKey, {
+          prompt,
+          answer: answerRaw,
+          userId: String(ownerId),
+          model,
+          mode: "websearch",
+          createdAt: Date.now(),
+        });
+        setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
         await bot.api.editMessageTextInline(
           inlineMessageId,
-          errMsg,
-          { parse_mode: "HTML" }
-        );
-        inlineCache.delete(`w_pending_${wKey}`);
-        return;
-      }
-      
-      const searchContext = formatSearchResultsForAI(searchResult);
-      const startTime = Date.now();
-      
-      const aiResponse = await llmText({
-        model,
-        messages: [
+          `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${footerHtml}`,
           {
-            role: "system",
-            content:
-              "You are a helpful assistant with access to real-time web search results.\n" +
-              "\n" +
-              "CRITICAL CITATION INSTRUCTIONS:\n" +
-              "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
-              "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
-              "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
-              "• Never invent citations; only use indices that exist in the search results.\n" +
-              "\n" +
-              "GENERAL STYLE:\n" +
-              "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
-              "• Make it clear which parts come from which sources via [index] references.\n" +
-              "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
-              "• If the search results don't contain relevant information, say so explicitly."
-          },
-          {
-            role: "user",
-            content:
-              `${searchContext}\\n\\n` +
-              `User's question: ${prompt}\\n\\n` +
-              "The numbered search results above are your ONLY sources of truth. " +
-              "Write an answer that:\n" +
-              "1) Directly answers the user's question, and\n" +
-              "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
-              "Do not cite sources that are not provided."
+            parse_mode: "HTML",
+            reply_markup: inlineAnswerKeyboard(newKey),
           }
-        ],
-        temperature: 0.6,
-        max_tokens: 800,
-      });
-      
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-      let answerRaw = aiResponse || "No answer generated.";
-      answerRaw = linkifyWebsearchCitations(answerRaw, searchResult);
-
-      const escapedPrompt = escapeHTML(prompt);
-      const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerId);
-      const formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
-      
-      const newKey = makeId(6);
-      inlineCache.set(newKey, {
-        prompt,
-        answer: answerRaw,
-        userId: String(ownerId),
-        model,
-        mode: "websearch",
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `🌐 <b>Websearch</b>\n\n<b>Query:</b> <i>${escapedPrompt}</i>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey),
+        );
+        console.log("Websearch (offline) updated with AI response");
+      } else {
+        // Quota available: run live web search
+        const searchResult = await webSearch(prompt, 5);
+        
+        if (!searchResult.success) {
+          const errMsg = `❌ Websearch failed: ${escapeHTML(searchResult.error || "Unknown error")}`;
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            errMsg,
+            { parse_mode: "HTML" }
+          );
+          inlineCache.delete(`w_pending_${wKey}`);
+          return;
         }
-      );
-      console.log("Websearch updated with AI response");
+        
+        const searchContext = formatSearchResultsForAI(searchResult);
+        
+        const aiResponse = await llmText({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant with access to real-time web search results.\n" +
+                "\n" +
+                "CRITICAL CITATION INSTRUCTIONS:\n" +
+                "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+                "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+                "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
+                "• Never invent citations; only use indices that exist in the search results.\n" +
+                "\n" +
+                "GENERAL STYLE:\n" +
+                "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
+                "• Make it clear which parts come from which sources via [index] references.\n" +
+                "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
+                "• If the search results don't contain relevant information, say so explicitly.",
+            },
+            {
+              role: "user",
+              content:
+                `${searchContext}\\n\\n` +
+                `User's question: ${prompt}\\n\\n` +
+                "The numbered search results above are your ONLY sources of truth. " +
+                "Write an answer that:\n" +
+                "1) Directly answers the user's question, and\n" +
+                "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
+                "Do not cite sources that are not provided.",
+            },
+          ],
+          temperature: 0.6,
+          max_tokens: 800,
+        });
+        
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+        answerRaw = aiResponse || "No answer generated.";
+        answerRaw = linkifyWebsearchCitations(answerRaw, searchResult);
+
+        const escapedPrompt = escapeHTML(prompt);
+        sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerId);
+        formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
+        footerHtml = `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`;
+        
+        const newKey = makeId(6);
+        inlineCache.set(newKey, {
+          prompt,
+          answer: answerRaw,
+          userId: String(ownerId),
+          model,
+          mode: "websearch",
+          createdAt: Date.now(),
+        });
+        setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+        
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${sourcesHtml}${footerHtml}`,
+          { 
+            parse_mode: "HTML",
+            reply_markup: inlineAnswerKeyboard(newKey),
+          }
+        );
+        console.log("Websearch updated with AI response");
+      }
     } catch (e) {
       console.error("Failed to get Websearch response:", e.message);
       try {
