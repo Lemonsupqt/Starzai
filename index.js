@@ -2217,39 +2217,39 @@ function buildWebsearchSourcesHtml(searchResult, userId) {
   if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
     return "";
   }
-  
+
   const total = searchResult.results.length;
   const limit = getWebsearchSourceLimit(userId, total);
   if (!limit) return "";
-  
-  let html = "\\n\\n<b>📚 Sources:</b>\\n";
-  for (let i = 0; i &lt; limit; i++) {
+
+  let html = "\n\n<b>📚 Sources:</b>\n";
+  for (let i = 0; i < limit; i++) {
     const r = searchResult.results[i];
     const idx = i + 1;
     const url = r.url || "";
     const title = escapeHTML(r.title || url || `Source ${idx}`);
-    
+
     html += `[${idx}] `;
     if (url) {
-      html += `<a href=\"${url}\">${title}</a>`;
+      html += `<a href="${url}">${title}</a>`;
     } else {
       html += title;
     }
-    
+
     const raw = r.content || "";
     if (raw) {
-      const snippet = raw.replace(/\\s+/g, " ").slice(0, 160);
+      const snippet = raw.replace(/\s+/g, " ").slice(0, 160);
       const safeSnippet = escapeHTML(snippet);
-      html += `\\n<blockquote>${safeSnippet}${raw.length > 160 ? "..." : ""}</blockquote>`;
+      html += `\n<blockquote>${safeSnippet}${raw.length > 160 ? "..." : ""}</blockquote>`;
     }
-    html += "\\n";
+    html += "\n";
   }
-  
+
   const idStr = String(userId);
-  if (limit &lt; total &amp;&amp; !OWNER_IDS.has(idStr)) {
-    html += `<i>Showing ${limit} of ${total} sources</i>\\n`;
+  if (limit < total && !OWNER_IDS.has(idStr)) {
+    html += `<i>Showing ${limit} of ${total} sources</i>\n`;
   }
-  
+
   return html;
 }
 
