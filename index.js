@@ -2319,22 +2319,17 @@ function linkifyWebsearchCitations(text, searchResult) {
 // - <a href="url">links</a>
 function convertToTelegramHTML(text) {
   if (!text) return text;
-  
-  let result = text;
-  
-  // Escape HTML special characters first (but not in code blocks)
-  // We'll handle code blocks separately
-  
+
+  let result = String(text);
+
   // Step 1: Protect and convert code blocks with language (```python ... ```)
   const codeBlocksWithLang = [];
   result = result.replace(/```(\w+)\n([\s\S]*?)```/g, (match, lang, code) => {
-    // Escape HTML in code
     const escapedCode = escapeHTML(code.trim());
     codeBlocksWithLang.push(`<pre><code class="language-${lang}">${escapedCode}</code></pre>`);
-    // Use @@...@@ placeholders so Markdown bold/italic rules don't touch them
     return `@@CODEBLOCK_LANG_${codeBlocksWithLang.length - 1}@@`;
   });
-  
+
   // Step 2: Protect and convert code blocks without language (``` ... ```)
   const codeBlocks = [];
   result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
@@ -2342,7 +2337,7 @@ function convertToTelegramHTML(text) {
     codeBlocks.push(`<pre>${escapedCode}</pre>`);
     return `@@CODEBLOCK_${codeBlocks.length - 1}@@`;
   });
-  
+
   // Step 3: Protect and convert inline code (`...`)
   const inlineCode = [];
   result = result.replace(/`([^`]+)`/g, (match, code) => {
@@ -2350,69 +2345,68 @@ function convertToTelegramHTML(text) {
     inlineCode.push(`<code>${escapedCode}</code>`);
     return `@@INLINECODE_${inlineCode.length - 1}@@`;
   });
-  
+
   // Step 4: Escape remaining HTML special characters
   result = escapeHTML(result);
-  
+
   // Step 5: Convert Markdown to HTML
-  
+
   // Headers (# Header) -> bold
   result = result.replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>');
-  
+
   // Bold + Italic (***text*** or ___text___)
   result = result.replace(/\*\*\*([^*]+)\*\*\*/g, '<b><i>$1</i></b>');
   result = result.replace(/___([^_]+)___/g, '<b><i>$1</i></b>');
-  
+
   // Bold (**text** or __text__)
   result = result.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
   result = result.replace(/__([^_]+)__/g, '<b>$1</b>');
-  
+
   // Italic (*text* or _text_)
-  // Be careful with underscores in words like snake_case
   result = result.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<i>$1</i>');
   result = result.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<i>$1</i>');
-  
+
   // Strikethrough (~~text~~)
   result = result.replace(/~~([^~]+)~~/g, '<s>$1</s>');
-  
+
   // Block quotes (> text)
+  // At this point '>' has been escaped to '&gt;' by escapeHTML, so we match that.
   result = result.replace(/^&gt;\s*(.+)$/gm, '<blockquote>$1</blockquote>');
   // Merge consecutive blockquotes
   result = result.replace(/<\/blockquote>\n<blockquote>/g, '\n');
-  
+
   // Links [text](url)
   // If the link text is purely numeric (e.g. "1"), render it as a bracketed citation "[1]".
-  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) =&gt; {
-    const trimmed = String(text).trim();
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
+    const trimmed = String(label).trim();
     if (/^\d+$/.test(trimmed)) {
-      return `<a href=\"${url}\">[${trimmed}]</a>`;
+      return `<a href="${url}">[${trimmed}]</a>`;
     }
-    return `<a href=\"${url}\">${trimmed}</a>`;
-  });ks [text](url)
-  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-  
+    return `<a href="${url}">${trimmed}</a>`;
+  });
+
   // Horizontal rules (--- or ***)
-  result = result.replace(/^(---|\*\*\*|___)$/gm, '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
-  
+  result = result.replace(/^(---|\*\*\*|___)$/gm, '──────────');
+
   // Bullet points (- item or * item)
-  result = result.replace(/^[\-\*]\s+(.+)$/gm, '• $1');
-  
+  result = result.replace(/^[-*]\s+(.+)$/gm, '• $1');
+
   // Numbered lists (1. item)
   result = result.replace(/^(\d+)\.\s+(.+)$/gm, '$1. $2');
-  
+
   // Step 6: Restore code blocks and inline code
   inlineCode.forEach((code, i) => {
     result = result.replace(`@@INLINECODE_${i}@@`, code);
   });
-  
+
   codeBlocks.forEach((code, i) => {
     result = result.replace(`@@CODEBLOCK_${i}@@`, code);
   });
-  
+
   codeBlocksWithLang.forEach((code, i) => {
     result = result.replace(`@@CODEBLOCK_LANG_${i}@@`, code);
   });
-  
+
   return result;
 }
 
