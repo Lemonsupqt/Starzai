@@ -6147,7 +6147,8 @@ bot.callbackQuery(/^dm_ai_cont:(.+)$/, async (ctx) => {
 
   // Remove the old Continue button to avoid spam clicks
   try {
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    // Calling without arguments clears the inline keyboard in the current message
+    await ctx.editMessageReplyMarkup();
   } catch {
     // ignore if we can't edit the old markup
   }
