@@ -36,7 +36,7 @@ const ULTRA_MODELS = parseCsvEnv("ULTRA_MODELS"); // optional, can be empty
 
 // GitHub Models (new - optional)
 // One GITHUB_PAT token works for all models with models:read permission
-const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-5-nano");
+const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-4.1-nano,openai/gpt-5-nano");
 const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "openai/gpt-5-mini,openai/gpt-5");
 const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "openai/gpt-5-chat");
 
@@ -163,8 +163,8 @@ function getProviderForModel(model) {
 }
 
 // Each provider uses its own model naming - no translation needed
-// GitHub Models: "openai/gpt-5-nano", "openai/gpt-5-mini", etc.
-// MegaLLM: "gpt-4.1-nano", "gpt-4.1-mini", "gpt-4o", etc.
+// GitHub Models: "openai/gpt-4.1-nano", "openai/gpt-5-nano", "openai/gpt-5-mini", etc.
+// MegaLLM: "gpt-4o", "gpt-4o-mini", etc.
 
 // GitHub Models API call
 async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens = 350 }) {
