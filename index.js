@@ -234,7 +234,10 @@ function scheduleSave(dataType) {
   pendingSaves.add(dataType);
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => {
-    flushSaves();
+    // Don't await - let saves happen in background without blocking requests
+    flushSaves().catch(err => {
+      console.error("❌ Background save error:", err);
+    });
   }, 2000); // Wait 2 seconds before saving to batch changes
 }
 
@@ -3819,11 +3822,11 @@ bot.command("imagine", async (ctx) => {
       // Ignore deletion errors
     }
     
-    // Track usage
+    // Track usage (save is batched automatically)
     const rec = getUserRecord(u.id);
     if (rec) {
       rec.messagesCount = (rec.messagesCount || 0) + 1;
-      saveUsers();
+      saveUsers(); // Batched save - won't block other requests
     }
     
     console.log(`[IMAGINE] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
@@ -12150,7 +12153,10 @@ setInterval(() => {
 // WEBHOOK SERVER (Railway)
 // =====================
 const callback = webhookCallback(bot, "http", {
-  timeoutMilliseconds: 60000, // 60 second timeout for webhook responses
+  timeoutMilliseconds: 120000, // 120 second timeout for long operations like image generation
+  onTimeout: (ctx) => {
+    console.log("⚠️ Request timeout, but continuing in background...");
+  }
 });
 
 http
@@ -12158,7 +12164,11 @@ http
     // Handle webhook
     if (req.method === "POST" && req.url === "/webhook") {
       try {
-        await callback(req, res);
+        // Process webhook without blocking other requests
+        // This allows multiple users to be served concurrently
+        callback(req, res).catch(e => {
+          console.error("❌ Webhook processing error:", e);
+        });
       } catch (e) {
         console.error(e);
         res.statusCode = 500;
