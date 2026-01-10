@@ -163,13 +163,44 @@ function getProviderForModel(model) {
 }
 
 // Get model name for provider (strips prefix if needed)
+// Also maps GitHub model IDs to equivalent MegaLLM models when falling back
 function getModelNameForProvider(model, provider) {
   if (provider === 'github') {
     // GitHub Models need full name with prefix
     return model;
   }
   
-  // MegaLLM models don't have prefixes
+  // For MegaLLM fallback: map GitHub model IDs to MegaLLM equivalents
+  if (provider === 'megallm') {
+    // GitHub Models use format: "provider/model-name"
+    // MegaLLM has its own model naming convention
+    const githubToMegaLLM = {
+      'openai/gpt-5-nano': 'gpt-4.1-nano',      // Fast, lightweight model
+      'openai/gpt-5-mini': 'gpt-4.1-mini',      // Balanced model
+      'openai/gpt-5': 'gpt-4.1',                // Quality model
+      'openai/gpt-5-chat': 'gpt-4.1',           // Chat-optimized
+      'openai/gpt-4.1-nano': 'gpt-4.1-nano',    // Direct mapping
+      'openai/gpt-4.1-mini': 'gpt-4.1-mini',    // Direct mapping
+      'openai/gpt-4.1': 'gpt-4.1',              // Direct mapping
+      'openai/gpt-4o': 'gpt-4o',                // GPT-4o
+      'openai/gpt-4o-mini': 'gpt-4o-mini',      // GPT-4o mini
+    };
+    
+    // Check if we have a mapping for this GitHub model
+    if (githubToMegaLLM[model]) {
+      console.log(`[LLM] Mapping GitHub model ${model} to MegaLLM model ${githubToMegaLLM[model]}`);
+      return githubToMegaLLM[model];
+    }
+    
+    // If model has a prefix (provider/model format), try stripping it
+    if (model && model.includes('/')) {
+      const strippedModel = model.split('/').pop();
+      console.log(`[LLM] Stripping prefix from ${model} to ${strippedModel} for MegaLLM`);
+      return strippedModel;
+    }
+  }
+  
+  // Return model as-is for other cases
   return model;
 }
 
