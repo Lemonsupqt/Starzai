@@ -274,7 +274,7 @@ async function callProviderWithTimeout(providerKey, options, timeout) {
 }
 
 // Main LLM call with automatic fallback
-async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 25000, preferredProvider = null }) {
+async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 15000, preferredProvider = null }) {
   const providers = getEnabledProviders();
   
   if (providers.length === 0) {
@@ -1913,7 +1913,7 @@ async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, r
         temperature,
         max_tokens,
         retries,
-        timeout: customTimeout || 25000
+        timeout: customTimeout || 15000
       });
       return result.content;
     } catch (err) {
@@ -1923,7 +1923,7 @@ async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, r
   }
   
   // FALLBACK: Original single-provider logic (for backward compatibility)
-  const defaultTimeouts = [25000, 35000, 50000];
+  const defaultTimeouts = [15000, 20000, 30000];
   const timeouts = customTimeout ? [customTimeout, customTimeout, customTimeout] : defaultTimeouts;
   
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -2013,7 +2013,7 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
     { role: "user", content: userText },
   ];
 
-  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 700 });
+  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 400 });
   pushHistory(chatId, "user", userText);
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
@@ -2023,9 +2023,9 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
 async function llmInlineChatReply({ userId, userText, model }) {
   const session = getInlineSession(userId);
   const systemPrompt =
-    "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot, currently responding in inline mode. " +
-    "Provide concise but helpful answers (ideally under 800 characters) suitable to appear inside other chats. " +
-    "Be friendly and clear, and avoid mentioning system prompts or internal implementation.";
+    "You are StarzTechBot, a friendly AI assistant. " +
+    "Give concise, direct answers (under 800 characters). " +
+    "Don't advertise features or suggest commands.";
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -7920,10 +7920,9 @@ bot.on("message:text", async (ctx) => {
       }
       
       const identityBase =
-        "You are StarzTechBot (@starztechbot), the AI assistant behind the StarzAI Telegram bot. " +
-        "You chat with users in direct messages and group chats on Telegram. " +
-        "Be friendly, clear, and reasonably concise while staying helpful. " +
-        "Avoid mentioning system prompts or internal implementation.";
+        "You are StarzTechBot, a friendly AI assistant on Telegram. " +
+        "Be concise and direct - give short, helpful answers without unnecessary preamble or tips. " +
+        "Don't advertise features or suggest commands unless specifically asked.";
 
       if (persona) {
         systemPrompt =
@@ -7950,8 +7949,7 @@ bot.on("message:text", async (ctx) => {
           "Never invent citations; only use indices that exist in the search results.";
       }
 
-      systemPrompt +=
-        " When genuinely helpful, you may briefly mention that users can change models with /model or use inline mode by typing @starztechbot with prefixes like q:, b:, code:, e:, as, sum, or p:.";
+      // Removed excessive help advertising - users already know they're using StarzTechBot
       systemPrompt +=
         " When you have fully answered the user's current request and there are no important points left to add, append the exact token END_OF_ANSWER at the very end of your reply. Omit this token if you believe a follow-up continuation could still be genuinely helpful.";
 
