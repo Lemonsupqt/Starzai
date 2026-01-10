@@ -35,9 +35,10 @@ const PREMIUM_MODELS = parseCsvEnv("PREMIUM_MODELS");
 const ULTRA_MODELS = parseCsvEnv("ULTRA_MODELS"); // optional, can be empty
 
 // GitHub Models (new - optional)
-const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-5-nano,openai/gpt-4.1-nano");
-const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "openai/gpt-5-mini,openai/gpt-5");
-const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "openai/gpt-5.1,openai/gpt-5.2");
+// Only showing gpt-4.1-nano as it's the only working model with current token
+const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-4.1-nano");
+const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "");
+const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "");
 
 const DEFAULT_FREE_MODEL =
   (process.env.DEFAULT_FREE_MODEL || FREE_MODELS[0] || "").trim();
@@ -612,71 +613,12 @@ const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separa
 const inlineCache = new Map(); // key -&gt; { prompt, answer, model, createdAt, userId }
 // For DM/GC answers: simple continuation cache keyed by random id
 // Used when the user taps the "Continue" button to ask the AI to extend its answer.
-const dmContinueCache = new Map(); // key -> { userId, chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml, createdAt }che = new Map(); // key -> { prompt, answer, model, createdAt, userId }
+const dmContinueCache = new Map(); // key -> { userId, chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml, createdAt }
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
 
-// =====================
-// RESPONSE CACHE - Cache LLM responses for identical queries
-// =====================
-const responseCache = new Map(); // hash -> { response, timestamp, model }
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const CACHE_MAX_SIZE = 1000; // Max cached responses
-
-// Simple hash function for cache keys
-function hashPrompt(prompt, model) {
-  const str = `${prompt}:${model}`;
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  return hash.toString(36);
-}
-
-function getCachedResponse(prompt, model) {
-  const key = hashPrompt(prompt, model);
-  const cached = responseCache.get(key);
-  
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.response;
-  }
-  
-  // Clean expired cache entry
-  if (cached) {
-    responseCache.delete(key);
-  }
-  
-  return null;
-}
-
-function setCachedResponse(prompt, model, response) {
-  // Limit cache size
-  if (responseCache.size >= CACHE_MAX_SIZE) {
-    // Remove oldest entry
-    const firstKey = responseCache.keys().next().value;
-    responseCache.delete(firstKey);
-  }
-  
-  const key = hashPrompt(prompt, model);
-  responseCache.set(key, {
-    response,
-    timestamp: Date.now(),
-    model
-  });
-}
-
-// Clean expired cache entries every 10 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of responseCache.entries()) {
-    if (now - value.timestamp > CACHE_TTL) {
-      responseCache.delete(key);
-    }
-  }
-}, 10 * 60 * 1000);
+// Response caching removed - was not being used and may cause issues
 
 // Ensure prefsDb.groups exists (for group authorization metadata)
 function ensurePrefsGroups() {
