@@ -235,7 +235,26 @@ async function callProviderWithTimeout(providerKey, options, timeout) {
   );
 }
 
-// Main LLM call - each model uses its intended provider ONLY (no cross-provider fallback)
+// Fallback models for MegaLLM (DeepSeek/Qwen - unlimited usage)
+const MEGALLM_FALLBACK_MODELS = {
+  fast: 'deepseek-ai/DeepSeek-V3-0324',      // Fast responses
+  balanced: 'Qwen/Qwen3-235B-A22B',          // Good balance
+  quality: 'deepseek-ai/DeepSeek-R1'         // Best quality (reasoning)
+};
+
+// Get appropriate fallback model based on the original model tier
+function getFallbackModel(originalModel) {
+  // Map original models to fallback tiers
+  if (originalModel?.includes('nano') || originalModel?.includes('mini')) {
+    return MEGALLM_FALLBACK_MODELS.fast;
+  } else if (originalModel?.includes('chat') || originalModel?.includes('gpt-5-mini')) {
+    return MEGALLM_FALLBACK_MODELS.balanced;
+  } else {
+    return MEGALLM_FALLBACK_MODELS.quality;
+  }
+}
+
+// Main LLM call - uses intended provider with MegaLLM fallback on rate limit/errors
 async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 15000, preferredProvider = null }) {
   const providers = getEnabledProviders();
   
@@ -243,9 +262,9 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     throw new Error('No LLM providers available');
   }
 
-  // Auto-detect provider from model name - each model goes to its intended provider ONLY
+  // Auto-detect provider from model name
   const targetProvider = preferredProvider || getProviderForModel(model);
-  console.log(`[LLM] Using provider: ${targetProvider} for model: ${model} (no fallback)`);
+  console.log(`[LLM] Using provider: ${targetProvider} for model: ${model}`);
   
   // Find the target provider
   const provider = providers.find(p => p.key === targetProvider);
@@ -254,7 +273,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     throw new Error(`Provider '${targetProvider}' is not available or not configured`);
   }
 
-  // Try the intended provider with retries, but NO fallback to other providers
+  // Try the intended provider with retries
   let lastError = null;
   
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -278,9 +297,9 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
       lastError = error;
       console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
       
-      // Only retry on timeout errors
+      // Only retry on timeout errors within the same provider
       if (!error.message?.includes('timed out') && !error.message?.includes('timeout')) {
-        break; // Don't retry on non-timeout errors
+        break; // Don't retry on non-timeout errors, go to fallback
       }
       
       if (attempt < retries) {
@@ -289,8 +308,34 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     }
   }
 
-  // Provider failed - throw error (no fallback)
-  throw lastError || new Error(`${provider.name} failed for model: ${model}`);
+  // Primary provider failed - try MegaLLM fallback with DeepSeek/Qwen (unlimited usage)
+  const megallmProvider = providers.find(p => p.key === 'megallm');
+  
+  if (megallmProvider && targetProvider !== 'megallm') {
+    const fallbackModel = getFallbackModel(model);
+    console.log(`[LLM] ⚡ Falling back to MegaLLM with ${fallbackModel}...`);
+    
+    providerStats.megallm.calls++;
+    
+    try {
+      const result = await callProviderWithTimeout(
+        'megallm',
+        { model: fallbackModel, messages, temperature, max_tokens },
+        timeout
+      );
+      
+      providerStats.megallm.successes++;
+      console.log(`[LLM] ✅ Fallback success with MegaLLM (${fallbackModel})`);
+      
+      return { content: result, provider: 'megallm', fallback: true, fallbackModel };
+    } catch (fallbackError) {
+      providerStats.megallm.failures++;
+      console.error(`[LLM] ❌ MegaLLM fallback also failed:`, fallbackError.message);
+    }
+  }
+
+  // All providers failed
+  throw lastError || new Error(`All providers failed for model: ${model}`);
 }
 
 // =====================
