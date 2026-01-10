@@ -3735,6 +3735,123 @@ bot.command("feedback", async (ctx) => {
   );
 });
 
+// /imagine - AI image generation using Pollinations.ai (free, unlimited)
+bot.command("imagine", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  
+  // Activate group if used in group chat
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
+  const text = ctx.message?.text || "";
+  const prompt = text.replace(/^\/imagine\s*/i, "").trim();
+  
+  if (!prompt) {
+    await ctx.reply(
+      "🎨 *AI Image Generator*\n\n" +
+      "Generate stunning images from text descriptions!\n\n" +
+      "*Usage:*\n" +
+      "`/imagine a cute cat in space`\n" +
+      "`/imagine fantasy landscape with mountains`\n" +
+      "`/imagine cyberpunk city at night`\n\n" +
+      "_Powered by Pollinations.ai - Free & Unlimited_",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Check if prompt is too long
+  if (prompt.length > 500) {
+    await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  // Send generating message
+  const statusMsg = await ctx.reply(
+    "🎨 *Generating image...*\n\n" +
+    `Prompt: _${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_\n\n` +
+    "⏳ This may take 10-30 seconds...",
+    { parse_mode: "Markdown" }
+  );
+  
+  try {
+    // URL encode the prompt
+    const encodedPrompt = encodeURIComponent(prompt);
+    
+    // Build Pollinations.ai URL with parameters
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+    
+    // Fetch the image
+    const response = await fetch(imageUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'StarzAI-Bot/1.0'
+      },
+      timeout: 60000 // 60 second timeout
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    // Get image as buffer
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Send the image
+    await ctx.replyWithPhoto(
+      new InputFile(imageBuffer, "generated_image.jpg"),
+      {
+        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _Powered by Pollinations.ai_`,
+        parse_mode: "Markdown"
+      }
+    );
+    
+    // Delete the status message
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    } catch (e) {
+      // Ignore deletion errors
+    }
+    
+    // Track usage
+    const rec = getUserRecord(u.id);
+    if (rec) {
+      rec.messagesCount = (rec.messagesCount || 0) + 1;
+      saveUsers();
+    }
+    
+    console.log(`[IMAGINE] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("Image generation error:", error);
+    
+    // Update status message with error
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "❌ *Image generation failed*\n\n" +
+        "The service might be temporarily unavailable. Please try again in a moment.\n\n" +
+        "_If the problem persists, use /feedback to report it._",
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      // If edit fails, send new message
+      await ctx.reply(
+        "❌ *Image generation failed*\n\n" +
+        "The service might be temporarily unavailable. Please try again in a moment.",
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+});
+
 // Feedback button in main menu or moderation messages
 bot.callbackQuery("menu_feedback", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -5911,6 +6028,12 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• `/char yoda` - Start as Yoda",
     "• `/char save yoda` - Save to favorites",
     "• `/char stop` - End character mode",
+    "",
+    "🎨 *AI Image Generator*",
+    "Create stunning images from text!",
+    "• `/imagine a cute cat in space`",
+    "• `/imagine fantasy landscape`",
+    "• Free & unlimited via Pollinations.ai",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
