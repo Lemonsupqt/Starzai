@@ -230,15 +230,23 @@ function saveStorageIds() {
 let saveTimeout = null;
 let pendingSaves = new Set();
 
-function scheduleSave(dataType) {
+function scheduleSave(dataType, priority = 'normal') {
   pendingSaves.add(dataType);
   if (saveTimeout) clearTimeout(saveTimeout);
+  
+  // Priority-based save delays for better performance
+  // High priority: 2 seconds (critical data like user records)
+  // Normal priority: 5 seconds (stats, preferences)
+  // Low priority: 10 seconds (analytics, non-critical)
+  const delay = priority === 'high' ? 2000 : 
+                priority === 'normal' ? 5000 : 10000;
+  
   saveTimeout = setTimeout(() => {
     // Don't await - let saves happen in background without blocking requests
     flushSaves().catch(err => {
       console.error("❌ Background save error:", err);
     });
-  }, 2000); // Wait 2 seconds before saving to batch changes
+  }, delay);
 }
 
 async function flushSaves() {
@@ -370,8 +378,8 @@ async function loadFromTelegram() {
   }
 }
 
-function saveUsers() {
-  scheduleSave("users");
+function saveUsers(priority = 'normal') {
+  scheduleSave("users", priority);
 }
 function savePrefs() {
   scheduleSave("prefs");
@@ -395,6 +403,67 @@ const dmContinueCache = new Map(); // key -> { userId, chatId, model, systemProm
 const rate = new Map(); // userId -> { windowStartMs, count }
 const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
 const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
+
+// =====================
+// RESPONSE CACHE - Cache LLM responses for identical queries
+// =====================
+const responseCache = new Map(); // hash -> { response, timestamp, model }
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_MAX_SIZE = 1000; // Max cached responses
+
+// Simple hash function for cache keys
+function hashPrompt(prompt, model) {
+  const str = `${prompt}:${model}`;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return hash.toString(36);
+}
+
+function getCachedResponse(prompt, model) {
+  const key = hashPrompt(prompt, model);
+  const cached = responseCache.get(key);
+  
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.response;
+  }
+  
+  // Clean expired cache entry
+  if (cached) {
+    responseCache.delete(key);
+  }
+  
+  return null;
+}
+
+function setCachedResponse(prompt, model, response) {
+  // Limit cache size
+  if (responseCache.size >= CACHE_MAX_SIZE) {
+    // Remove oldest entry
+    const firstKey = responseCache.keys().next().value;
+    responseCache.delete(firstKey);
+  }
+  
+  const key = hashPrompt(prompt, model);
+  responseCache.set(key, {
+    response,
+    timestamp: Date.now(),
+    model
+  });
+}
+
+// Clean expired cache entries every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of responseCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      responseCache.delete(key);
+    }
+  }
+}, 10 * 60 * 1000);
 
 // Ensure prefsDb.groups exists (for group authorization metadata)
 function ensurePrefsGroups() {
@@ -659,6 +728,11 @@ function calculateSimilarity(str1, str2) {
 }
 
 function detectSpam(userId, messageText) {
+  // Skip spam check for trusted users (performance optimization)
+  if (isTrustedUser(userId)) {
+    return { isSpam: false, reason: "trusted_user", severity: "none" };
+  }
+  
   const record = getSpamRecord(userId);
   const nowMs = Date.now();
   
@@ -999,6 +1073,28 @@ function ensureUser(userId, from = null) {
 function isUserBanned(userId) {
   const rec = getUserRecord(userId);
   return !!rec?.banned;
+}
+
+// Check if a user is trusted (skip spam checks for performance)
+function isTrustedUser(userId) {
+  // Owners are always trusted
+  if (OWNER_IDS.includes(String(userId))) {
+    return true;
+  }
+  
+  const rec = getUserRecord(userId);
+  if (!rec) return false;
+  
+  // Trusted if:
+  // - No warnings
+  // - 100+ messages sent
+  // - Not banned or muted
+  const hasNoWarnings = !rec.warnings || rec.warnings.length === 0;
+  const hasGoodHistory = (rec.messagesCount || 0) >= 100;
+  const notBanned = !rec.banned;
+  const notMuted = !rec.mute;
+  
+  return hasNoWarnings && hasGoodHistory && notBanned && notMuted;
 }
 
 // =====================
