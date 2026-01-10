@@ -237,9 +237,9 @@ async function callProviderWithTimeout(providerKey, options, timeout) {
 
 // Fallback models for MegaLLM (DeepSeek/Qwen - unlimited usage)
 const MEGALLM_FALLBACK_MODELS = {
-  fast: 'deepseek-ai/DeepSeek-V3-0324',      // Fast responses
-  balanced: 'Qwen/Qwen3-235B-A22B',          // Good balance
-  quality: 'deepseek-ai/DeepSeek-R1'         // Best quality (reasoning)
+  fast: 'deepseek-v3.1',                           // Fast responses
+  balanced: 'qwen/qwen3-next-80b-a3b-instruct',    // Good balance
+  quality: 'deepseek-v3.1'                         // Best quality
 };
 
 // Get appropriate fallback model based on the original model tier
