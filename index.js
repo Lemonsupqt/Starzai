@@ -29,9 +29,15 @@ function parseCsvEnv(name, fallback = "") {
     .filter(Boolean);
 }
 
+// MegaLLM models (existing)
 const FREE_MODELS = parseCsvEnv("FREE_MODELS");
 const PREMIUM_MODELS = parseCsvEnv("PREMIUM_MODELS");
 const ULTRA_MODELS = parseCsvEnv("ULTRA_MODELS"); // optional, can be empty
+
+// GitHub Models (new - optional)
+const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-5-nano,openai/gpt-4.1-nano");
+const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "openai/gpt-5-mini,openai/gpt-5");
+const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "openai/gpt-5.1,openai/gpt-5.2");
 
 const DEFAULT_FREE_MODEL =
   (process.env.DEFAULT_FREE_MODEL || FREE_MODELS[0] || "").trim();
@@ -41,9 +47,20 @@ const DEFAULT_ULTRA_MODEL =
   (process.env.DEFAULT_ULTRA_MODEL || ULTRA_MODELS[0] || DEFAULT_PREMIUM_MODEL || DEFAULT_FREE_MODEL || "").trim();
 
 function allModelsForTier(tier) {
-  if (tier === "ultra") return [...FREE_MODELS, ...PREMIUM_MODELS, ...ULTRA_MODELS];
-  if (tier === "premium") return [...FREE_MODELS, ...PREMIUM_MODELS];
-  return [...FREE_MODELS];
+  // Combine MegaLLM and GitHub Models for each tier
+  if (tier === "ultra") {
+    return [
+      ...FREE_MODELS, ...PREMIUM_MODELS, ...ULTRA_MODELS,
+      ...GITHUB_FREE_MODELS, ...GITHUB_PREMIUM_MODELS, ...GITHUB_ULTRA_MODELS
+    ];
+  }
+  if (tier === "premium") {
+    return [
+      ...FREE_MODELS, ...PREMIUM_MODELS,
+      ...GITHUB_FREE_MODELS, ...GITHUB_PREMIUM_MODELS
+    ];
+  }
+  return [...FREE_MODELS, ...GITHUB_FREE_MODELS];
 }
 
 // MODEL_VISION is optional - all MegaLLM models support vision, so user's selected model is used
@@ -128,6 +145,33 @@ function getEnabledProviders() {
     .map(([key, provider]) => ({ key, ...provider }));
 }
 
+// Detect provider from model name
+function getProviderForModel(model) {
+  if (!model) return 'megallm';
+  
+  // GitHub Models use format: "provider/model-name"
+  if (model.startsWith('openai/') || 
+      model.startsWith('anthropic/') || 
+      model.startsWith('google/') ||
+      model.startsWith('microsoft/')) {
+    return 'github';
+  }
+  
+  // Default to MegaLLM for all other models
+  return 'megallm';
+}
+
+// Get model name for provider (strips prefix if needed)
+function getModelNameForProvider(model, provider) {
+  if (provider === 'github') {
+    // GitHub Models need full name with prefix
+    return model;
+  }
+  
+  // MegaLLM models don't have prefixes
+  return model;
+}
+
 // GitHub Models API call
 async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens = 350 }) {
   if (!GITHUB_PAT) {
@@ -203,6 +247,12 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     throw new Error('No LLM providers available');
   }
 
+  // Auto-detect provider from model name if not specified
+  if (!preferredProvider && model) {
+    preferredProvider = getProviderForModel(model);
+    console.log(`[LLM] Auto-detected provider: ${preferredProvider} for model: ${model}`);
+  }
+
   // If preferred provider specified, try it first
   let providerOrder = [...providers];
   if (preferredProvider) {
@@ -219,11 +269,14 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     providerStats[provider.key].calls++;
     
     try {
-      console.log(`[LLM] Trying ${provider.name}...`);
+      console.log(`[LLM] Trying ${provider.name} with model: ${model}...`);
+      
+      // Get the correct model name for this provider
+      const providerModel = getModelNameForProvider(model, provider.key);
       
       const result = await callProviderWithTimeout(
         provider.key,
-        { model, messages, temperature, max_tokens },
+        { model: providerModel, messages, temperature, max_tokens },
         timeout
       );
       
@@ -5068,12 +5121,13 @@ function modelListKeyboard(category, currentModel, userTier) {
   const rows = [];
   let models = [];
   
+  // Combine MegaLLM and GitHub Models for each category
   if (category === "free") {
-    models = FREE_MODELS;
+    models = [...FREE_MODELS, ...GITHUB_FREE_MODELS];
   } else if (category === "premium" && (userTier === "premium" || userTier === "ultra")) {
-    models = PREMIUM_MODELS;
+    models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
   } else if (category === "ultra" && userTier === "ultra") {
-    models = ULTRA_MODELS;
+    models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   }
   
   // Add model buttons (2 per row for cleaner look)
