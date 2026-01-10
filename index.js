@@ -179,6 +179,8 @@ async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens
     throw new Error('GitHub PAT not configured');
   }
 
+  // Note: Some GitHub Models (gpt-5-nano, gpt-5-mini, gpt-5) only support default temperature (1.0)
+  // We omit temperature parameter to use the default value
   const response = await fetch(LLM_PROVIDERS.github.endpoint, {
     method: 'POST',
     headers: {
@@ -189,7 +191,7 @@ async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens
     body: JSON.stringify({
       model: model || LLM_PROVIDERS.github.defaultModel,
       messages,
-      temperature,
+      // temperature omitted - uses model default (required for gpt-5-nano, gpt-5-mini, gpt-5)
       max_completion_tokens: max_tokens  // GitHub Models uses max_completion_tokens, not max_tokens
     })
   });
