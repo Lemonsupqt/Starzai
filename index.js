@@ -35,10 +35,10 @@ const PREMIUM_MODELS = parseCsvEnv("PREMIUM_MODELS");
 const ULTRA_MODELS = parseCsvEnv("ULTRA_MODELS"); // optional, can be empty
 
 // GitHub Models (new - optional)
-// Only showing gpt-4.1-nano as it's the only working model with current token
-const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-4.1-nano");
-const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "");
-const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "");
+// One GITHUB_PAT token works for all models with models:read permission
+const GITHUB_FREE_MODELS = parseCsvEnv("GITHUB_FREE_MODELS", "openai/gpt-5-nano");
+const GITHUB_PREMIUM_MODELS = parseCsvEnv("GITHUB_PREMIUM_MODELS", "openai/gpt-5-mini,openai/gpt-5");
+const GITHUB_ULTRA_MODELS = parseCsvEnv("GITHUB_ULTRA_MODELS", "openai/gpt-5-chat");
 
 const DEFAULT_FREE_MODEL =
   (process.env.DEFAULT_FREE_MODEL || FREE_MODELS[0] || "").trim();
