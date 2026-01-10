@@ -1001,6 +1001,24 @@ function isUserBanned(userId) {
   return !!rec?.banned;
 }
 
+// =====================
+// CONCURRENT PROCESSING MIDDLEWARE
+// Enable parallel request handling for multiple users
+// =====================
+bot.use(async (ctx, next) => {
+  // Process requests concurrently instead of sequentially
+  // This allows multiple users to be served simultaneously
+  next().catch(err => {
+    console.error("❌ Handler error:", err);
+    // Try to notify user of error
+    try {
+      ctx.reply("❌ An error occurred processing your request. Please try again.").catch(() => {});
+    } catch (e) {
+      // Ignore if we can't send error message
+    }
+  });
+});
+
 // Global ban middleware - blocks banned users from using the bot
 // but still allows feedback (/feedback + Feedback button) so banned
 // users can send an appeal or report an issue.
