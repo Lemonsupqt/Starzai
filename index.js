@@ -190,7 +190,7 @@ async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens
       model: model || LLM_PROVIDERS.github.defaultModel,
       messages,
       temperature,
-      max_tokens
+      max_completion_tokens: max_tokens  // GitHub Models uses max_completion_tokens, not max_tokens
     })
   });
 
