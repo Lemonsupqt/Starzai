@@ -13,6 +13,7 @@ const execAsync = promisify(exec);
 // =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MEGALLM_API_KEY = process.env.MEGALLM_API_KEY;
+const GITHUB_PAT = process.env.GITHUB_PAT || "";
 const PUBLIC_URL = process.env.PUBLIC_URL; // e.g. https://xxxxx.up.railway.app
 const PORT = Number(process.env.PORT || 3000);
 
@@ -69,6 +70,7 @@ const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
+if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GitHub Models will be unavailable");
 
 // =====================
 // BOT + LLM
@@ -82,6 +84,164 @@ const openai = new OpenAI({
   baseURL: "https://ai.megallm.io/v1",
   apiKey: MEGALLM_API_KEY,
 });
+
+// =====================
+// MULTI-PROVIDER LLM SYSTEM
+// =====================
+
+// Provider statistics
+const providerStats = {
+  github: { calls: 0, successes: 0, failures: 0, totalTokens: 0 },
+  megallm: { calls: 0, successes: 0, failures: 0, totalTokens: 0 }
+};
+
+// Provider registry - easy to add more providers!
+const LLM_PROVIDERS = {
+  github: {
+    name: 'GitHub Models',
+    priority: 1,  // Lower = higher priority (try first)
+    enabled: !!GITHUB_PAT,
+    models: {
+      fast: 'openai/gpt-5-nano',
+      balanced: 'openai/gpt-4.1-nano', 
+      quality: 'openai/gpt-5-mini'
+    },
+    defaultModel: 'openai/gpt-5-nano',
+    cost: 0.00001,  // per token unit
+    endpoint: 'https://models.github.ai/inference/chat/completions'
+  },
+  megallm: {
+    name: 'MegaLLM',
+    priority: 2,  // Fallback
+    enabled: !!MEGALLM_API_KEY,
+    models: {},  // Uses existing model system
+    cost: 0.001,  // estimate per query
+    endpoint: 'https://ai.megallm.io/v1'
+  }
+};
+
+// Get enabled providers sorted by priority
+function getEnabledProviders() {
+  return Object.entries(LLM_PROVIDERS)
+    .filter(([_, provider]) => provider.enabled)
+    .sort(([_, a], [__, b]) => a.priority - b.priority)
+    .map(([key, provider]) => ({ key, ...provider }));
+}
+
+// GitHub Models API call
+async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens = 350 }) {
+  if (!GITHUB_PAT) {
+    throw new Error('GitHub PAT not configured');
+  }
+
+  const response = await fetch(LLM_PROVIDERS.github.endpoint, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GITHUB_PAT}`,
+      'Content-Type': 'application/json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    },
+    body: JSON.stringify({
+      model: model || LLM_PROVIDERS.github.defaultModel,
+      messages,
+      temperature,
+      max_tokens
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`GitHub Models API error (${response.status}): ${error}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  
+  if (!content) {
+    throw new Error('No content in GitHub Models response');
+  }
+
+  return content.trim();
+}
+
+// MegaLLM API call (wrapper for existing openai client)
+async function callMegaLLM({ model, messages, temperature = 0.7, max_tokens = 350 }) {
+  const resp = await openai.chat.completions.create({
+    model,
+    messages,
+    temperature,
+    max_tokens,
+  });
+  return (resp?.choices?.[0]?.message?.content || "").trim();
+}
+
+// Provider call wrapper with timeout
+async function callProviderWithTimeout(providerKey, options, timeout) {
+  const provider = LLM_PROVIDERS[providerKey];
+  
+  let callFunction;
+  if (providerKey === 'github') {
+    callFunction = callGitHubModels(options);
+  } else if (providerKey === 'megallm') {
+    callFunction = callMegaLLM(options);
+  } else {
+    throw new Error(`Unknown provider: ${providerKey}`);
+  }
+
+  return withTimeout(
+    callFunction,
+    timeout,
+    `${provider.name} timed out after ${timeout/1000}s`
+  );
+}
+
+// Main LLM call with automatic fallback
+async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 25000, preferredProvider = null }) {
+  const providers = getEnabledProviders();
+  
+  if (providers.length === 0) {
+    throw new Error('No LLM providers available');
+  }
+
+  // If preferred provider specified, try it first
+  let providerOrder = [...providers];
+  if (preferredProvider) {
+    const preferred = providers.find(p => p.key === preferredProvider);
+    if (preferred) {
+      providerOrder = [preferred, ...providers.filter(p => p.key !== preferredProvider)];
+    }
+  }
+
+  let lastError = null;
+
+  // Try each provider in order
+  for (const provider of providerOrder) {
+    providerStats[provider.key].calls++;
+    
+    try {
+      console.log(`[LLM] Trying ${provider.name}...`);
+      
+      const result = await callProviderWithTimeout(
+        provider.key,
+        { model, messages, temperature, max_tokens },
+        timeout
+      );
+      
+      providerStats[provider.key].successes++;
+      console.log(`[LLM] ✅ Success with ${provider.name}`);
+      
+      return { content: result, provider: provider.key };
+    } catch (error) {
+      providerStats[provider.key].failures++;
+      lastError = error;
+      console.error(`[LLM] ❌ ${provider.name} failed:`, error.message);
+      // Continue to next provider
+    }
+  }
+
+  // All providers failed
+  throw lastError || new Error('All LLM providers failed');
+}
 
 // =====================
 // TELEGRAM CHANNEL STORAGE
@@ -1715,9 +1875,27 @@ async function llmTextVision({ model, messages, temperature = 0.7, max_tokens = 
   }
 }
 
-async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout: customTimeout = null }) {
-  // Use custom timeout if provided, otherwise use progressive timeouts
-  const defaultTimeouts = [25000, 35000, 50000]; // Progressive timeouts: 25s, 35s, 50s
+async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout: customTimeout = null, useProviderSystem = true }) {
+  // NEW: Use multi-provider system with automatic fallback
+  if (useProviderSystem) {
+    try {
+      const result = await llmWithProviders({
+        model,
+        messages,
+        temperature,
+        max_tokens,
+        retries,
+        timeout: customTimeout || 25000
+      });
+      return result.content;
+    } catch (err) {
+      console.error('[LLM] All providers failed:', err.message);
+      throw err;
+    }
+  }
+  
+  // FALLBACK: Original single-provider logic (for backward compatibility)
+  const defaultTimeouts = [25000, 35000, 50000];
   const timeouts = customTimeout ? [customTimeout, customTimeout, customTimeout] : defaultTimeouts;
   
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1739,17 +1917,14 @@ async function llmText({ model, messages, temperature = 0.7, max_tokens = 350, r
     } catch (err) {
       console.error(`LLM Error (attempt ${attempt + 1}):`, err.message);
       
-      // If it's the last attempt, throw the error
       if (attempt === retries) {
         throw err;
       }
       
-      // If it's not a timeout, don't retry (e.g., auth error, invalid model)
       if (!err.message?.includes("timed out")) {
         throw err;
       }
       
-      // Wait a bit before retrying
       await new Promise(r => setTimeout(r, 1000));
     }
   }
@@ -4115,6 +4290,14 @@ bot.command("stats", async (ctx) => {
   
   const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
   
+  // Provider stats summary
+  const enabledProviders = getEnabledProviders();
+  const providerInfo = enabledProviders.map(p => {
+    const stats = providerStats[p.key];
+    const successRate = stats.calls > 0 ? ((stats.successes / stats.calls) * 100).toFixed(1) : 0;
+    return `${p.name}: ${stats.successes}/${stats.calls} (${successRate}%)`;
+  }).join('\n');
+  
   const statsMsg = `📊 *Your StarzAI Stats*
 
 👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})
@@ -4127,6 +4310,9 @@ ${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
 
 📅 *Member for:* ${daysSinceReg} days
 🕒 *Last Active:* ${lastActive}
+
+🔌 *API Providers:*
+${providerInfo}
 
 _Keep chatting to grow your stats!_`;
   
