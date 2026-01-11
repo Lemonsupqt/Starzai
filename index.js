@@ -2087,6 +2087,28 @@ async function llmTextStream({ model, messages, temperature = 0.7, max_tokens = 
   }
 }
 
+// Detect if a model is a "thinking" model that needs more tokens
+function isThinkingModel(model) {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  return m.includes('gemini-2.5') || 
+         m.includes('deepseek-r1') || 
+         m.includes('thinking') || 
+         m.includes('reasoning') ||
+         m.includes('kimi-k2-thinking') ||
+         m.includes('o1-') ||  // OpenAI o1 models
+         m.includes('o3-');    // OpenAI o3 models
+}
+
+// Get appropriate max_tokens based on model type
+function getMaxTokensForModel(model, baseTokens = 400) {
+  // Thinking models need 3-4x more tokens to output reasoning + response
+  if (isThinkingModel(model)) {
+    return Math.max(baseTokens * 4, 1600); // At least 1600 for thinking models
+  }
+  return baseTokens;
+}
+
 async function llmChatReply({ chatId, userText, systemPrompt, model }) {
   const history = getHistory(chatId);
   const messages = [
@@ -2095,7 +2117,10 @@ async function llmChatReply({ chatId, userText, systemPrompt, model }) {
     { role: "user", content: userText },
   ];
 
-  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: 400 });
+  // Use higher max_tokens for thinking models
+  const maxTokens = getMaxTokensForModel(model, 400);
+  
+  const out = await llmText({ model, messages, temperature: 0.7, max_tokens: maxTokens });
   pushHistory(chatId, "user", userText);
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
