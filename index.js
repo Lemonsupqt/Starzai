@@ -7073,7 +7073,7 @@ function buildTodoListMessage(userId, page = 0, filters = {}) {
   ).length;
   
   let message = [
-    "📋 *My Tasks*",
+    "✅ *Starz Check - Personal*",
     "",
     `📊 *Progress:* ${completedTasks}/${totalTasks} completed`,
   ];
@@ -7166,9 +7166,10 @@ function buildTodoKeyboard(userId, page = 0, filters = {}) {
     .text("🗑️ Clear Done", "todo_clear_done")
     .row()
     .text("🔍 Filter", "todo_filter")
-    .text("⚙️ Settings", "todo_settings")
+    .text("📊 Stats", "todo_stats")
     .row()
-    .text("« Back to Menu", "menu_back");
+    .text("👥 Collab Lists", "collab_list")
+    .text("« Menu", "menu_back");
   
   return kb;
 }
@@ -7989,6 +7990,171 @@ bot.command("todo", async (ctx) => {
   }
 });
 
+// /collab - Collaborative todo lists command
+bot.command("collab", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  const args = ctx.message.text.replace(/^\/collab\s*/i, "").trim();
+  const parts = args.split(/\s+/);
+  const subcommand = parts[0]?.toLowerCase();
+  const rest = parts.slice(1).join(" ").trim();
+  
+  // No subcommand - show collab lists
+  if (!subcommand) {
+    const userLists = getCollabListsForUser(u.id);
+    
+    if (userLists.length === 0) {
+      await ctx.reply(
+        "👥 *Starz Check - Collaborative*\n\n" +
+        "_No shared lists yet!_\n\n" +
+        "*Create a new list:*\n" +
+        "`/collab new Party Planning`\n\n" +
+        "*Or join with a code:*\n" +
+        "`/collab join ABC123`",
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("➕ Create List", "collab_create")
+            .text("🔗 Join List", "collab_join")
+            .row()
+            .text("📋 Personal Tasks", "todo_list"),
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+      return;
+    }
+    
+    let message = [
+      "👥 *Starz Check - Collaborative*",
+      "",
+      `You have ${userLists.length} shared list${userLists.length !== 1 ? 's' : ''}:`,
+      "",
+    ];
+    
+    const kb = new InlineKeyboard();
+    
+    userLists.slice(0, 8).forEach((list, i) => {
+      const pendingCount = list.tasks.filter(t => !t.completed).length;
+      const isOwner = list.ownerId === String(u.id);
+      const ownerBadge = isOwner ? " 👑" : "";
+      message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
+      
+      kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
+      if ((i + 1) % 2 === 0) kb.row();
+    });
+    
+    if (userLists.length % 2 !== 0) kb.row();
+    
+    kb.text("➕ Create", "collab_create")
+      .text("🔗 Join", "collab_join")
+      .row()
+      .text("📋 Personal Tasks", "todo_list");
+    
+    await ctx.reply(message.join("\n"), {
+      parse_mode: "Markdown",
+      reply_markup: kb,
+      reply_to_message_id: ctx.message?.message_id
+    });
+    return;
+  }
+  
+  // /collab new <name>
+  if (subcommand === "new" || subcommand === "create") {
+    if (!rest) {
+      return ctx.reply(
+        "➕ *Create Collaborative List*\n\n" +
+        "Usage: `/collab new Party Planning`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const listName = rest.slice(0, 50);
+    const newList = createCollabList(u.id, listName);
+    
+    await ctx.reply(
+      `✅ *List Created!*\n\n👥 *${listName}*\n\n🔑 Share this code with others:\n\`${newList.joinCode}\`\n\nThey can join with:\n\`/collab join ${newList.joinCode}\``,
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard()
+          .text("📋 View List", `collab_open:${newList.id}`)
+          .text("👥 All Lists", "collab_list"),
+        reply_to_message_id: ctx.message?.message_id
+      }
+    );
+    return;
+  }
+  
+  // /collab join <code>
+  if (subcommand === "join") {
+    if (!rest) {
+      return ctx.reply(
+        "🔗 *Join Collaborative List*\n\n" +
+        "Usage: `/collab join ABC123`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const joinCode = rest.toUpperCase();
+    const result = joinCollabList(u.id, joinCode, ctx.from?.username);
+    
+    if (result.success) {
+      const list = result.list;
+      await ctx.reply(
+        `✅ *Joined Successfully!*\n\n👥 *${list.name}*\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("📋 View List", `collab_open:${list.id}`)
+            .text("👥 All Lists", "collab_list"),
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+    } else {
+      await ctx.reply(
+        `⚠️ *${result.error || "Could not join list"}*\n\nCheck the code and try again.`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+    }
+    return;
+  }
+  
+  // /collab help
+  if (subcommand === "help") {
+    const helpMsg = [
+      "👥 *Collaborative Lists Commands*",
+      "",
+      "`/collab` - View your shared lists",
+      "`/collab new <name>` - Create a new list",
+      "`/collab join <code>` - Join with a code",
+      "",
+      "*Inside a list:*",
+      "• Tap task numbers to toggle",
+      "• Tap again for options",
+      "• Share the code with friends",
+      "• Everyone can add & check tasks",
+    ].join("\n");
+    
+    await ctx.reply(helpMsg, {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id
+    });
+    return;
+  }
+  
+  // Unknown - show help
+  await ctx.reply("Use `/collab help` to see available commands.", {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
 // Todo callback handlers
 bot.callbackQuery("todo_list", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -8322,6 +8488,176 @@ bot.callbackQuery("todo_stats", async (ctx) => {
 
 bot.callbackQuery("todo_noop", async (ctx) => {
   await ctx.answerCallbackQuery();
+});
+
+// Collab list callback from personal todo
+bot.callbackQuery("collab_list", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userLists = getCollabListsForUser(userId);
+  
+  if (userLists.length === 0) {
+    try {
+      await ctx.editMessageText(
+        "👥 *Starz Check - Collaborative*\n\n" +
+        "_No shared lists yet!_\n\n" +
+        "*Create a new list:*\n" +
+        "`/collab new Party Planning`\n\n" +
+        "*Or join with a code:*\n" +
+        "`/collab join ABC123`",
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("➕ Create List", "collab_create")
+            .text("🔗 Join List", "collab_join")
+            .row()
+            .text("« Back to Personal", "todo_list")
+        }
+      );
+    } catch (e) {}
+    return;
+  }
+  
+  // Show list of collaborative lists
+  let message = [
+    "👥 *Starz Check - Collaborative*",
+    "",
+    `You have ${userLists.length} shared list${userLists.length !== 1 ? 's' : ''}:`,
+    "",
+  ];
+  
+  const kb = new InlineKeyboard();
+  
+  userLists.slice(0, 8).forEach((list, i) => {
+    const pendingCount = list.tasks.filter(t => !t.completed).length;
+    const isOwner = list.ownerId === String(userId);
+    const ownerBadge = isOwner ? " 👑" : "";
+    message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
+    
+    kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  
+  if (userLists.length % 2 !== 0) kb.row();
+  
+  kb.text("➕ Create", "collab_create")
+    .text("🔗 Join", "collab_join")
+    .row()
+    .text("« Back to Personal", "todo_list");
+  
+  try {
+    await ctx.editMessageText(message.join("\n"), {
+      parse_mode: "Markdown",
+      reply_markup: kb
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^collab_open:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  
+  if (!list) {
+    try {
+      await ctx.editMessageText("⚠️ List not found.", {
+        reply_markup: new InlineKeyboard().text("« Back", "collab_list")
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  // Replace the inline switch button with a DM-friendly back button
+  // We need to rebuild the keyboard for DM context
+  const dmKeyboard = new InlineKeyboard();
+  
+  const pageSize = 8;
+  const pageTasks = list.tasks.slice(0, pageSize);
+  
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    dmKeyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (pageTasks[i + 1]) {
+      const task2 = pageTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      dmKeyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    dmKeyboard.row();
+  }
+  
+  dmKeyboard
+    .text("➕ Add", `ct_add:${list.id}`)
+    .text("🗑️ Clear", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .text("« My Lists", "collab_list");
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: dmKeyboard
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_create", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_create", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "➕ *Create Collaborative List*\n\n" +
+      "Type a name for your shared list:\n\n" +
+      "_Example: Party Planning_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_join", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_join", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "🔗 *Join Collaborative List*\n\n" +
+      "Enter the join code:\n\n" +
+      "_Example: ABC123_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
 });
 
 // =====================
@@ -13567,6 +13903,51 @@ bot.on("message:text", async (ctx) => {
           );
           return;
         }
+      }
+      
+      // Handle collab list creation
+      if (pendingTodo.action === "collab_create" && text.trim()) {
+        const listName = text.trim().slice(0, 50);
+        const newList = createCollabList(u.id, listName);
+        
+        await ctx.reply(
+          `✅ *List Created!*\n\n👥 *${listName}*\n\n🔑 Share this code with others:\n\`${newList.joinCode}\`\n\nThey can join with:\n\`/collab join ${newList.joinCode}\``,
+          {
+            parse_mode: "Markdown",
+            reply_markup: new InlineKeyboard()
+              .text("📋 View List", `collab_open:${newList.id}`)
+              .text("👥 All Lists", "collab_list")
+          }
+        );
+        return;
+      }
+      
+      // Handle collab list join
+      if (pendingTodo.action === "collab_join" && text.trim()) {
+        const joinCode = text.trim().toUpperCase();
+        const result = joinCollabList(u.id, joinCode, ctx.from?.username);
+        
+        if (result.success) {
+          const list = result.list;
+          await ctx.reply(
+            `✅ *Joined Successfully!*\n\n👥 *${list.name}*\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard()
+                .text("📋 View List", `collab_open:${list.id}`)
+                .text("👥 All Lists", "collab_list")
+            }
+          );
+        } else {
+          await ctx.reply(
+            `⚠️ *${result.error || "Could not join list"}*\n\nCheck the code and try again.`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard().text("🔗 Try Again", "collab_join")
+            }
+          );
+        }
+        return;
       }
     }
   }
