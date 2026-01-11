@@ -4685,13 +4685,15 @@ async function generateDeAPIImage(prompt, aspectRatio, userId) {
     }
     
     if (status === "done" || status === "completed" || status === "success") {
-      imageUrl = statusData?.data?.result?.url ||
+      imageUrl = statusData?.data?.result_url ||
+                 statusData?.data?.result?.url ||
                  statusData?.data?.result?.image_url ||
                  statusData?.data?.url ||
                  statusData?.data?.image_url ||
                  statusData?.result?.url ||
                  (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
                  (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
+      console.log(`[IMG] Found image URL: ${imageUrl ? imageUrl.slice(0, 100) + '...' : 'null'}`);
       break;
     } else if (status === "error" || status === "failed") {
       throw new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
