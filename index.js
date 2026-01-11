@@ -8799,27 +8799,10 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-  
-  displayTodos.forEach((t, idx) => {
-    const checkbox = t.completed ? "✅" : "⬜";
-    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-    const categoryEmoji = getCategoryEmoji(t.category);
-    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
-    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-  });
-  
-  if (sortedTodos.length > 8) {
-    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
-  }
-  
+// Compact title only - tasks are buttons
   const streak = getCompletionStreak(userId);
-  if (streak > 0) {
-    taskListText += `\n🔥 ${streak} day streak!`;
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -8877,27 +8860,10 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-  
-  displayTodos.forEach((t, idx) => {
-    const checkbox = t.completed ? "✅" : "⬜";
-    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-    const categoryEmoji = getCategoryEmoji(t.category);
-    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
-    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-  });
-  
-  if (sortedTodos.length > 8) {
-    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
-  }
-  
+  // Compact title only - tasks are buttons
   const streak = getCompletionStreak(userId);
-  if (streak > 0) {
-    taskListText += `\n🔥 ${streak} day streak!`;
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -8968,18 +8934,10 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-  
-  displayTodos.forEach((t, idx) => {
-    const checkbox = t.completed ? "✅" : "⬜";
-    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-    const categoryEmoji = getCategoryEmoji(t.category);
-    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
-    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-  });
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  // Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -9264,27 +9222,10 @@ bot.callbackQuery("itodo_back", async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-  
-  displayTodos.forEach((t, idx) => {
-    const checkbox = t.completed ? "✅" : "⬜";
-    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-    const categoryEmoji = getCategoryEmoji(t.category);
-    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
-    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-  });
-  
-  if (sortedTodos.length > 8) {
-    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
-  }
-  
+  // Compact title only - tasks are buttons
   const streak = getCompletionStreak(userId);
-  if (streak > 0) {
-    taskListText += `\n🔥 ${streak} day streak!`;
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -9406,21 +9347,8 @@ bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
   const doneCount = filteredTodos.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n`;
-  taskListText += `<i>🔍 Filtered: ${priority} priority</i>\n\n`;
-  
-  if (displayTodos.length === 0) {
-    taskListText += `<i>No tasks match this filter</i>`;
-  } else {
-    displayTodos.forEach((t, idx) => {
-      const checkbox = t.completed ? "✅" : "⬜";
-      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-      const categoryEmoji = getCategoryEmoji(t.category);
-      taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}\n`;
-    });
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  // Compact title with filter indicator
+  let taskListText = `✅ <b>Starz Check</b> 🔍${priority}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -9472,21 +9400,8 @@ bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
   const doneCount = filteredTodos.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n`;
-  taskListText += `<i>🔍 Filtered: ${category}</i>\n\n`;
-  
-  if (displayTodos.length === 0) {
-    taskListText += `<i>No tasks match this filter</i>`;
-  } else {
-    displayTodos.forEach((t, idx) => {
-      const checkbox = t.completed ? "✅" : "⬜";
-      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-      const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-      taskListText += `${checkbox} ${idx + 1}. ${text}${priorityIndicator}\n`;
-    });
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  // Compact title with filter indicator
+  let taskListText = `✅ <b>Starz Check</b> 🔍${category}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -9581,23 +9496,10 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
   const sortedTodos = sortTodos(todos, "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-  
-  displayTodos.forEach((t, idx) => {
-    const checkbox = t.completed ? "✅" : "⬜";
-    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
-    const categoryEmoji = getCategoryEmoji(t.category);
-    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
-    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
-    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-  });
-  
+  // Compact title only - tasks are buttons
   const streak = getCompletionStreak(userId);
-  if (streak > 0) {
-    taskListText += `\n🔥 ${streak} day streak!`;
-  }
-  
-  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
   
   const keyboard = new InlineKeyboard();
   
@@ -15858,29 +15760,10 @@ bot.on("inline_query", async (ctx) => {
       const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
       const displayTodos = sortedTodos.slice(0, 8); // Show max 8 tasks inline
       
-      // Build task list text
-      let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-      
-      displayTodos.forEach((task, idx) => {
-        const checkbox = task.completed ? "✅" : "⬜";
-        const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
-        const categoryEmoji = getCategoryEmoji(task.category);
-        const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
-        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? " ⚠️" : "";
-        taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-      });
-      
-      if (sortedTodos.length > 8) {
-        taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
-      }
-      
-      // Get streak info
+      // Compact title only - tasks are buttons
       const streak = getCompletionStreak(userId);
-      if (streak > 0) {
-        taskListText += `\n🔥 ${streak} day streak!`;
-      }
-      
-      taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+      let taskListText = `✅ <b>Starz Check</b>`;
+      if (streak > 0) taskListText += ` 🔥${streak}`;
       
       // Build keyboard with task toggle buttons
       const keyboard = new InlineKeyboard();
@@ -16154,19 +16037,10 @@ bot.on("inline_query", async (ctx) => {
       const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
       const displayTodos = sortedTodos.slice(0, 6); // Limit to 6 for button space
       
-      let taskListText = `📋 <b>Starz Check - Personal</b>\n\n`;
-      taskListText += `📊 ${pendingCount} pending • ${doneCount} done`;
-      
+      // Minimal text - just a compact title
       const streak = getCompletionStreak(userId);
-      if (streak > 0) {
-        taskListText += ` • 🔥 ${streak} day streak`;
-      }
-      
-      if (sortedTodos.length > 6) {
-        taskListText += `\n<i>+${sortedTodos.length - 6} more tasks...</i>`;
-      }
-      
-      taskListText += `\n\n<i>Tap task to toggle • Double-tap for options</i>`;
+      let taskListText = `✅ <b>Starz Check</b>`;
+      if (streak > 0) taskListText += ` 🔥${streak}`;
       
       const keyboard = new InlineKeyboard();
       
