@@ -2112,6 +2112,98 @@ function getMaxTokensForModel(model, baseTokens = 400) {
   return baseTokens;
 }
 
+// Smart detection: Does this response appear incomplete and need continuation?
+// Returns true if the response seems cut off or incomplete
+function responseNeedsContinuation(text, maxTokensUsed = 400) {
+  if (!text || typeof text !== 'string') return false;
+  
+  const trimmed = text.trim();
+  const len = trimmed.length;
+  
+  // Very short responses (under 200 chars) are almost always complete
+  // e.g., "I'm doing great, thanks for asking! How can I help you?"
+  if (len < 200) return false;
+  
+  // Check for explicit completion signals (model said it's done)
+  const completionSignals = [
+    /\?\s*$/,                           // Ends with a question (asking user)
+    /!\s*$/,                            // Ends with exclamation (complete thought)
+    /\.\s*$/,                           // Ends with period (complete sentence)
+    /let me know[.!]?\s*$/i,            // "Let me know" = waiting for user
+    /help you[.!?]?\s*$/i,              // "How can I help you?" = complete
+    /any questions[.!?]?\s*$/i,         // Offering to answer more = complete
+    /feel free to ask[.!]?\s*$/i,       // Inviting questions = complete
+    /hope (this|that) helps[.!]?\s*$/i, // Conclusion phrase
+    /good luck[.!]?\s*$/i,              // Sign-off phrase
+    /:\)\s*$/,                          // Ends with smiley = casual complete
+    /\u{1F44D}|\u{1F44B}|\u{1F60A}/u,   // Ends with emoji (thumbs up, wave, smile)
+  ];
+  
+  for (const signal of completionSignals) {
+    if (signal.test(trimmed)) {
+      // Short-to-medium responses with completion signals are complete
+      if (len < 800) return false;
+    }
+  }
+  
+  // Check for incompleteness signals
+  const incompleteSignals = [
+    /[,:]\s*$/,                         // Ends with comma or colon (mid-list/mid-thought)
+    /\.\.\.\.?\s*$/,                    // Ends with ellipsis (trailing off)
+    /\band\s*$/i,                       // Ends with "and" (mid-sentence)
+    /\bor\s*$/i,                        // Ends with "or" (mid-sentence)
+    /\bthe\s*$/i,                       // Ends with "the" (mid-sentence)
+    /\bto\s*$/i,                        // Ends with "to" (mid-sentence)
+    /\bfor\s*$/i,                       // Ends with "for" (mid-sentence)
+    /\bwith\s*$/i,                      // Ends with "with" (mid-sentence)
+    /\bin\s*$/i,                        // Ends with "in" (mid-sentence)
+    /\bis\s*$/i,                        // Ends with "is" (mid-sentence)
+    /\bare\s*$/i,                       // Ends with "are" (mid-sentence)
+    /\bthat\s*$/i,                      // Ends with "that" (mid-sentence)
+    /\bwhich\s*$/i,                     // Ends with "which" (mid-sentence)
+    /\d+\.\s*$/,                        // Ends with numbered list item start (e.g., "3. ")
+    /^\s*[-*•]\s*$/m,                   // Has empty bullet point
+    /```[a-z]*\s*$/i,                   // Ends with unclosed code block
+  ];
+  
+  for (const signal of incompleteSignals) {
+    if (signal.test(trimmed)) {
+      return true; // Definitely incomplete
+    }
+  }
+  
+  // Check for numbered/bulleted lists that might be cut off
+  // If we see "1." and "2." but the response is long, it might have more items
+  const hasNumberedList = /\n\s*\d+\.\s+/g.test(trimmed);
+  const hasBulletList = /\n\s*[-*•]\s+/g.test(trimmed);
+  
+  if ((hasNumberedList || hasBulletList) && len > 1200) {
+    // Long list-based response - might have more items
+    // But only if it doesn't end with a conclusion
+    const lastLine = trimmed.split('\n').pop()?.trim() || '';
+    if (!/^(In summary|Overall|In conclusion|To summarize|That's|These are)/i.test(lastLine)) {
+      return true;
+    }
+  }
+  
+  // If response is very long (approaching token limit) and doesn't have clear ending
+  // Rough estimate: 1 token ≈ 4 chars, so 400 tokens ≈ 1600 chars
+  const estimatedTokens = len / 4;
+  const tokenLimitRatio = estimatedTokens / maxTokensUsed;
+  
+  if (tokenLimitRatio > 0.85) {
+    // Response used 85%+ of token budget - likely hit the limit
+    // Check if it ends mid-sentence
+    const lastChar = trimmed.slice(-1);
+    if (!/[.!?)"]/.test(lastChar)) {
+      return true; // Doesn't end with sentence-ending punctuation
+    }
+  }
+  
+  // Default: assume complete if none of the above triggered
+  return false;
+}
+
 async function llmChatReply({ chatId, userText, systemPrompt, model }) {
   const history = getHistory(chatId);
   const messages = [
@@ -8121,10 +8213,13 @@ bot.on("message:text", async (ctx) => {
       ? modeLabel.replace(/\*([^*]+)\*/g, "<b>$1</b>").replace(/_([^_]+)_/g, "<i>$1</i>")
       : "";
 
-    // Offer a simple "Continue" button only when the model did NOT explicitly
-    // mark the answer as finished (no END_OF_ANSWER marker).
+    // Offer a simple "Continue" button only when:
+    // 1. The model did NOT explicitly mark the answer as finished (no END_OF_ANSWER marker)
+    // 2. The response actually appears incomplete (smart detection)
     let replyMarkup;
-    const canOfferContinue = dmContinueContext && !answerFinished;
+    const maxTokensUsed = getMaxTokensForModel(model, 400);
+    const looksIncomplete = responseNeedsContinuation(out, maxTokensUsed);
+    const canOfferContinue = dmContinueContext && !answerFinished && looksIncomplete;
 
     if (canOfferContinue) {
       const key = makeId(8);
