@@ -98,6 +98,7 @@ const DEAPI_KEYS = DEAPI_KEYS_RAW
 const deapiKeyManager = {
   currentIndex: 0,
   keyStats: new Map(), // key -> { calls, successes, failures, lastUsed, lastError, disabled, credits }
+  totalImageGenerations: 0, // Persistent total across restarts
   
   // Initialize stats for all keys
   init() {
@@ -115,6 +116,21 @@ const deapiKeyManager = {
       });
     }
     console.log(`[DeAPI] Initialized ${DEAPI_KEYS.length} API key(s)`);
+  },
+  
+  // Load persistent stats from data
+  loadStats(data) {
+    if (data?.totalImageGenerations) {
+      this.totalImageGenerations = data.totalImageGenerations;
+      console.log(`[DeAPI] Loaded ${this.totalImageGenerations} total image generations from storage`);
+    }
+  },
+  
+  // Get persistent stats for saving
+  getPersistentStats() {
+    return {
+      totalImageGenerations: this.totalImageGenerations
+    };
   },
   
   // Get a short identifier for a key (first 8 chars)
@@ -168,6 +184,11 @@ const deapiKeyManager = {
       stats.successes++;
       stats.lastUsed = Date.now();
       stats.consecutiveFailures = 0;
+    }
+    // Increment persistent total and schedule save
+    this.totalImageGenerations++;
+    if (typeof scheduleSave === 'function') {
+      scheduleSave('imageStats', 'normal');
     }
   },
   
@@ -782,10 +803,11 @@ async function loadFromSupabase() {
   console.log("Loading data from Supabase...");
   
   try {
-    const [users, prefs, sessions] = await Promise.all([
+    const [users, prefs, sessions, imageStats] = await Promise.all([
       supabaseGet("users"),
       supabaseGet("prefs"),
       supabaseGet("inlineSessions"),
+      supabaseGet("imageStats"),
     ]);
     
     if (users) {
@@ -799,6 +821,9 @@ async function loadFromSupabase() {
     if (sessions) {
       inlineSessionsDb = sessions;
       console.log(`Loaded inline sessions from Supabase`);
+    }
+    if (imageStats) {
+      deapiKeyManager.loadStats(imageStats);
     }
     
     return true;
@@ -816,6 +841,7 @@ async function saveToSupabase(dataType) {
   else if (dataType === "prefs") data = prefsDb;
   else if (dataType === "inlineSessions") data = inlineSessionsDb;
   else if (dataType === "partners") data = partnersDb;
+  else if (dataType === "imageStats") data = deapiKeyManager.getPersistentStats();
   else return false;
   
   const success = await supabaseSet(dataType, data);
@@ -5104,7 +5130,153 @@ const IMG_ASPECT_RATIOS = {
 // Store pending image prompts (userId -> { prompt, messageId, chatId })
 const pendingImagePrompts = new Map();
 
-// Helper function to generate image (with multi-key support)
+// Helper function to generate image with Flux1schnell model
+async function generateFluxImage(prompt, aspectRatio, userId, retryCount = 0) {
+  const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
+  
+  // Flux1schnell is optimized for 4 steps
+  const steps = 4;
+  
+  // Get the next available API key
+  const apiKey = deapiKeyManager.getNextKey();
+  if (!apiKey) {
+    throw new Error("No DeAPI keys configured");
+  }
+  
+  const keyId = deapiKeyManager.getKeyId(apiKey);
+  console.log(`[IMG2/Flux] Using DeAPI key ${keyId} for user ${userId}`);
+  
+  try {
+    // Submit image generation request
+    const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: prompt,
+        model: "Flux1schnell",
+        width: config.width,
+        height: config.height,
+        steps: steps,
+        seed: Math.floor(Math.random() * 4294967295),
+        negative_prompt: ""
+      })
+    });
+    
+    if (!submitResponse.ok) {
+      const errorText = await submitResponse.text();
+      const error = new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
+      
+      const isQuotaError = submitResponse.status === 402 || 
+                          submitResponse.status === 429 || 
+                          errorText.toLowerCase().includes('credit') ||
+                          errorText.toLowerCase().includes('quota') ||
+                          errorText.toLowerCase().includes('limit');
+      
+      deapiKeyManager.recordFailure(apiKey, error);
+      
+      if (isQuotaError && retryCount < DEAPI_KEYS.length - 1) {
+        console.log(`[IMG2/Flux] Key ${keyId} quota/credit error, trying next key...`);
+        return generateFluxImage(prompt, aspectRatio, userId, retryCount + 1);
+      }
+      
+      throw error;
+    }
+    
+    const submitData = await submitResponse.json();
+    const requestId = submitData?.data?.request_id;
+    
+    if (!requestId) {
+      const error = new Error("No request_id returned from DeAPI");
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
+    }
+    
+    console.log(`[IMG2/Flux] Submitted request ${requestId} for user ${userId} (${aspectRatio}) using key ${keyId}`);
+    
+    // Poll for result
+    let imageUrl = null;
+    let attempts = 0;
+    const maxAttempts = 30;
+    
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const statusResponse = await fetch(
+        `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
+        {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Accept": "application/json"
+          }
+        }
+      );
+      
+      if (!statusResponse.ok) {
+        attempts++;
+        continue;
+      }
+      
+      const statusData = await statusResponse.json();
+      const status = statusData?.data?.status || statusData?.status;
+      
+      if (status === "done" || status === "completed" || status === "success") {
+        imageUrl = statusData?.data?.result_url ||
+                   statusData?.data?.result?.url ||
+                   statusData?.data?.result?.image_url ||
+                   statusData?.data?.url ||
+                   statusData?.data?.image_url ||
+                   statusData?.result?.url ||
+                   (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
+                   (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
+        console.log(`[IMG2/Flux] Found image URL: ${imageUrl ? imageUrl.slice(0, 100) + '...' : 'null'}`);
+        break;
+      } else if (status === "error" || status === "failed") {
+        const error = new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
+        deapiKeyManager.recordFailure(apiKey, error);
+        throw error;
+      }
+      
+      attempts++;
+    }
+    
+    if (!imageUrl) {
+      const error = new Error("Timeout waiting for image generation");
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
+    }
+    
+    // Download the image
+    const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      const error = new Error(`Failed to download image: ${imageResponse.status}`);
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
+    }
+    
+    // Success! Record it
+    deapiKeyManager.recordSuccess(apiKey);
+    console.log(`[IMG2/Flux] Successfully generated image using key ${keyId}`);
+    
+    return Buffer.from(await imageResponse.arrayBuffer());
+    
+  } catch (error) {
+    if (retryCount < DEAPI_KEYS.length - 1 && 
+        (error.message.includes('fetch') || 
+         error.message.includes('network') ||
+         error.message.includes('timeout'))) {
+      console.log(`[IMG2/Flux] Network error, trying next key...`);
+      return generateFluxImage(prompt, aspectRatio, userId, retryCount + 1);
+    }
+    throw error;
+  }
+}
+
+// Helper function to generate image with ZImageTurbo (with multi-key support)
 async function generateDeAPIImage(prompt, aspectRatio, userId, retryCount = 0) {
   const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
   
@@ -5509,6 +5681,310 @@ bot.command("img", async (ctx) => {
       await ctx.reply("❌ Image generation failed. Please try /imagine instead.");
     }
   }
+});
+
+// /img2 - Flux1schnell image generation (alternative model)
+bot.command("img2", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  
+  if (!deapiKeyManager.hasKeys()) {
+    await ctx.reply(
+      "⚠️ Image generation is not configured. Use /imagine instead for free image generation.",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  const rawPrompt = ctx.message?.text?.replace(/^\/img2\s*/i, "").trim();
+  
+  if (!rawPrompt) {
+    await ctx.reply(
+      "🎨 *Flux Image Generator*\n\n" +
+      "Generate images using the Flux model (alternative style).\n\n" +
+      "*Usage:* `/img2 <prompt>`\n\n" +
+      "*Example:*\n" +
+      "`/img2 cyberpunk city at night`\n" +
+      "`/img2 portrait of a warrior`\n\n" +
+      `_Powered by ${getRandomTagline()}_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  if (rawPrompt.length > 500) {
+    await ctx.reply("⚠️ Prompt too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  const finalPrompt = rawPrompt;
+  
+  // Check NSFW content and safe mode
+  if (isNsfwPrompt(finalPrompt) && shouldEnforceSafeMode(u.id)) {
+    const tier = user.tier || 'free';
+    if (tier === 'free') {
+      await ctx.reply(
+        "🔒 *Safe Mode Active*\n\n" +
+        "Your prompt contains content that isn't allowed in safe mode.\n\n" +
+        "_Free users have safe mode enabled by default._\n" +
+        "Upgrade to Premium or Ultra to access unrestricted image generation.",
+        { parse_mode: "Markdown" }
+      );
+    } else {
+      await ctx.reply(
+        "🔒 *Safe Mode Active*\n\n" +
+        "Your prompt contains content that isn't allowed in safe mode.\n\n" +
+        "_You can disable safe mode in /imgset to generate this content._",
+        { parse_mode: "Markdown" }
+      );
+    }
+    return;
+  }
+  
+  // Use user's default ratio directly
+  const userDefault = user.imagePrefs?.defaultRatio || "1:1";
+  const config = IMG_ASPECT_RATIOS[userDefault];
+  
+  const statusMsg = await ctx.reply(
+    "🎨 *Generating with Flux...*\n\n" +
+    `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
+    `📐 ${config.icon} ${config.label} (${userDefault})\n\n` +
+    "⏳ Please wait 5-15 seconds...",
+    { parse_mode: "Markdown" }
+  );
+  
+  // Store for regenerate
+  pendingImagePrompts.set(u.id, {
+    prompt: finalPrompt,
+    messageId: statusMsg.message_id,
+    chatId: ctx.chat.id,
+    lastAspectRatio: userDefault,
+    model: 'flux'
+  });
+  
+  try {
+    const imageBuffer = await generateFluxImage(finalPrompt, userDefault, u.id);
+    
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img2_regen:${userDefault}` },
+        { text: "📐 Change Ratio", callback_data: "img2_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img2_new" }
+      ]
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(imageBuffer, "flux_image.jpg"),
+      {
+        caption: `🎨 *Flux Generated Image*\n\n` +
+                 `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by ${getRandomTagline(finalPrompt)}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    
+    console.log(`[IMG2/Flux] User ${u.id} generated image (${userDefault}): "${finalPrompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("Flux image generation error:", error);
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "❌ *Image generation failed*\n\n" +
+        `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+        "Try /img for the standard model or /imagine for free alternative.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔄 Try Again", callback_data: `img2_ar:${userDefault.replace(':', ':')}` }],
+              [{ text: "❌ Cancel", callback_data: "img_cancel" }]
+            ]
+          }
+        }
+      );
+    } catch (e) {
+      await ctx.reply("❌ Image generation failed. Please try /img or /imagine instead.");
+    }
+  }
+});
+
+// Handle img2 regenerate
+bot.callbackQuery(/^img2_regen:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img2 again.", show_alert: true });
+    return;
+  }
+  
+  const match = ctx.callbackQuery.data.match(/^img2_regen:(.+):(.+)$/);
+  const aspectRatio = match ? `${match[1]}:${match[2]}` : pending.lastAspectRatio || "1:1";
+  const config = IMG_ASPECT_RATIOS[aspectRatio];
+  
+  await ctx.answerCallbackQuery({ text: "🔄 Regenerating..." });
+  
+  try {
+    const imageBuffer = await generateFluxImage(pending.prompt, aspectRatio, u.id);
+    
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img2_regen:${aspectRatio}` },
+        { text: "📐 Change Ratio", callback_data: "img2_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img2_new" }
+      ]
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(imageBuffer, "flux_image.jpg"),
+      {
+        caption: `🎨 *Flux Regenerated Image*\n\n` +
+                 `📝 _${pending.prompt.slice(0, 200)}..._\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by ${getRandomTagline(pending.prompt)}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    console.log(`[IMG2/Flux] User ${u.id} regenerated image`);
+    
+  } catch (error) {
+    console.error("Flux regenerate error:", error);
+    await ctx.answerCallbackQuery({ text: `❌ Failed: ${error.message?.slice(0, 50)}`, show_alert: true });
+  }
+});
+
+// Handle img2 change aspect ratio
+bot.callbackQuery("img2_change_ar", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img2 again.", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  const currentRatio = pending.lastAspectRatio || "1:1";
+  
+  const aspectButtons = [
+    [
+      { text: `${currentRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: `img2_ar:1:1` },
+      { text: `${currentRatio === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: `img2_ar:4:3` },
+      { text: `${currentRatio === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: `img2_ar:3:4` }
+    ],
+    [
+      { text: `${currentRatio === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: `img2_ar:16:9` },
+      { text: `${currentRatio === "9:16" ? "✅ " : ""}📲 Story`, callback_data: `img2_ar:9:16` },
+      { text: `${currentRatio === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: `img2_ar:3:2` }
+    ],
+    [
+      { text: "❌ Cancel", callback_data: "img_cancel" }
+    ]
+  ];
+  
+  await ctx.reply(
+    "🎨 *Change Aspect Ratio (Flux)*\n\n" +
+    `📝 _${pending.prompt.slice(0, 100)}${pending.prompt.length > 100 ? '...' : ''}_\n\n` +
+    "Select new ratio:",
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: aspectButtons }
+    }
+  );
+});
+
+// Handle img2 aspect ratio selection
+bot.callbackQuery(/^img2_ar:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img2 again.", show_alert: true });
+    return;
+  }
+  
+  const match = ctx.callbackQuery.data.match(/^img2_ar:(.+):(.+)$/);
+  const aspectRatio = match ? `${match[1]}:${match[2]}` : "1:1";
+  const config = IMG_ASPECT_RATIOS[aspectRatio];
+  
+  await ctx.answerCallbackQuery({ text: `🎨 Generating with ${config.label}...` });
+  
+  // Update pending with new ratio
+  pending.lastAspectRatio = aspectRatio;
+  
+  try {
+    // Delete the ratio selection message
+    try { await ctx.deleteMessage(); } catch (e) {}
+    
+    const imageBuffer = await generateFluxImage(pending.prompt, aspectRatio, u.id);
+    
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img2_regen:${aspectRatio}` },
+        { text: "📐 Change Ratio", callback_data: "img2_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img2_new" }
+      ]
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(imageBuffer, "flux_image.jpg"),
+      {
+        caption: `🎨 *Flux Generated Image*\n\n` +
+                 `📝 _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by ${getRandomTagline(pending.prompt)}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    console.log(`[IMG2/Flux] User ${u.id} generated image with new ratio (${aspectRatio})`);
+    
+  } catch (error) {
+    console.error("Flux image generation error:", error);
+    await ctx.reply(`❌ Image generation failed: ${error.message?.slice(0, 100)}`);
+  }
+});
+
+// Handle img2 new image
+bot.callbackQuery("img2_new", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "🎨 *New Flux Image*\n\n" +
+    "Send me a new prompt with /img2:\n\n" +
+    "`/img2 your prompt here`",
+    { parse_mode: "Markdown" }
+  );
 });
 
 // Handle aspect ratio selection
@@ -7273,7 +7749,8 @@ bot.callbackQuery("dev_status", async (ctx) => {
     if (balanceCount > 0) {
       lines.push(`• Total credits: 💰${totalBalance.toFixed(2)}`);
     }
-    lines.push(`• Calls: ${deapiStats.totalCalls} (${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}% success)`);
+    lines.push(`• Total generations: ${deapiKeyManager.totalImageGenerations}`);
+    lines.push(`• Session calls: ${deapiStats.totalCalls} (${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}% success)`);
     
     // Individual key details
     if (deapiStats.keys.length > 0) {
