@@ -191,6 +191,52 @@ const deapiKeyManager = {
     }
   },
   
+  // Fetch balance for a specific key
+  async fetchBalance(key) {
+    try {
+      const response = await fetch('https://api.deapi.ai/api/v1/client/balance', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Accept': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        console.warn(`[DeAPI] Failed to fetch balance for key ${this.getKeyId(key)}: ${response.status}`);
+        return null;
+      }
+      
+      const data = await response.json();
+      // Handle various response formats
+      const balance = data?.data?.balance ?? data?.balance ?? data?.credits ?? data?.data?.credits ?? null;
+      return balance;
+    } catch (error) {
+      console.warn(`[DeAPI] Error fetching balance for key ${this.getKeyId(key)}:`, error.message);
+      return null;
+    }
+  },
+  
+  // Fetch balances for all keys
+  async fetchAllBalances() {
+    const balances = new Map();
+    
+    for (const key of DEAPI_KEYS) {
+      const keyId = this.getKeyId(key);
+      const balance = await this.fetchBalance(key);
+      balances.set(keyId, balance);
+      
+      // Update stats with balance
+      const stats = this.keyStats.get(keyId);
+      if (stats) {
+        stats.balance = balance;
+        stats.balanceUpdatedAt = Date.now();
+      }
+    }
+    
+    return balances;
+  },
+  
   // Get stats for owner status command
   getStats() {
     const result = {
@@ -221,6 +267,13 @@ const deapiKeyManager = {
     }
     
     return result;
+  },
+  
+  // Get stats with fresh balances (async version)
+  async getStatsWithBalances() {
+    // Fetch fresh balances
+    await this.fetchAllBalances();
+    return this.getStats();
   },
   
   // Check if any keys are available
@@ -6340,8 +6393,10 @@ async function sendOwnerStatus(ctx) {
   const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
   const ownerCooldown = getCommandCooldownSecondsForTier("owner");
 
-  // Get DeAPI stats
-  const deapiStats = deapiKeyManager.getStats();
+  // Get DeAPI stats with balances (async)
+  const deapiStats = deapiKeyManager.hasKeys() 
+    ? await deapiKeyManager.getStatsWithBalances() 
+    : deapiKeyManager.getStats();
 
   const lines = [
     `📊 *Bot Status*`,
@@ -6375,19 +6430,35 @@ async function sendOwnerStatus(ctx) {
 
   // Add DeAPI stats if keys are configured
   if (deapiStats.totalKeys > 0) {
+    // Calculate total balance across all keys
+    let totalBalance = 0;
+    let balanceCount = 0;
+    for (const key of deapiStats.keys) {
+      if (key.balance !== null && key.balance !== undefined) {
+        totalBalance += parseFloat(key.balance) || 0;
+        balanceCount++;
+      }
+    }
+    
     lines.push(``);
     lines.push(`🎨 *DeAPI Image Generation*`);
     lines.push(`• Keys: ${deapiStats.activeKeys}/${deapiStats.totalKeys} active`);
+    if (balanceCount > 0) {
+      lines.push(`• Total credits: ${totalBalance.toFixed(2)}`);
+    }
     lines.push(`• Total calls: ${deapiStats.totalCalls}`);
     lines.push(`• Success rate: ${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}%`);
     
-    // Show individual key stats
+    // Show individual key stats with balance
     if (deapiStats.keys.length > 0) {
       lines.push(`• Key status:`);
       for (const key of deapiStats.keys) {
         const status = key.disabled ? '🔴' : '🟢';
+        const balanceStr = key.balance !== null && key.balance !== undefined 
+          ? `💰${parseFloat(key.balance).toFixed(2)}` 
+          : '❓';
         const lastUsed = key.lastUsed ? new Date(key.lastUsed).toLocaleTimeString() : 'never';
-        lines.push(`  ${status} \`${key.id}\` - ${key.successRate}% (${key.calls} calls, last: ${lastUsed})`);
+        lines.push(`  ${status} \`${key.id}\` ${balanceStr} - ${key.successRate}% (${key.calls} calls)`);
       }
     }
   }
