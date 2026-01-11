@@ -392,12 +392,17 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     const fallbackModel = getFallbackModel(model);
     console.log(`[LLM] ⚡ Falling back to MegaLLM with ${fallbackModel}...`);
     
+    // Cap max_tokens at 400 for nano/mini models to keep responses concise
+    const fallbackMaxTokens = (model?.toLowerCase().includes('nano') || model?.toLowerCase().includes('mini')) 
+      ? Math.min(max_tokens, 400) 
+      : max_tokens;
+    
     providerStats.megallm.calls++;
     
     try {
       const result = await callProviderWithTimeout(
         'megallm',
-        { model: fallbackModel, messages, temperature, max_tokens },
+        { model: fallbackModel, messages, temperature, max_tokens: fallbackMaxTokens },
         timeout
       );
       
