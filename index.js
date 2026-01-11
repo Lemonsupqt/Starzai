@@ -7126,29 +7126,15 @@ function buildTodoListMessage(userId, page = 0, filters = {}) {
   }
   
   message.push("");
-  message.push("━━━━━━━━━━━━━━━━━━━━━━");
-  message.push("");
   
   if (pageTasks.length === 0) {
     if (filters.category || filters.priority || filters.dueFilter || filters.search) {
       message.push("_No tasks match your filters._");
     } else {
-      message.push("_No tasks yet! Add one with:_");
-      message.push("`/todo add Buy groceries`");
+      message.push("_No tasks yet! Tap ➕ Add to create one._");
     }
   } else {
-    pageTasks.forEach((task, i) => {
-      const globalIndex = startIndex + i + 1;
-      message.push(formatTaskDisplay(task, userTodos, true, globalIndex));
-      
-      if (task.subtasks && task.subtasks.length > 0) {
-        task.subtasks.forEach(subtask => {
-          const subCheckbox = subtask.completed ? "✅" : "⬜";
-          const subText = subtask.completed ? `~${subtask.text}~` : subtask.text;
-          message.push(`    ${subCheckbox} ${subText}`);
-        });
-      }
-    });
+    message.push("_Tap a task to toggle • Double-tap for options_");
   }
   
   if (totalPages > 1) {
@@ -7171,22 +7157,32 @@ function buildTodoKeyboard(userId, page = 0, filters = {}) {
   
   const kb = new InlineKeyboard();
   
-  // Task toggle buttons (2 per row)
-  for (let i = 0; i < pageTasks.length; i += 2) {
-    const task1 = pageTasks[i];
-    const task2 = pageTasks[i + 1];
+  // Task buttons with text (one per row, like inline mode)
+  pageTasks.forEach(task => {
+    if (!task || !task.text) return; // Skip invalid tasks
     
-    const idx1 = startIndex + i + 1;
-    const icon1 = task1.completed ? "✅" : "⬜";
-    kb.text(`${icon1} ${idx1}`, `todo_toggle:${task1.id}`);
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 25) + (task.text.length > 25 ? "..." : "");
     
-    if (task2) {
-      const idx2 = startIndex + i + 2;
-      const icon2 = task2.completed ? "✅" : "⬜";
-      kb.text(`${icon2} ${idx2}`, `todo_toggle:${task2.id}`);
+    // Category emoji
+    const catEmoji = userTodos.categories?.[task.category]?.emoji || "👤";
+    
+    // Priority indicator
+    let priInd = "";
+    if (task.priority === "high") priInd = " 🔴";
+    else if (task.priority === "medium") priInd = " 🟡";
+    
+    // Due indicator
+    let dueInd = "";
+    if (task.dueDate) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (task.dueDate < today && !task.completed) dueInd = " ⚠️";
+      else if (task.dueDate === today) dueInd = " 📅";
     }
+    
+    kb.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `todo_toggle:${task.id}`);
     kb.row();
-  }
+  });
   
   // Pagination
   if (totalPages > 1) {
