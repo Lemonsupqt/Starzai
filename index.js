@@ -7319,6 +7319,51 @@ function clearTodoFilters(userId) {
   todoFilters.delete(String(userId));
 }
 
+// Filter todos based on filters
+function filterTodos(tasks, filters) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  if (!filters || Object.keys(filters).length === 0) return tasks;
+  
+  return tasks.filter(task => {
+    if (filters.priority && task.priority !== filters.priority) return false;
+    if (filters.category && task.category !== filters.category) return false;
+    if (filters.completed !== undefined && task.completed !== filters.completed) return false;
+    if (filters.hasDueDate && !task.dueDate) return false;
+    return true;
+  });
+}
+
+// Sort todos based on sort option
+function sortTodos(tasks, sortBy) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  
+  const sorted = [...tasks];
+  
+  switch (sortBy) {
+    case 'priority':
+      const priorityOrder = { high: 0, medium: 1, low: 2, null: 3 };
+      sorted.sort((a, b) => (priorityOrder[a.priority] || 3) - (priorityOrder[b.priority] || 3));
+      break;
+    case 'dueDate':
+      sorted.sort((a, b) => {
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
+      });
+      break;
+    case 'category':
+      sorted.sort((a, b) => (a.category || 'zzz').localeCompare(b.category || 'zzz'));
+      break;
+    case 'created':
+    default:
+      sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      break;
+  }
+  
+  return sorted;
+}
+
 // Parse due date from natural language
 function parseTodoDueDate(input) {
   const lower = input.toLowerCase().trim();
