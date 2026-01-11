@@ -5978,7 +5978,7 @@ function modelCategoryKeyboard(userTier) {
 }
 
 // Build model list keyboard for a specific category
-function modelListKeyboard(category, currentModel, userTier) {
+function modelListKeyboard(category, currentModel, userTier, page = 0) {
   const rows = [];
   let models = [];
   
@@ -5991,25 +5991,31 @@ function modelListKeyboard(category, currentModel, userTier) {
     models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   }
   
-  // Add model buttons (2 per row for cleaner look)
-  for (let i = 0; i < models.length; i += 2) {
-    const row = [];
-    const m1 = models[i];
-    const short1 = m1.split("/").pop();
-    row.push({
-      text: `${m1 === currentModel ? "✅ " : ""}${short1}`,
-      callback_data: `setmodel:${m1}`,
-    });
-    
-    if (models[i + 1]) {
-      const m2 = models[i + 1];
-      const short2 = m2.split("/").pop();
-      row.push({
-        text: `${m2 === currentModel ? "✅ " : ""}${short2}`,
-        callback_data: `setmodel:${m2}`,
-      });
+  const MODELS_PER_PAGE = 4;
+  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE);
+  const startIdx = page * MODELS_PER_PAGE;
+  const pageModels = models.slice(startIdx, startIdx + MODELS_PER_PAGE);
+  
+  // Add model buttons (1 per row for clean mobile display)
+  pageModels.forEach((m) => {
+    const short = m.split("/").pop();
+    rows.push([{
+      text: `${m === currentModel ? "✅ " : ""}${short}`,
+      callback_data: `setmodel:${m}`,
+    }]);
+  });
+  
+  // Pagination row
+  if (totalPages > 1) {
+    const navRow = [];
+    if (page > 0) {
+      navRow.push({ text: "◀️", callback_data: `model_page:${category}:${page - 1}` });
     }
-    rows.push(row);
+    navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: "noop" });
+    if (page < totalPages - 1) {
+      navRow.push({ text: "▶️", callback_data: `model_page:${category}:${page + 1}` });
+    }
+    rows.push(navRow);
   }
   
   // Add back button
@@ -7767,6 +7773,30 @@ bot.callbackQuery("model_back", async (ctx) => {
     await ctx.editMessageText(
       `⚙️ *Model Selection*\n\n👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\n_Select a category:_`,
       { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    );
+  } catch {
+    // If edit fails, ignore
+  }
+});
+
+// Handle pagination for model selection
+bot.callbackQuery(/^model_page:(.+):(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const match = ctx.callbackQuery.data.match(/^model_page:(.+):(\d+)$/);
+  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
+  
+  const category = match[1];
+  const page = parseInt(match[2], 10);
+  const u = ensureUser(ctx.from.id, ctx.from);
+  const current = ensureChosenModelValid(ctx.from.id);
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `${categoryTitle(category)} *Models*\n\n🤖 Current: \`${current}\`\n\n_Select a model:_`,
+      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier, page) }
     );
   } catch {
     // If edit fails, ignore
