@@ -1565,6 +1565,11 @@ function ensureUser(userId, from = null) {
       },
       // Warning history (for /warn)
       warnings: [],
+      // Image generation preferences
+      imagePrefs: {
+        defaultRatio: "1:1",  // Default aspect ratio
+        steps: 8,              // Generation steps (owner-only adjustment)
+      },
     };
     saveUsers();
   } else {
@@ -1615,6 +1620,13 @@ function ensureUser(userId, from = null) {
       usersDb.users[id].webSearchUsage = {
         date: new Date().toISOString().slice(0, 10),
         used: 0,
+      };
+    }
+    // migration: add imagePrefs if missing
+    if (!usersDb.users[id].imagePrefs) {
+      usersDb.users[id].imagePrefs = {
+        defaultRatio: "1:1",
+        steps: 8,
       };
     }
     saveUsers();
@@ -4874,8 +4886,47 @@ bot.command("imagine", async (ctx) => {
 });
 
 // =====================
-// IMAGE GENERATION (DeAPI ZImageTurbo)
+// IMAGE GENERATION
 // =====================
+
+// Funny rotating taglines (hide the source!)
+const IMAGE_GEN_TAGLINES = [
+  "Def Not Magic™",
+  "Basic Math™",
+  "Math We Don't Explain™",
+  "Trust Us Bro™",
+  "Vibes and Electricity™",
+  "Powered by the Buttons You Just Touched™",
+  "Ludicrous Minds™",
+  "Trust the Process™",
+  "Quantum Vibes™",
+  "Artisanal Pixels™",
+  "Ethically Sourced Creativity™",
+  "Hand-Crafted by Robots™",
+  "100% Organic AI™",
+  "Made with Love and GPUs™",
+  "Powered by Coffee and Code™",
+  "Imagination.exe™",
+  "Dreams Rendered in 4K™",
+  "Pixel Wizardry™",
+  "The Cloud Did It™",
+  "Science, Probably™",
+  "Certified Fresh Pixels™",
+  "Powered by Hopes and Dreams™",
+  "Neural Nonsense™",
+  "Bits and Pieces™",
+  "Digital Sorcery™",
+  "Technically Not Magic™",
+  "AI Goes Brrrr™",
+  "Imagination Station™",
+  "Pixel Perfect-ish™",
+  "Creativity.dll™"
+];
+
+// Get a random funny tagline
+function getRandomTagline() {
+  return IMAGE_GEN_TAGLINES[Math.floor(Math.random() * IMAGE_GEN_TAGLINES.length)];
+}
 
 // Aspect ratio configurations
 const IMG_ASPECT_RATIOS = {
@@ -4890,9 +4941,14 @@ const IMG_ASPECT_RATIOS = {
 // Store pending image prompts (userId -> { prompt, messageId, chatId })
 const pendingImagePrompts = new Map();
 
-// Helper function to generate image with DeAPI (with multi-key support)
+// Helper function to generate image (with multi-key support)
 async function generateDeAPIImage(prompt, aspectRatio, userId, retryCount = 0) {
   const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
+  
+  // Get user's custom steps (owner only feature)
+  const user = usersDb.users[String(userId)];
+  const isOwnerUser = OWNER_IDS.has(String(userId));
+  const steps = (isOwnerUser && user?.imagePrefs?.steps) ? user.imagePrefs.steps : 8;
   
   // Get the next available API key
   const apiKey = deapiKeyManager.getNextKey();
@@ -4917,7 +4973,7 @@ async function generateDeAPIImage(prompt, aspectRatio, userId, retryCount = 0) {
         model: "ZImageTurbo_INT8",
         width: config.width,
         height: config.height,
-        steps: 8,
+        steps: steps,
         seed: Math.floor(Math.random() * 4294967295),
         negative_prompt: "blur, low quality, distorted, ugly, deformed"
       })
@@ -5042,14 +5098,38 @@ async function generateDeAPIImage(prompt, aspectRatio, userId, retryCount = 0) {
   }
 }
 
-// /img - AI image generation with aspect ratio selection
+// Parse natural language aspect ratio from prompt
+function parseAspectRatioFromText(text) {
+  const lower = text.toLowerCase();
+  
+  // Check for explicit ratio mentions
+  if (/\b(16[:\-x]9|widescreen|wide|cinematic|movie)\b/.test(lower)) return "16:9";
+  if (/\b(9[:\-x]16|story|stories|vertical|tall|tiktok|reels?)\b/.test(lower)) return "9:16";
+  if (/\b(4[:\-x]3|landscape|horizontal)\b/.test(lower)) return "4:3";
+  if (/\b(3[:\-x]4|portrait|mobile)\b/.test(lower)) return "3:4";
+  if (/\b(3[:\-x]2|photo|photograph)\b/.test(lower)) return "3:2";
+  if (/\b(1[:\-x]1|square)\b/.test(lower)) return "1:1";
+  
+  return null; // No ratio detected
+}
+
+// Clean prompt by removing ratio keywords
+function cleanPromptFromRatio(prompt) {
+  return prompt
+    .replace(/\b(in\s+)?(16[:\-x]9|9[:\-x]16|4[:\-x]3|3[:\-x]4|3[:\-x]2|1[:\-x]1)\b/gi, '')
+    .replace(/\b(in\s+)?(widescreen|wide|cinematic|movie|story|stories|vertical|tall|tiktok|reels?|landscape|horizontal|portrait|mobile|photo|photograph|square)\s*(ratio|format|mode)?\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// /img - AI image generation with smart aspect ratio detection
 bot.command("img", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
   const u = ctx.from;
   if (!u?.id) return;
   
-  ensureUser(u.id, u);
+  const user = ensureUser(u.id, u);
   
   if (ctx.chat.type !== "private") {
     activateGroup(ctx.chat.id);
@@ -5057,56 +5137,149 @@ bot.command("img", async (ctx) => {
   
   if (!deapiKeyManager.hasKeys()) {
     await ctx.reply(
-      "⚠️ DeAPI is not configured. Use /imagine instead for free image generation.",
+      "⚠️ Image generation is not configured. Use /imagine instead for free image generation.",
       { parse_mode: "Markdown" }
     );
     return;
   }
   
   const text = ctx.message?.text || "";
-  const prompt = text.replace(/^\/img\s*/i, "").trim();
+  let rawPrompt = text.replace(/^\/img\s*/i, "").trim();
   
-  if (!prompt) {
+  if (!rawPrompt) {
+    const defaultRatio = user.imagePrefs?.defaultRatio || "1:1";
+    const defaultConfig = IMG_ASPECT_RATIOS[defaultRatio];
     await ctx.reply(
       "🎨 *AI Image Generator*\n\n" +
       "Create stunning images with AI!\n\n" +
       "*Usage:*\n" +
-      "`/img a cute cat in space`\n\n" +
-      "*Aspect Ratios:*\n" +
-      "⬜ Square • 🖼️ Landscape • 📱 Portrait\n" +
-      "🎬 Widescreen • 📲 Story • 📷 Photo\n\n" +
-      "_Powered by DeAPI ZImageTurbo_",
+      "`/img a cute cat in space`\n" +
+      "`/img a sunset in widescreen`\n" +
+      "`/img portrait of a warrior`\n\n" +
+      "*Smart Ratios:* Just mention it!\n" +
+      "• _widescreen, cinematic, movie_ → 16:9\n" +
+      "• _story, vertical, tiktok_ → 9:16\n" +
+      "• _portrait, mobile_ → 3:4\n" +
+      "• _landscape, horizontal_ → 4:3\n" +
+      "• _square_ → 1:1\n\n" +
+      `📌 *Your default:* ${defaultConfig?.icon || '⬜'} ${defaultConfig?.label || 'Square'}\n` +
+      `_Use /imgset to change default_\n\n` +
+      `_${getRandomTagline()}_`,
       { parse_mode: "Markdown" }
     );
     return;
   }
   
-  if (prompt.length > 500) {
+  if (rawPrompt.length > 500) {
     await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
     return;
   }
   
-  // Store the prompt and show aspect ratio selection
+  // Try to detect aspect ratio from prompt
+  const detectedRatio = parseAspectRatioFromText(rawPrompt);
+  const cleanedPrompt = detectedRatio ? cleanPromptFromRatio(rawPrompt) : rawPrompt;
+  const finalPrompt = cleanedPrompt || rawPrompt; // Fallback if cleaning removed everything
+  
+  // If ratio detected, generate immediately with that ratio
+  if (detectedRatio) {
+    const config = IMG_ASPECT_RATIOS[detectedRatio];
+    const statusMsg = await ctx.reply(
+      "🎨 *Generating your image...*\n\n" +
+      `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
+      `📐 ${config.icon} ${config.label} (${detectedRatio})\n\n` +
+      "⏳ Please wait 5-15 seconds...",
+      { parse_mode: "Markdown" }
+    );
+    
+    // Store for regenerate
+    pendingImagePrompts.set(u.id, {
+      prompt: finalPrompt,
+      messageId: statusMsg.message_id,
+      chatId: ctx.chat.id,
+      lastAspectRatio: detectedRatio
+    });
+    
+    try {
+      const imageBuffer = await generateDeAPIImage(finalPrompt, detectedRatio, u.id);
+      
+      const actionButtons = [
+        [
+          { text: "🔄 Regenerate", callback_data: `img_regen:${detectedRatio}` },
+          { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+        ],
+        [
+          { text: "✨ New Image", callback_data: "img_new" }
+        ]
+      ];
+      
+      await ctx.api.sendPhoto(
+        ctx.chat.id,
+        new InputFile(imageBuffer, "generated_image.jpg"),
+        {
+          caption: `🎨 *Generated Image*\n\n` +
+                   `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                   `📐 ${config.icon} ${config.label}\n` +
+                   `⚡ _${getRandomTagline()}_`,
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: actionButtons }
+        }
+      );
+      
+      try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+      
+      console.log(`[IMG] User ${u.id} generated image (${detectedRatio}, auto-detected): "${finalPrompt.slice(0, 50)}"`);
+      return;
+      
+    } catch (error) {
+      console.error("Image generation error:", error);
+      try {
+        await ctx.api.editMessageText(
+          ctx.chat.id,
+          statusMsg.message_id,
+          "❌ *Image generation failed*\n\n" +
+          `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+          "Try again or use /imagine for free alternative.",
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔄 Try Again", callback_data: `img_ar:${detectedRatio.replace(':', ':')}` }],
+                [{ text: "❌ Cancel", callback_data: "img_cancel" }]
+              ]
+            }
+          }
+        );
+      } catch (e) {
+        await ctx.reply("❌ Image generation failed. Please try /imagine instead.");
+      }
+      return;
+    }
+  }
+  
+  // No ratio detected - show selection with user's default highlighted
+  const userDefault = user.imagePrefs?.defaultRatio || "1:1";
+  
   const aspectButtons = [
     [
-      { text: "⬜ Square", callback_data: `img_ar:1:1` },
-      { text: "🖼️ Landscape", callback_data: `img_ar:4:3` },
-      { text: "📱 Portrait", callback_data: `img_ar:3:4` }
+      { text: `${userDefault === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: `img_ar:1:1` },
+      { text: `${userDefault === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: `img_ar:4:3` },
+      { text: `${userDefault === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: `img_ar:3:4` }
     ],
     [
-      { text: "🎬 Widescreen", callback_data: `img_ar:16:9` },
-      { text: "📲 Story", callback_data: `img_ar:9:16` },
-      { text: "📷 Photo", callback_data: `img_ar:3:2` }
+      { text: `${userDefault === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: `img_ar:16:9` },
+      { text: `${userDefault === "9:16" ? "✅ " : ""}📲 Story`, callback_data: `img_ar:9:16` },
+      { text: `${userDefault === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: `img_ar:3:2` }
     ],
     [
+      { text: "⚡ Use Default", callback_data: `img_ar:${userDefault.replace(':', ':')}` },
       { text: "❌ Cancel", callback_data: "img_cancel" }
     ]
   ];
   
   const msg = await ctx.reply(
     "🎨 *Select Aspect Ratio*\n\n" +
-    `📝 _${prompt.slice(0, 150)}${prompt.length > 150 ? '...' : ''}_\n\n` +
-    "Choose the format for your image:",
+    `📝 _${finalPrompt.slice(0, 150)}${finalPrompt.length > 150 ? '...' : ''}_\n\n` +
+    "Choose format or tap ⚡ Use Default:",
     {
       parse_mode: "Markdown",
       reply_markup: { inline_keyboard: aspectButtons }
@@ -5115,7 +5288,7 @@ bot.command("img", async (ctx) => {
   
   // Store pending prompt
   pendingImagePrompts.set(u.id, {
-    prompt: prompt,
+    prompt: finalPrompt,
     messageId: msg.message_id,
     chatId: ctx.chat.id
   });
@@ -5184,7 +5357,7 @@ bot.callbackQuery(/^img_ar:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Generated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _Powered by DeAPI ZImageTurbo_`,
+                 `⚡ _${getRandomTagline()}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -5286,7 +5459,7 @@ bot.callbackQuery(/^img_regen:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Regenerated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}..._\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _Powered by DeAPI ZImageTurbo_`,
+                 `⚡ _${getRandomTagline()}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -5390,6 +5563,140 @@ bot.callbackQuery("img_cancel", async (ctx) => {
       await ctx.editMessageText("❌ Cancelled");
     } catch (e2) {}
   }
+});
+
+// /imgset - Configure image generation preferences
+bot.command("imgset", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const currentRatio = user.imagePrefs?.defaultRatio || "1:1";
+  const currentConfig = IMG_ASPECT_RATIOS[currentRatio];
+  const isOwnerUser = OWNER_IDS.has(String(u.id));
+  
+  const text = ctx.message?.text || "";
+  const args = text.replace(/^\/imgset\s*/i, "").trim().toLowerCase();
+  
+  // Handle steps setting (owner only)
+  if (args.startsWith("steps ") && isOwnerUser) {
+    const stepsValue = parseInt(args.replace("steps ", "").trim());
+    if (isNaN(stepsValue) || stepsValue < 1 || stepsValue > 50) {
+      await ctx.reply("⚠️ Steps must be between 1 and 50.");
+      return;
+    }
+    user.imagePrefs = user.imagePrefs || {};
+    user.imagePrefs.steps = stepsValue;
+    saveUsers();
+    await ctx.reply(`✅ Image generation steps set to *${stepsValue}*\n\n_Higher steps = better quality but slower_`, { parse_mode: "Markdown" });
+    return;
+  }
+  
+  // Handle ratio setting
+  const ratioMap = {
+    "square": "1:1", "1:1": "1:1",
+    "landscape": "4:3", "4:3": "4:3",
+    "portrait": "3:4", "3:4": "3:4",
+    "widescreen": "16:9", "16:9": "16:9", "wide": "16:9",
+    "story": "9:16", "9:16": "9:16", "vertical": "9:16",
+    "photo": "3:2", "3:2": "3:2"
+  };
+  
+  if (args && ratioMap[args]) {
+    const newRatio = ratioMap[args];
+    const newConfig = IMG_ASPECT_RATIOS[newRatio];
+    user.imagePrefs = user.imagePrefs || {};
+    user.imagePrefs.defaultRatio = newRatio;
+    saveUsers();
+    await ctx.reply(
+      `✅ Default aspect ratio set to ${newConfig.icon} *${newConfig.label}* (${newRatio})\n\n` +
+      `Now when you use /img without specifying a ratio, it will use this!`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Show settings menu
+  const buttons = [
+    [
+      { text: `${currentRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
+      { text: `${currentRatio === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: "imgset_ratio:4:3" },
+      { text: `${currentRatio === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: "imgset_ratio:3:4" }
+    ],
+    [
+      { text: `${currentRatio === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: "imgset_ratio:16:9" },
+      { text: `${currentRatio === "9:16" ? "✅ " : ""}📲 Story`, callback_data: "imgset_ratio:9:16" },
+      { text: `${currentRatio === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: "imgset_ratio:3:2" }
+    ]
+  ];
+  
+  let settingsText = `⚙️ *Image Settings*\n\n` +
+    `📐 *Default Ratio:* ${currentConfig?.icon || '⬜'} ${currentConfig?.label || 'Square'} (${currentRatio})\n\n` +
+    `Select a new default ratio:`;
+  
+  // Show steps setting for owners
+  if (isOwnerUser) {
+    const currentSteps = user.imagePrefs?.steps || 8;
+    settingsText += `\n\n🔧 *Steps:* ${currentSteps} _(owner only)_\n` +
+      `Use \`/imgset steps [1-50]\` to change`;
+  }
+  
+  await ctx.reply(settingsText, {
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: buttons }
+  });
+});
+
+// Handle imgset ratio selection
+bot.callbackQuery(/^imgset_ratio:(.+):(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^imgset_ratio:(.+):(.+)$/);
+  const newRatio = match ? `${match[1]}:${match[2]}` : "1:1";
+  const newConfig = IMG_ASPECT_RATIOS[newRatio];
+  
+  user.imagePrefs = user.imagePrefs || {};
+  user.imagePrefs.defaultRatio = newRatio;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ text: `✅ Default set to ${newConfig.label}` });
+  
+  // Update the message with new selection
+  const isOwnerUser = OWNER_IDS.has(String(u.id));
+  
+  const buttons = [
+    [
+      { text: `${newRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
+      { text: `${newRatio === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: "imgset_ratio:4:3" },
+      { text: `${newRatio === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: "imgset_ratio:3:4" }
+    ],
+    [
+      { text: `${newRatio === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: "imgset_ratio:16:9" },
+      { text: `${newRatio === "9:16" ? "✅ " : ""}📲 Story`, callback_data: "imgset_ratio:9:16" },
+      { text: `${newRatio === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: "imgset_ratio:3:2" }
+    ]
+  ];
+  
+  let settingsText = `⚙️ *Image Settings*\n\n` +
+    `📐 *Default Ratio:* ${newConfig.icon} ${newConfig.label} (${newRatio}) ✅\n\n` +
+    `Select a new default ratio:`;
+  
+  if (isOwnerUser) {
+    const currentSteps = user.imagePrefs?.steps || 8;
+    settingsText += `\n\n🔧 *Steps:* ${currentSteps} _(owner only)_\n` +
+      `Use \`/imgset steps [1-50]\` to change`;
+  }
+  
+  try {
+    await ctx.editMessageText(settingsText, {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (e) {}
 });
 
 // Feedback button in main menu or moderation messages
@@ -6593,7 +6900,7 @@ bot.callbackQuery("dev_status", async (ctx) => {
       (deapiStats.activeKeys > 0 ? 'degraded' : 'critical');
     
     lines.push(``);
-    lines.push(`🎨 *DeAPI Image Generation* ${healthEmoji[overallHealth]}`);
+    lines.push(`🎨 *Image Generation* ${healthEmoji[overallHealth]}`);
     lines.push(`• Keys: ${deapiStats.activeKeys}/${deapiStats.totalKeys} active`);
     if (balanceCount > 0) {
       lines.push(`• Total credits: 💰${totalBalance.toFixed(2)}`);
@@ -6619,7 +6926,7 @@ bot.callbackQuery("dev_status", async (ctx) => {
     }
   } else {
     lines.push(``);
-    lines.push(`🎨 *DeAPI:* ❌ Not configured`);
+    lines.push(`🎨 *Image Generation:* ❌ Not configured`);
   }
   
   // System health summary
@@ -9138,6 +9445,97 @@ bot.on("message:text", async (ctx) => {
   
   const feedbackHandled = await handleFeedbackIfActive(ctx);
   if (feedbackHandled) return;
+  
+  // Smart image generation detection
+  // Patterns: "generate image of X", "create image of X", "make image of X", "draw X", etc.
+  const imageGenPatterns = [
+    /^(?:generate|create|make|draw|paint|render)\s+(?:an?\s+)?(?:image|picture|photo|art|artwork|illustration)\s+(?:of\s+)?(.+)/i,
+    /^(?:image|picture|photo)\s+(?:of\s+)?(.+)/i,
+  ];
+  
+  let imagePromptMatch = null;
+  for (const pattern of imageGenPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      imagePromptMatch = match[1].trim();
+      break;
+    }
+  }
+  
+  // If image generation detected and we have keys configured
+  if (imagePromptMatch && deapiKeyManager.hasKeys()) {
+    const user = ensureUser(u.id, u);
+    
+    // Check for ratio in the prompt
+    const detectedRatio = parseAspectRatioFromText(imagePromptMatch);
+    const cleanedPrompt = detectedRatio ? cleanPromptFromRatio(imagePromptMatch) : imagePromptMatch;
+    const finalPrompt = cleanedPrompt || imagePromptMatch;
+    const aspectRatio = detectedRatio || user.imagePrefs?.defaultRatio || "1:1";
+    const config = IMG_ASPECT_RATIOS[aspectRatio];
+    
+    console.log(`[IMG] Smart detection: "${finalPrompt}" in ${aspectRatio}`);
+    
+    const statusMsg = await ctx.reply(
+      "🎨 *Generating your image...*\n\n" +
+      `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
+      `📐 ${config.icon} ${config.label}\n\n` +
+      "⏳ Please wait 5-15 seconds...",
+      { parse_mode: "Markdown", reply_to_message_id: messageId }
+    );
+    
+    pendingImagePrompts.set(u.id, {
+      prompt: finalPrompt,
+      messageId: statusMsg.message_id,
+      chatId: chat.id,
+      lastAspectRatio: aspectRatio
+    });
+    
+    try {
+      const imageBuffer = await generateDeAPIImage(finalPrompt, aspectRatio, u.id);
+      
+      const actionButtons = [
+        [
+          { text: "🔄 Regenerate", callback_data: `img_regen:${aspectRatio}` },
+          { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+        ],
+        [
+          { text: "✨ New Image", callback_data: "img_new" }
+        ]
+      ];
+      
+      await ctx.api.sendPhoto(
+        chat.id,
+        new InputFile(imageBuffer, "generated_image.jpg"),
+        {
+          caption: `🎨 *Generated Image*\n\n` +
+                   `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                   `📐 ${config.icon} ${config.label}\n` +
+                   `⚡ _${getRandomTagline()}_`,
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: actionButtons },
+          reply_to_message_id: messageId
+        }
+      );
+      
+      try { await ctx.api.deleteMessage(chat.id, statusMsg.message_id); } catch (e) {}
+      console.log(`[IMG] Smart gen success for user ${u.id}: "${finalPrompt.slice(0, 50)}"`);
+      return;
+      
+    } catch (error) {
+      console.error("Smart image generation error:", error);
+      try {
+        await ctx.api.editMessageText(
+          chat.id,
+          statusMsg.message_id,
+          "❌ *Image generation failed*\n\n" +
+          `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+          "Try \`/img your prompt\` or /imagine for alternatives.",
+          { parse_mode: "Markdown" }
+        );
+      } catch (e) {}
+      return;
+    }
+  }
 
   const model = ensureChosenModelValid(u.id);
   const botUsername = BOT_USERNAME || "";
