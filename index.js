@@ -6790,6 +6790,21 @@ function getTaskById(userId, taskId) {
   return userTodos.tasks.find(t => t.id === taskId) || null;
 }
 
+// Update a task's properties
+function updateTask(userId, taskId, updates) {
+  const userTodos = getUserTodos(userId);
+  const task = userTodos.tasks.find(t => t.id === taskId);
+  if (!task) return null;
+  
+  if (updates.text !== undefined) task.text = updates.text;
+  if (updates.priority !== undefined) task.priority = updates.priority;
+  if (updates.category !== undefined) task.category = updates.category;
+  if (updates.dueDate !== undefined) task.dueDate = updates.dueDate;
+  
+  saveTodos();
+  return task;
+}
+
 // Check if a due date is overdue
 function isOverdue(dueDate) {
   if (!dueDate) return false;
