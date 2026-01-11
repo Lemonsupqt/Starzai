@@ -1,28 +1,16 @@
 {
-  "name": "starzai",
-  "version": "2.0.0",
-  "description": "Multi-model AI Telegram bot with modular architecture",
-  "main": "src/index.js",
+  "name": "starztechbot",
+  "version": "1.0.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "start:legacy": "node index.js",
-    "dev": "node --watch src/index.js"
-  },
-  "keywords": [
-    "telegram",
-    "bot",
-    "ai",
-    "llm",
-    "chatbot"
-  ],
-  "author": "StarzTech",
-  "license": "MIT",
-  "dependencies": {
-    "grammy": "^1.35.0",
-    "openai": "^4.60.0"
+    "start": "node index.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "grammy": "^1.35.0",
+    "openai": "^4.60.0"
   }
 }
