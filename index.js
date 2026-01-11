@@ -725,6 +725,7 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
 const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
 const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
+const TODOS_FILE = path.join(DATA_DIR, "todos.json");
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -748,6 +749,7 @@ let usersDb = readJson(USERS_FILE, { users: {} });
 let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
+let todosDb = readJson(TODOS_FILE, { todos: {} });
 
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
@@ -803,11 +805,12 @@ async function loadFromSupabase() {
   console.log("Loading data from Supabase...");
   
   try {
-    const [users, prefs, sessions, imageStats] = await Promise.all([
+    const [users, prefs, sessions, imageStats, todos] = await Promise.all([
       supabaseGet("users"),
       supabaseGet("prefs"),
       supabaseGet("inlineSessions"),
       supabaseGet("imageStats"),
+      supabaseGet("todos"),
     ]);
     
     if (users) {
@@ -824,6 +827,10 @@ async function loadFromSupabase() {
     }
     if (imageStats) {
       deapiKeyManager.loadStats(imageStats);
+    }
+    if (todos) {
+      todosDb = todos;
+      console.log(`Loaded todos from Supabase`);
     }
     
     return true;
@@ -842,6 +849,7 @@ async function saveToSupabase(dataType) {
   else if (dataType === "inlineSessions") data = inlineSessionsDb;
   else if (dataType === "partners") data = partnersDb;
   else if (dataType === "imageStats") data = deapiKeyManager.getPersistentStats();
+  else if (dataType === "todos") data = todosDb;
   else return false;
   
   const success = await supabaseSet(dataType, data);
@@ -904,6 +912,7 @@ async function flushSaves() {
       if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
       if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
       if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+      if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
     }
   }
 }
@@ -915,6 +924,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
     return;
   }
   
@@ -932,6 +942,9 @@ async function saveToTelegram(dataType) {
     } else if (dataType === "partners") {
       data = partnersDb;
       label = "🤝🏻 PARTNERS_DATA";
+    } else if (dataType === "todos") {
+      data = todosDb;
+      label = "📋 TODOS_DATA";
     } else {
       return;
     }
@@ -963,6 +976,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
     
   } catch (e) {
     console.error(`Failed to save ${dataType} to Telegram:`, e.message);
@@ -971,6 +985,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
   }
 }
 
@@ -1027,6 +1042,9 @@ function saveInlineSessions() {
 }
 function savePartners() {
   scheduleSave("partners");
+}
+function saveTodos() {
+  scheduleSave("todos");
 }
 
 // =====================
@@ -3788,11 +3806,12 @@ function mainMenuKeyboard(userId) {
     .text("⚙️ Model", "menu_model")
     .row()
     .text("🤝🏻 Partner", "menu_partner")
-    .text("📊 Stats", "menu_stats")
+    .text("📋 Tasks", "todo_list")
     .row()
     .text("🎭 Character", "menu_char")
-    .text(webSearchIcon, "toggle_websearch")
+    .text("📊 Stats", "menu_stats")
     .row()
+    .text(webSearchIcon, "toggle_websearch")
     .switchInline("⚡ Try Inline", "");
 
   if (FEEDBACK_CHAT_ID) {
@@ -6709,6 +6728,1160 @@ _Keep chatting to grow your stats!_`;
   });
 });
 
+// =====================
+// ADVANCED TODO/CHECKLIST SYSTEM
+// =====================
+
+// Priority emoji mapping
+const PRIORITY_EMOJI = {
+  high: "🔴",
+  medium: "🟡",
+  low: "🟢",
+  none: "⚪"
+};
+
+const PRIORITY_LABELS = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  none: "None"
+};
+
+// Category emoji mapping
+const DEFAULT_CATEGORIES = {
+  personal: "👤",
+  work: "💼",
+  shopping: "🛒",
+  health: "💪",
+  learning: "📚",
+  finance: "💰",
+  home: "🏠",
+  other: "📌"
+};
+
+// Get user's todo list
+function getUserTodos(userId) {
+  const id = String(userId);
+  if (!todosDb.todos[id]) {
+    todosDb.todos[id] = {
+      tasks: [],
+      categories: { ...DEFAULT_CATEGORIES },
+      settings: {
+        defaultCategory: "personal",
+        defaultPriority: "none",
+        showCompleted: true,
+        sortBy: "created"
+      },
+      stats: {
+        totalCreated: 0,
+        totalCompleted: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastCompletedDate: null
+      }
+    };
+    saveTodos();
+  }
+  return todosDb.todos[id];
+}
+
+// Generate unique task ID
+function generateTaskId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+// Create a new task
+function createTask(userId, taskData) {
+  const userTodos = getUserTodos(userId);
+  const task = {
+    id: generateTaskId(),
+    text: taskData.text,
+    completed: false,
+    priority: taskData.priority || userTodos.settings.defaultPriority,
+    category: taskData.category || userTodos.settings.defaultCategory,
+    dueDate: taskData.dueDate || null,
+    dueTime: taskData.dueTime || null,
+    recurring: taskData.recurring || null,
+    subtasks: [],
+    notes: taskData.notes || "",
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+    parentId: taskData.parentId || null
+  };
+  
+  if (task.parentId) {
+    const parentTask = userTodos.tasks.find(t => t.id === task.parentId);
+    if (parentTask) {
+      parentTask.subtasks.push(task);
+    }
+  } else {
+    userTodos.tasks.push(task);
+  }
+  
+  userTodos.stats.totalCreated++;
+  saveTodos();
+  return task;
+}
+
+// Toggle task completion
+function toggleTaskCompletion(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  
+  let task = userTodos.tasks.find(t => t.id === taskId);
+  let isSubtask = false;
+  
+  if (!task) {
+    for (const t of userTodos.tasks) {
+      const subtask = t.subtasks?.find(st => st.id === taskId);
+      if (subtask) {
+        task = subtask;
+        isSubtask = true;
+        break;
+      }
+    }
+  }
+  
+  if (!task) return null;
+  
+  task.completed = !task.completed;
+  task.completedAt = task.completed ? new Date().toISOString() : null;
+  
+  if (task.completed) {
+    userTodos.stats.totalCompleted++;
+    
+    const today = new Date().toISOString().slice(0, 10);
+    const lastCompleted = userTodos.stats.lastCompletedDate;
+    
+    if (!lastCompleted) {
+      userTodos.stats.currentStreak = 1;
+    } else {
+      const lastDate = new Date(lastCompleted);
+      const todayDate = new Date(today);
+      const diffDays = Math.floor((todayDate - lastDate) / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 1) {
+        userTodos.stats.currentStreak++;
+      } else if (diffDays > 1) {
+        userTodos.stats.currentStreak = 1;
+      }
+    }
+    
+    userTodos.stats.lastCompletedDate = today;
+    userTodos.stats.longestStreak = Math.max(
+      userTodos.stats.longestStreak,
+      userTodos.stats.currentStreak
+    );
+    
+    // Handle recurring tasks
+    if (task.recurring && !isSubtask) {
+      const newTask = { ...task };
+      newTask.id = generateTaskId();
+      newTask.completed = false;
+      newTask.completedAt = null;
+      newTask.createdAt = new Date().toISOString();
+      
+      if (task.dueDate) {
+        const dueDate = new Date(task.dueDate);
+        const interval = task.recurring.interval || 1;
+        
+        switch (task.recurring.type) {
+          case 'daily':
+            dueDate.setDate(dueDate.getDate() + interval);
+            break;
+          case 'weekly':
+            dueDate.setDate(dueDate.getDate() + (7 * interval));
+            break;
+          case 'monthly':
+            dueDate.setMonth(dueDate.getMonth() + interval);
+            break;
+        }
+        newTask.dueDate = dueDate.toISOString().slice(0, 10);
+      }
+      
+      userTodos.tasks.push(newTask);
+    }
+  }
+  
+  saveTodos();
+  return task;
+}
+
+// Delete a task
+function deleteTaskById(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  
+  const index = userTodos.tasks.findIndex(t => t.id === taskId);
+  if (index !== -1) {
+    userTodos.tasks.splice(index, 1);
+    saveTodos();
+    return true;
+  }
+  
+  for (const task of userTodos.tasks) {
+    const subIndex = task.subtasks?.findIndex(st => st.id === taskId);
+    if (subIndex !== -1) {
+      task.subtasks.splice(subIndex, 1);
+      saveTodos();
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// Get tasks with filters
+function getFilteredTasks(userId, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  let tasks = [...userTodos.tasks];
+  
+  if (!userTodos.settings.showCompleted && !filters.showCompleted) {
+    tasks = tasks.filter(t => !t.completed);
+  }
+  
+  if (filters.category) {
+    tasks = tasks.filter(t => t.category === filters.category);
+  }
+  
+  if (filters.priority) {
+    tasks = tasks.filter(t => t.priority === filters.priority);
+  }
+  
+  if (filters.dueFilter) {
+    const today = new Date().toISOString().slice(0, 10);
+    
+    switch (filters.dueFilter) {
+      case 'today':
+        tasks = tasks.filter(t => t.dueDate === today);
+        break;
+      case 'overdue':
+        tasks = tasks.filter(t => t.dueDate && t.dueDate < today && !t.completed);
+        break;
+      case 'upcoming':
+        tasks = tasks.filter(t => t.dueDate && t.dueDate > today);
+        break;
+      case 'noduedate':
+        tasks = tasks.filter(t => !t.dueDate);
+        break;
+    }
+  }
+  
+  if (filters.search) {
+    const searchLower = filters.search.toLowerCase();
+    tasks = tasks.filter(t => 
+      t.text.toLowerCase().includes(searchLower) ||
+      t.notes?.toLowerCase().includes(searchLower)
+    );
+  }
+  
+  const sortBy = filters.sortBy || userTodos.settings.sortBy;
+  tasks.sort((a, b) => {
+    if (a.completed !== b.completed) {
+      return a.completed ? 1 : -1;
+    }
+    
+    switch (sortBy) {
+      case 'priority':
+        const priorityOrder = { high: 0, medium: 1, low: 2, none: 3 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
+      case 'dueDate':
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
+      case 'category':
+        return (a.category || '').localeCompare(b.category || '');
+      case 'created':
+      default:
+        return new Date(b.createdAt) - new Date(a.createdAt);
+    }
+  });
+  
+  return tasks;
+}
+
+// Format task for display
+function formatTaskDisplay(task, userTodos, showIndex = true, index = 0) {
+  const checkbox = task.completed ? "✅" : "⬜";
+  const priority = PRIORITY_EMOJI[task.priority] || "";
+  const category = userTodos.categories[task.category] || "📌";
+  
+  let text = `${checkbox} `;
+  if (showIndex) text += `*${index}.* `;
+  if (priority && task.priority !== 'none') text += `${priority} `;
+  
+  if (task.completed) {
+    text += `~${task.text}~`;
+  } else {
+    text += task.text;
+  }
+  
+  if (task.dueDate) {
+    const today = new Date().toISOString().slice(0, 10);
+    const isOverdue = task.dueDate < today && !task.completed;
+    const isToday = task.dueDate === today;
+    
+    if (isOverdue) {
+      text += ` ⚠️ _Overdue_`;
+    } else if (isToday) {
+      text += ` 📅 _Today_`;
+    } else {
+      text += ` 📅 _${task.dueDate}_`;
+    }
+  }
+  
+  if (task.recurring) {
+    text += ` 🔄`;
+  }
+  
+  text += ` ${category}`;
+  
+  return text;
+}
+
+// Build todo list message
+function buildTodoListMessage(userId, page = 0, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  const tasks = getFilteredTasks(userId, filters);
+  const pageSize = 8;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const totalTasks = userTodos.tasks.length;
+  const completedTasks = userTodos.tasks.filter(t => t.completed).length;
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const overdueTasks = userTodos.tasks.filter(t => 
+    t.dueDate && t.dueDate < todayDate && !t.completed
+  ).length;
+  
+  let message = [
+    "📋 *My Tasks*",
+    "",
+    `📊 *Progress:* ${completedTasks}/${totalTasks} completed`,
+  ];
+  
+  if (overdueTasks > 0) {
+    message.push(`⚠️ *Overdue:* ${overdueTasks} task${overdueTasks > 1 ? 's' : ''}`);
+  }
+  
+  if (userTodos.stats.currentStreak > 0) {
+    message.push(`🔥 *Streak:* ${userTodos.stats.currentStreak} day${userTodos.stats.currentStreak > 1 ? 's' : ''}`);
+  }
+  
+  message.push("");
+  message.push("━━━━━━━━━━━━━━━━━━━━━━");
+  message.push("");
+  
+  if (pageTasks.length === 0) {
+    if (filters.category || filters.priority || filters.dueFilter || filters.search) {
+      message.push("_No tasks match your filters._");
+    } else {
+      message.push("_No tasks yet! Add one with:_");
+      message.push("`/todo add Buy groceries`");
+    }
+  } else {
+    pageTasks.forEach((task, i) => {
+      const globalIndex = startIndex + i + 1;
+      message.push(formatTaskDisplay(task, userTodos, true, globalIndex));
+      
+      if (task.subtasks && task.subtasks.length > 0) {
+        task.subtasks.forEach(subtask => {
+          const subCheckbox = subtask.completed ? "✅" : "⬜";
+          const subText = subtask.completed ? `~${subtask.text}~` : subtask.text;
+          message.push(`    ${subCheckbox} ${subText}`);
+        });
+      }
+    });
+  }
+  
+  if (totalPages > 1) {
+    message.push("");
+    message.push(`_Page ${currentPage + 1}/${totalPages}_`);
+  }
+  
+  return message.join("\n");
+}
+
+// Build todo keyboard
+function buildTodoKeyboard(userId, page = 0, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  const tasks = getFilteredTasks(userId, filters);
+  const pageSize = 8;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const kb = new InlineKeyboard();
+  
+  // Task toggle buttons (2 per row)
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const task2 = pageTasks[i + 1];
+    
+    const idx1 = startIndex + i + 1;
+    const icon1 = task1.completed ? "✅" : "⬜";
+    kb.text(`${icon1} ${idx1}`, `todo_toggle:${task1.id}`);
+    
+    if (task2) {
+      const idx2 = startIndex + i + 2;
+      const icon2 = task2.completed ? "✅" : "⬜";
+      kb.text(`${icon2} ${idx2}`, `todo_toggle:${task2.id}`);
+    }
+    kb.row();
+  }
+  
+  // Pagination
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      kb.text("◀️", `todo_page:${currentPage - 1}`);
+    }
+    kb.text(`${currentPage + 1}/${totalPages}`, "todo_noop");
+    if (currentPage < totalPages - 1) {
+      kb.text("▶️", `todo_page:${currentPage + 1}`);
+    }
+    kb.row();
+  }
+  
+  // Action buttons
+  kb.text("➕ Add", "todo_add")
+    .text("🗑️ Clear Done", "todo_clear_done")
+    .row()
+    .text("🔍 Filter", "todo_filter")
+    .text("⚙️ Settings", "todo_settings")
+    .row()
+    .text("« Back to Menu", "menu_back");
+  
+  return kb;
+}
+
+// Build filter keyboard
+function buildTodoFilterKeyboard(userId) {
+  const userTodos = getUserTodos(userId);
+  const kb = new InlineKeyboard();
+  
+  kb.text("📅 Today", "todo_filter_due:today")
+    .text("⚠️ Overdue", "todo_filter_due:overdue")
+    .row()
+    .text("🔜 Upcoming", "todo_filter_due:upcoming")
+    .text("📭 No Date", "todo_filter_due:noduedate")
+    .row();
+  
+  kb.text("🔴 High", "todo_filter_priority:high")
+    .text("🟡 Med", "todo_filter_priority:medium")
+    .text("🟢 Low", "todo_filter_priority:low")
+    .row();
+  
+  const categories = Object.entries(userTodos.categories).slice(0, 4);
+  categories.forEach(([key, emoji]) => {
+    kb.text(`${emoji}`, `todo_filter_category:${key}`);
+  });
+  kb.row();
+  
+  const showCompleted = userTodos.settings.showCompleted;
+  kb.text(showCompleted ? "👁️ Hide Done" : "👁️ Show Done", "todo_toggle_completed")
+    .row();
+  
+  kb.text("🔄 Clear Filters", "todo_clear_filters")
+    .text("« Back", "todo_list")
+    .row();
+  
+  return kb;
+}
+
+// Build settings keyboard
+function buildTodoSettingsKeyboard(userId) {
+  const userTodos = getUserTodos(userId);
+  const kb = new InlineKeyboard();
+  
+  kb.text("📊 Sort by:", "todo_noop").row();
+  
+  const sortOptions = [
+    { key: 'created', label: '🕐' },
+    { key: 'priority', label: '🎯' },
+    { key: 'dueDate', label: '📅' },
+    { key: 'category', label: '📁' }
+  ];
+  
+  sortOptions.forEach(opt => {
+    const isActive = userTodos.settings.sortBy === opt.key;
+    kb.text(`${isActive ? '✓ ' : ''}${opt.label}`, `todo_sort:${opt.key}`);
+  });
+  kb.row();
+  
+  kb.text("Default Priority:", "todo_noop").row();
+  ['none', 'low', 'medium', 'high'].forEach(p => {
+    const isActive = userTodos.settings.defaultPriority === p;
+    kb.text(`${isActive ? '✓ ' : ''}${PRIORITY_EMOJI[p]}`, `todo_default_priority:${p}`);
+  });
+  kb.row();
+  
+  kb.text("📊 View Stats", "todo_stats").row();
+  
+  kb.text("« Back to Tasks", "todo_list");
+  
+  return kb;
+}
+
+// Build stats message
+function buildTodoStatsMessage(userId) {
+  const userTodos = getUserTodos(userId);
+  const stats = userTodos.stats;
+  const tasks = userTodos.tasks;
+  
+  const totalTasks = tasks.length;
+  const completedTasks = tasks.filter(t => t.completed).length;
+  const pendingTasks = totalTasks - completedTasks;
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  
+  const categoryStats = {};
+  tasks.forEach(t => {
+    const cat = t.category || 'other';
+    if (!categoryStats[cat]) categoryStats[cat] = { total: 0, completed: 0 };
+    categoryStats[cat].total++;
+    if (t.completed) categoryStats[cat].completed++;
+  });
+  
+  const priorityStats = { high: 0, medium: 0, low: 0, none: 0 };
+  tasks.filter(t => !t.completed).forEach(t => {
+    priorityStats[t.priority || 'none']++;
+  });
+  
+  let message = [
+    "📊 *Task Statistics*",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    `📋 *Total Tasks:* ${totalTasks}`,
+    `✅ *Completed:* ${completedTasks}`,
+    `⏳ *Pending:* ${pendingTasks}`,
+    `📈 *Completion Rate:* ${completionRate}%`,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    `🔥 *Current Streak:* ${stats.currentStreak} day${stats.currentStreak !== 1 ? 's' : ''}`,
+    `🏆 *Longest Streak:* ${stats.longestStreak} day${stats.longestStreak !== 1 ? 's' : ''}`,
+    `📅 *All-time Completed:* ${stats.totalCompleted}`,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "*Pending by Priority:*",
+    `${PRIORITY_EMOJI.high} High: ${priorityStats.high}`,
+    `${PRIORITY_EMOJI.medium} Medium: ${priorityStats.medium}`,
+    `${PRIORITY_EMOJI.low} Low: ${priorityStats.low}`,
+  ];
+  
+  if (Object.keys(categoryStats).length > 0) {
+    message.push("");
+    message.push("*By Category:*");
+    Object.entries(categoryStats).forEach(([cat, s]) => {
+      const emoji = userTodos.categories[cat] || "📌";
+      message.push(`${emoji} ${cat}: ${s.completed}/${s.total}`);
+    });
+  }
+  
+  return message.join("\n");
+}
+
+// Pending task input tracking
+const pendingTodoInput = new Map();
+
+// Current filter state per user
+const todoFilters = new Map();
+
+function getTodoFilters(userId) {
+  return todoFilters.get(String(userId)) || {};
+}
+
+function setTodoFilters(userId, filters) {
+  todoFilters.set(String(userId), filters);
+}
+
+function clearTodoFilters(userId) {
+  todoFilters.delete(String(userId));
+}
+
+// Parse due date from natural language
+function parseTodoDueDate(input) {
+  const lower = input.toLowerCase().trim();
+  const today = new Date();
+  
+  if (lower === 'today') {
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'tomorrow') {
+    today.setDate(today.getDate() + 1);
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'nextweek' || lower === 'next week') {
+    today.setDate(today.getDate() + 7);
+    return today.toISOString().slice(0, 10);
+  }
+  
+  const dateMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    return input;
+  }
+  
+  const shortMatch = input.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (shortMatch) {
+    const month = parseInt(shortMatch[1]);
+    const day = parseInt(shortMatch[2]);
+    const year = today.getFullYear();
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  
+  return null;
+}
+
+// Parse task from text (supports inline options)
+// Format: task text #category !priority @date
+function parseTaskText(text) {
+  const result = {
+    text: text,
+    category: null,
+    priority: null,
+    dueDate: null
+  };
+  
+  const categoryMatch = text.match(/#(\w+)/);
+  if (categoryMatch) {
+    result.category = categoryMatch[1].toLowerCase();
+    result.text = result.text.replace(/#\w+/, '').trim();
+  }
+  
+  const priorityMatch = text.match(/!(high|med|medium|low|h|m|l)/i);
+  if (priorityMatch) {
+    const p = priorityMatch[1].toLowerCase();
+    if (p === 'h' || p === 'high') result.priority = 'high';
+    else if (p === 'm' || p === 'med' || p === 'medium') result.priority = 'medium';
+    else if (p === 'l' || p === 'low') result.priority = 'low';
+    result.text = result.text.replace(/!(high|med|medium|low|h|m|l)/i, '').trim();
+  }
+  
+  const dateMatch = text.match(/@(\S+)/);
+  if (dateMatch) {
+    result.dueDate = parseTodoDueDate(dateMatch[1]);
+    result.text = result.text.replace(/@\S+/, '').trim();
+  }
+  
+  return result;
+}
+
+// /todo - Advanced todo/checklist command
+bot.command("todo", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  const args = ctx.message.text.replace(/^\/todo\s*/i, "").trim();
+  const parts = args.split(/\s+/);
+  const subcommand = parts[0]?.toLowerCase();
+  const rest = parts.slice(1).join(" ").trim();
+  
+  // No subcommand - show task list
+  if (!subcommand) {
+    const filters = getTodoFilters(u.id);
+    await ctx.reply(buildTodoListMessage(u.id, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(u.id, 0, filters),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo add <task>
+  if (subcommand === "add" || subcommand === "a") {
+    if (!rest) {
+      return ctx.reply(
+        "📋 *Add Task*\n\n" +
+        "Usage: `/todo add Buy groceries`\n\n" +
+        "*Quick options:*\n" +
+        "• `#work` - Set category\n" +
+        "• `!high` - Set priority (high/med/low)\n" +
+        "• `@today` - Set due date (today/tomorrow/nextweek)\n\n" +
+        "Example: `/todo add Finish report #work !high @tomorrow`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const parsed = parseTaskText(rest);
+    if (!parsed.text) {
+      return ctx.reply("❌ Task text cannot be empty!", { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = createTask(u.id, parsed);
+    const userTodos = getUserTodos(u.id);
+    
+    let confirmMsg = `✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`;
+    if (parsed.dueDate) confirmMsg += `\n📅 Due: ${parsed.dueDate}`;
+    if (parsed.priority) confirmMsg += `\n${PRIORITY_EMOJI[parsed.priority]} Priority: ${PRIORITY_LABELS[parsed.priority]}`;
+    
+    await ctx.reply(confirmMsg, {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo done <number>
+  if (subcommand === "done" || subcommand === "d" || subcommand === "check") {
+    const num = parseInt(rest);
+    if (!num || num < 1) {
+      return ctx.reply("Usage: `/todo done 1` (task number)", { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const tasks = getFilteredTasks(u.id, getTodoFilters(u.id));
+    if (num > tasks.length) {
+      return ctx.reply(`❌ Task #${num} not found. You have ${tasks.length} tasks.`, { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = tasks[num - 1];
+    toggleTaskCompletion(u.id, task.id);
+    
+    const status = task.completed ? "completed" : "marked incomplete";
+    const emoji = task.completed ? "✅" : "⬜";
+    
+    await ctx.reply(`${emoji} Task #${num} ${status}!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo delete <number>
+  if (subcommand === "delete" || subcommand === "del" || subcommand === "rm") {
+    const num = parseInt(rest);
+    if (!num || num < 1) {
+      return ctx.reply("Usage: `/todo delete 1` (task number)", { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const tasks = getFilteredTasks(u.id, getTodoFilters(u.id));
+    if (num > tasks.length) {
+      return ctx.reply(`❌ Task #${num} not found. You have ${tasks.length} tasks.`, { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = tasks[num - 1];
+    deleteTaskById(u.id, task.id);
+    
+    await ctx.reply(`🗑️ Task #${num} deleted!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo clear - Clear all completed tasks
+  if (subcommand === "clear") {
+    const userTodos = getUserTodos(u.id);
+    const beforeCount = userTodos.tasks.length;
+    userTodos.tasks = userTodos.tasks.filter(t => !t.completed);
+    const removed = beforeCount - userTodos.tasks.length;
+    saveTodos();
+    
+    await ctx.reply(`🗑️ Cleared ${removed} completed task${removed !== 1 ? 's' : ''}!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo stats - Show statistics
+  if (subcommand === "stats") {
+    await ctx.reply(buildTodoStatsMessage(u.id), {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo help
+  if (subcommand === "help") {
+    const helpMsg = [
+      "📋 *Todo Commands*",
+      "",
+      "`/todo` - View your task list",
+      "`/todo add <task>` - Add a new task",
+      "`/todo done <#>` - Toggle task completion",
+      "`/todo delete <#>` - Delete a task",
+      "`/todo clear` - Clear completed tasks",
+      "`/todo stats` - View statistics",
+      "",
+      "*Quick Add Options:*",
+      "• `#category` - work, personal, shopping, etc.",
+      "• `!priority` - high, med, low",
+      "• `@date` - today, tomorrow, nextweek, or YYYY-MM-DD",
+      "",
+      "*Example:*",
+      "`/todo add Buy milk #shopping !low @tomorrow`",
+    ].join("\n");
+    
+    await ctx.reply(helpMsg, {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // Unknown subcommand - treat as quick add
+  const parsed = parseTaskText(args);
+  if (parsed.text) {
+    const task = createTask(u.id, parsed);
+    const userTodos = getUserTodos(u.id);
+    
+    await ctx.reply(`✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`, {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  } else {
+    await ctx.reply("Use `/todo help` to see available commands.", {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
+});
+
+// Todo callback handlers
+bot.callbackQuery("todo_list", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {
+    // Message unchanged, ignore
+  }
+});
+
+bot.callbackQuery(/^todo_toggle:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_page:(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const page = parseInt(ctx.match[1]);
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, page, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, page, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_add", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "add", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "📋 *Add New Task*\n\n" +
+      "Type your task below:\n\n" +
+      "*Quick options:*\n" +
+      "• `#work` - Set category\n" +
+      "• `!high` - Set priority\n" +
+      "• `@today` - Set due date\n\n" +
+      "_Example: Buy groceries #shopping !low @tomorrow_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "todo_list")
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_clear_done", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  const beforeCount = userTodos.tasks.length;
+  userTodos.tasks = userTodos.tasks.filter(t => !t.completed);
+  const removed = beforeCount - userTodos.tasks.length;
+  saveTodos();
+  
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${removed} completed task${removed !== 1 ? 's' : ''}!` });
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_filter", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  try {
+    await ctx.editMessageText(
+      "🔍 *Filter Tasks*\n\n" +
+      "Select a filter to apply:",
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoFilterKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_due:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const dueFilter = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), dueFilter };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${dueFilter}` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_priority:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), priority };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${priority} priority` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_category:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const category = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), category };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${category}` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_toggle_completed", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.showCompleted = !userTodos.settings.showCompleted;
+  saveTodos();
+  
+  const status = userTodos.settings.showCompleted ? "Showing" : "Hiding";
+  await ctx.answerCallbackQuery({ text: `${status} completed tasks` });
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_clear_filters", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  clearTodoFilters(userId);
+  
+  await ctx.answerCallbackQuery({ text: "Filters cleared" });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, {}), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, {})
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_settings", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_sort:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const sortBy = ctx.match[1];
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.sortBy = sortBy;
+  saveTodos();
+  
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  await ctx.answerCallbackQuery({ text: `Sort by: ${sortLabels[sortBy]}` });
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_default_priority:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.defaultPriority = priority;
+  saveTodos();
+  
+  await ctx.answerCallbackQuery({ text: `Default priority: ${PRIORITY_LABELS[priority]}` });
+  
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  try {
+    await ctx.editMessageText(buildTodoStatsMessage(userId), {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("« Back to Tasks", "todo_list")
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_noop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
 // /persona - Set custom AI personality
 bot.command("persona", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -8985,12 +10158,19 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
+    "",
+    "📋 *Task Manager*",
+    "Advanced to-do list with priorities!",
+    "• `/todo` - View your tasks",
+    "• `/todo add task` - Quick add",
+    "• Categories, due dates, streaks",
   ].join("\n");
   
   const kb = new InlineKeyboard()
+    .text("📋 Tasks", "todo_list")
     .text("🎨 Image Settings", "menu_imgset")
-    .text("💳 Plans & Benefits", "menu_plans")
     .row()
+    .text("💳 Plans & Benefits", "menu_plans")
     .text("« Back to Menu", "menu_back");
   
   try {
@@ -10367,6 +11547,32 @@ bot.on("message:text", async (ctx) => {
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
   // (Replies are handled as normal messages below)
 
+  // Check if user has pending todo input
+  const pendingTodo = pendingTodoInput.get(String(u.id));
+  if (pendingTodo && chat.type === "private") {
+    pendingTodoInput.delete(String(u.id));
+    
+    // Check if not expired (5 min timeout)
+    if (Date.now() - pendingTodo.timestamp < 5 * 60 * 1000) {
+      if (pendingTodo.action === "add" && text.trim()) {
+        const parsed = parseTaskText(text.trim());
+        if (parsed.text) {
+          const task = createTask(u.id, parsed);
+          const userTodos = getUserTodos(u.id);
+          
+          await ctx.reply(
+            `✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list")
+            }
+          );
+          return;
+        }
+      }
+    }
+  }
+  
   // Check if user has pending partner field input
   const pendingPartner = pendingPartnerInput.get(String(u.id));
   if (pendingPartner && chat.type === "private") {
