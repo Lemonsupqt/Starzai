@@ -1569,6 +1569,7 @@ function ensureUser(userId, from = null) {
       imagePrefs: {
         defaultRatio: "1:1",  // Default aspect ratio
         steps: 8,              // Generation steps (owner-only adjustment)
+        safeMode: true,        // NSFW filter (free=always on, premium/ultra=toggle, owner=off)
       },
     };
     saveUsers();
@@ -1627,7 +1628,12 @@ function ensureUser(userId, from = null) {
       usersDb.users[id].imagePrefs = {
         defaultRatio: "1:1",
         steps: 8,
+        safeMode: true,
       };
+    }
+    // migration: add safeMode to imagePrefs if missing
+    if (usersDb.users[id].imagePrefs && usersDb.users[id].imagePrefs.safeMode === undefined) {
+      usersDb.users[id].imagePrefs.safeMode = true;
     }
     saveUsers();
   }
@@ -5029,6 +5035,37 @@ function isNsfwPrompt(prompt) {
   return NSFW_KEYWORDS.test(prompt);
 }
 
+// Check if user should have safe mode enforced
+// Free users: always safe mode (cannot disable)
+// Premium/Ultra: can toggle safe mode
+// Owners: unrestricted (safe mode always off)
+function shouldEnforceSafeMode(userId) {
+  const user = usersDb.users[String(userId)];
+  if (!user) return true; // Default to safe
+  
+  const isOwnerUser = OWNER_IDS.has(String(userId));
+  
+  // Owners are unrestricted
+  if (isOwnerUser) return false;
+  
+  // Free users always have safe mode
+  if (user.tier === 'free') return true;
+  
+  // Premium/Ultra can toggle
+  return user.imagePrefs?.safeMode !== false;
+}
+
+// Check if user can toggle safe mode (premium/ultra only)
+function canToggleSafeMode(userId) {
+  const user = usersDb.users[String(userId)];
+  if (!user) return false;
+  
+  const isOwnerUser = OWNER_IDS.has(String(userId));
+  if (isOwnerUser) return true; // Owners can always toggle (though it doesn't affect them)
+  
+  return user.tier === 'premium' || user.tier === 'ultra';
+}
+
 // Get a random tagline with rarity weighting
 // Common: 70%, Rare: 25%, Legendary: 5%
 // Special: NSFW prompts get special taglines
@@ -5298,6 +5335,23 @@ bot.command("img", async (ctx) => {
   
   if (rawPrompt.length > 500) {
     await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  // Check NSFW content and safe mode
+  if (isNsfwPrompt(rawPrompt) && shouldEnforceSafeMode(u.id)) {
+    const tier = user.tier || 'free';
+    let message = "🔒 *Safe Mode Active*\n\n" +
+      "Your prompt contains content that isn't allowed in safe mode.\n\n";
+    
+    if (tier === 'free') {
+      message += "_Free users have safe mode enabled by default._\n" +
+        "Upgrade to Premium or Ultra to access unrestricted image generation.";
+    } else {
+      message += "_You can disable safe mode in_ /imgset _to generate this content._";
+    }
+    
+    await ctx.reply(message, { parse_mode: "Markdown" });
     return;
   }
   
@@ -5720,6 +5774,31 @@ bot.command("imgset", async (ctx) => {
     return;
   }
   
+  // Handle safe mode toggle (premium/ultra only)
+  if (args === "safe on" || args === "safe off" || args === "nsfw on" || args === "nsfw off") {
+    if (!canToggleSafeMode(u.id)) {
+      await ctx.reply(
+        "🔒 *Safe Mode Toggle*\n\n" +
+        "This feature is only available for *Premium* and *Ultra* users.\n\n" +
+        "Free users have safe mode enabled by default to keep things family-friendly.",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+    
+    const enableSafe = args === "safe on" || args === "nsfw off";
+    user.imagePrefs = user.imagePrefs || {};
+    user.imagePrefs.safeMode = enableSafe;
+    saveUsers();
+    
+    if (enableSafe) {
+      await ctx.reply("✅ *Safe Mode Enabled*\n\nNSFW content will be blocked.", { parse_mode: "Markdown" });
+    } else {
+      await ctx.reply("🔓 *Safe Mode Disabled*\n\nNSFW content is now allowed.\n\n_Please use responsibly._", { parse_mode: "Markdown" });
+    }
+    return;
+  }
+  
   // Handle ratio setting
   const ratioMap = {
     "square": "1:1", "1:1": "1:1",
@@ -5745,6 +5824,9 @@ bot.command("imgset", async (ctx) => {
   }
   
   // Show settings menu
+  const currentSafeMode = shouldEnforceSafeMode(u.id);
+  const canToggle = canToggleSafeMode(u.id);
+  
   const buttons = [
     [
       { text: `${currentRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
@@ -5758,9 +5840,28 @@ bot.command("imgset", async (ctx) => {
     ]
   ];
   
+  // Add safe mode toggle button for premium/ultra users
+  if (canToggle) {
+    buttons.push([
+      { 
+        text: currentSafeMode ? "🔒 Safe Mode: ON (tap to disable)" : "🔓 Safe Mode: OFF (tap to enable)", 
+        callback_data: currentSafeMode ? "imgset_safe:off" : "imgset_safe:on" 
+      }
+    ]);
+  }
+  
   let settingsText = `⚙️ *Image Settings*\n\n` +
     `📐 *Default Ratio:* ${currentConfig?.icon || '⬜'} ${currentConfig?.label || 'Square'} (${currentRatio})\n\n` +
     `Select a new default ratio:`;
+  
+  // Show safe mode status
+  if (isOwnerUser) {
+    settingsText += `\n\n🔓 *Safe Mode:* OFF _(owners unrestricted)_`;
+  } else if (user.tier === 'free') {
+    settingsText += `\n\n🔒 *Safe Mode:* ON _(always on for free users)_`;
+  } else {
+    settingsText += `\n\n${currentSafeMode ? '🔒' : '🔓'} *Safe Mode:* ${currentSafeMode ? 'ON' : 'OFF'}`;
+  }
   
   // Show steps setting for owners
   if (isOwnerUser) {
@@ -5810,6 +5911,84 @@ bot.callbackQuery(/^imgset_ratio:(.+):(.+)$/, async (ctx) => {
   let settingsText = `⚙️ *Image Settings*\n\n` +
     `📐 *Default Ratio:* ${newConfig.icon} ${newConfig.label} (${newRatio}) ✅\n\n` +
     `Select a new default ratio:`;
+  
+  if (isOwnerUser) {
+    const currentSteps = user.imagePrefs?.steps || 8;
+    settingsText += `\n\n🔧 *Steps:* ${currentSteps} _(owner only)_\n` +
+      `Use \`/imgset steps [1-50]\` to change`;
+  }
+  
+  try {
+    await ctx.editMessageText(settingsText, {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (e) {}
+});
+
+// Handle safe mode toggle
+bot.callbackQuery(/^imgset_safe:(on|off)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^imgset_safe:(on|off)$/);
+  const enableSafe = match?.[1] === 'on';
+  
+  // Check if user can toggle
+  if (!canToggleSafeMode(u.id)) {
+    await ctx.answerCallbackQuery({ 
+      text: "🔒 Safe mode toggle requires Premium or Ultra", 
+      show_alert: true 
+    });
+    return;
+  }
+  
+  user.imagePrefs = user.imagePrefs || {};
+  user.imagePrefs.safeMode = enableSafe;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ 
+    text: enableSafe ? "🔒 Safe mode enabled" : "🔓 Safe mode disabled" 
+  });
+  
+  // Update the message
+  const isOwnerUser = OWNER_IDS.has(String(u.id));
+  const currentRatio = user.imagePrefs?.defaultRatio || "1:1";
+  const currentConfig = IMG_ASPECT_RATIOS[currentRatio];
+  const currentSafeMode = shouldEnforceSafeMode(u.id);
+  
+  const buttons = [
+    [
+      { text: `${currentRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
+      { text: `${currentRatio === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: "imgset_ratio:4:3" },
+      { text: `${currentRatio === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: "imgset_ratio:3:4" }
+    ],
+    [
+      { text: `${currentRatio === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: "imgset_ratio:16:9" },
+      { text: `${currentRatio === "9:16" ? "✅ " : ""}📲 Story`, callback_data: "imgset_ratio:9:16" },
+      { text: `${currentRatio === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: "imgset_ratio:3:2" }
+    ],
+    [
+      { 
+        text: currentSafeMode ? "🔒 Safe Mode: ON (tap to disable)" : "🔓 Safe Mode: OFF (tap to enable)", 
+        callback_data: currentSafeMode ? "imgset_safe:off" : "imgset_safe:on" 
+      }
+    ]
+  ];
+  
+  let settingsText = `⚙️ *Image Settings*\n\n` +
+    `📐 *Default Ratio:* ${currentConfig?.icon || '⬜'} ${currentConfig?.label || 'Square'} (${currentRatio})\n\n` +
+    `Select a new default ratio:`;
+  
+  // Show safe mode status
+  if (isOwnerUser) {
+    settingsText += `\n\n🔓 *Safe Mode:* OFF _(owners unrestricted)_`;
+  } else if (user.tier === 'free') {
+    settingsText += `\n\n🔒 *Safe Mode:* ON _(always on for free users)_`;
+  } else {
+    settingsText += `\n\n${currentSafeMode ? '🔒' : '🔓'} *Safe Mode:* ${currentSafeMode ? 'ON' : 'OFF'}`;
+  }
   
   if (isOwnerUser) {
     const currentSteps = user.imagePrefs?.steps || 8;
@@ -9700,6 +9879,23 @@ bot.on("message:text", async (ctx) => {
   // If image generation detected and we have keys configured
   if (imagePromptMatch && deapiKeyManager.hasKeys()) {
     const user = ensureUser(u.id, u);
+    
+    // Check NSFW content and safe mode
+    if (isNsfwPrompt(imagePromptMatch) && shouldEnforceSafeMode(u.id)) {
+      const tier = user.tier || 'free';
+      let message = "🔒 *Safe Mode Active*\n\n" +
+        "Your prompt contains content that isn't allowed in safe mode.\n\n";
+      
+      if (tier === 'free') {
+        message += "_Free users have safe mode enabled by default._\n" +
+          "Upgrade to Premium or Ultra to access unrestricted image generation.";
+      } else {
+        message += "_You can disable safe mode in_ /imgset _to generate this content._";
+      }
+      
+      await ctx.reply(message, { parse_mode: "Markdown", reply_to_message_id: messageId });
+      return;
+    }
     
     // Check for ratio in the prompt
     const detectedRatio = parseAspectRatioFromText(imagePromptMatch);
