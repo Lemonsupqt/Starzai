@@ -4774,7 +4774,7 @@ bot.command("feedback", async (ctx) => {
   );
 });
 
-// /imagine - AI image generation using Pollinations.ai (free, unlimited)
+// /imagine - AI image generation (free, unlimited)
 bot.command("imagine", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -4799,7 +4799,7 @@ bot.command("imagine", async (ctx) => {
       "`/imagine a cute cat in space`\n" +
       "`/imagine fantasy landscape with mountains`\n" +
       "`/imagine cyberpunk city at night`\n\n" +
-      "_Powered by Pollinations.ai - Free & Unlimited_",
+      `_${getRandomTagline()}_`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -4823,7 +4823,7 @@ bot.command("imagine", async (ctx) => {
     // URL encode the prompt
     const encodedPrompt = encodeURIComponent(prompt);
     
-    // Build Pollinations.ai URL with parameters
+    // Build image generation URL with parameters
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
     
     // Fetch the image
@@ -4846,7 +4846,7 @@ bot.command("imagine", async (ctx) => {
     await ctx.replyWithPhoto(
       new InputFile(imageBuffer, "generated_image.jpg"),
       {
-        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _Powered by Pollinations.ai_`,
+        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _${getRandomTagline(prompt)}_`,
         parse_mode: "Markdown"
       }
     );
@@ -8440,7 +8440,6 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "Create stunning images from text!",
     "• `/imagine a cute cat in space`",
     "• `/imagine fantasy landscape`",
-    "• Free & unlimited via Pollinations.ai",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
