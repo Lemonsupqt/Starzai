@@ -7201,6 +7201,7 @@ function buildTodoKeyboard(userId, page = 0, filters = {}) {
     .text("🔍 Filter", "todo_filter")
     .text("👥 Collab", "collab_list")
     .row()
+    .text("🗑️ Clear Done", "todo_clear_done")
     .text("« Menu", "menu_back");
   
   return kb;
@@ -7837,6 +7838,7 @@ function buildCollabListKeyboard(list, page = 0) {
     .text("👥 Members", `ct_members:${list.id}`)
     .text("🔗 Share", `ct_share:${list.id}`)
     .row()
+    .text("🗑️ Clear Done", `ct_clear:${list.id}`)
     .text("← My Lists", "collab_list");
   
   return kb;
