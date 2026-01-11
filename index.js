@@ -8808,6 +8808,7 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -8869,6 +8870,7 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -8943,6 +8945,7 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -9231,6 +9234,7 @@ bot.callbackQuery("itodo_back", async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -9341,6 +9345,7 @@ bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -9394,6 +9399,7 @@ bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -9492,6 +9498,7 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
   
   // Each task is its own button row - like tic-tac-toe!
   displayTodos.forEach((task) => {
+    if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
     const catEmoji = getCategoryEmoji(task.category);
@@ -15203,6 +15210,7 @@ bot.on("inline_query", async (ctx) => {
           const kb = new InlineKeyboard();
           // Show tasks directly as buttons!
           userTasks.slice(0, 6).forEach((task) => {
+            if (!task || !task.text) return; // Skip invalid tasks
             const icon = task.completed ? "✅" : "⬜";
             const text = task.text.slice(0, 25) + (task.text.length > 25 ? ".." : "");
             const catEmoji = getCategoryEmoji(task.category);
@@ -15796,6 +15804,7 @@ bot.on("inline_query", async (ctx) => {
       
       // Each task is its own button row - like tic-tac-toe!
       displayTodos.forEach((task) => {
+        if (!task || !task.text) return; // Skip invalid tasks
         const icon = task.completed ? "✅" : "⬜";
         const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
         const catEmoji = getCategoryEmoji(task.category);
@@ -16056,6 +16065,7 @@ bot.on("inline_query", async (ctx) => {
       
       // Each task is its own button row - like tic-tac-toe!
       displayTodos.forEach((task) => {
+        if (!task || !task.text) return; // Skip invalid tasks
         const icon = task.completed ? "✅" : "⬜";
         const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
         const categoryEmoji = getCategoryEmoji(task.category);
@@ -19536,9 +19546,10 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Add task buttons (max 8 to fit)
         const displayTasks = tasks.slice(0, 8);
         displayTasks.forEach((task, idx) => {
+          if (!task || !task.text) return; // Skip invalid tasks
           const check = task.completed ? '✅' : '⬜';
           const cat = getCategoryEmoji(task.category);
-          const pri = task.priority === 'high' ? '🔴' : task.priority === 'med' ? '🟡' : '';
+          const pri = task.priority === 'high' ? '🔴' : task.priority === 'medium' ? '🟡' : '';
           const overdue = !task.completed && isOverdue(task.dueDate) ? '⚠️' : '';
           const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
           keyboard.text(label, `itodo_tap:${task.id}`).row();
