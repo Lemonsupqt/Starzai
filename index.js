@@ -14765,7 +14765,7 @@ bot.on("inline_query", async (ctx) => {
     
     // Get user's task counts for Starz Check card
     const userTodos = getUserTodos(userId);
-    const personalPending = userTodos.filter(t => !t.completed).length;
+    const personalPending = (userTodos.tasks || []).filter(t => !t.completed).length;
     const userCollabLists = getCollabListsForUser(userId);
     const collabCount = userCollabLists.length;
     
