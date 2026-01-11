@@ -16209,29 +16209,27 @@ bot.on("inline_query", async (ctx) => {
         ], { cache_time: 0, is_personal: true });
       }
       
-      // Update the task
-      const userTodos = getUserTodos(userId);
-      const taskIndex = userTodos.tasks.findIndex(t => t.id === taskId);
-      if (taskIndex !== -1) {
-        userTodos.tasks[taskIndex].text = newText;
-        userTodos.tasks[taskIndex].updatedAt = new Date().toISOString();
-        saveTodos();
-      }
+      // Store pending edit - will be applied when chosen_inline_result fires
+      const editKey = makeId(8);
+      inlineCache.set(`tedit_pending_${editKey}`, {
+        userId: String(userId),
+        taskId,
+        newText,
+        timestamp: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`tedit_pending_${editKey}`), 5 * 60 * 1000);
       
       return safeAnswerInline(ctx, [
         {
           type: "article",
-          id: `sc_edited_${makeId(6)}`,
-          title: `✅ Task Updated`,
-          description: newText.slice(0, 50),
+          id: `tedit_${editKey}`,
+          title: `✅ Update to: ${newText.slice(0, 30)}`,
+          description: `Tap to save changes`,
           thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
           input_message_content: {
-            message_text: `✅ <b>Task Updated!</b>\n\n${task.completed ? "✅" : "⬜"} ${escapeHTML(newText)}\n\n<i>via StarzAI • Starz Check</i>`,
+            message_text: `✅ Updated: ${escapeHTML(newText)}`,
             parse_mode: "HTML",
           },
-          reply_markup: new InlineKeyboard()
-            .switchInlineCurrent("📋 View Tasks", "sc: ")
-            .switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -19589,6 +19587,84 @@ bot.on("chosen_inline_result", async (ctx) => {
     }
     
     inlineCache.delete(`tadd_pending_${addKey}`);
+    return;
+  }
+  
+  // Handle tedit - edit task, update original message
+  if (resultId.startsWith("tedit_")) {
+    const editKey = resultId.replace("tedit_", "");
+    const pending = inlineCache.get(`tedit_pending_${editKey}`);
+    
+    if (!pending) {
+      console.log(`Task edit pending not found: editKey=${editKey}`);
+      return;
+    }
+    
+    const { userId, taskId, newText } = pending;
+    console.log(`Processing task edit: ${taskId} -> ${newText} for user ${userId}`);
+    
+    // Apply the edit
+    const userTodos = getUserTodos(userId);
+    const taskIndex = userTodos.tasks.findIndex(t => t.id === taskId);
+    if (taskIndex !== -1) {
+      userTodos.tasks[taskIndex].text = newText;
+      userTodos.tasks[taskIndex].updatedAt = new Date().toISOString();
+      saveTodos();
+    }
+    
+    // Try to update the original Starz Check message
+    const scMsg = inlineCache.get(`sc_msg_${userId}`);
+    if (scMsg && scMsg.inlineMessageId) {
+      try {
+        const tasks = userTodos.tasks || [];
+        const streak = getCompletionStreak(userId);
+        
+        // Build compact task list
+        let text = `\u2705 Starz Check`;
+        if (streak > 0) text += ` \ud83d\udd25${streak}`;
+        
+        const keyboard = new InlineKeyboard();
+        
+        // Add task buttons (max 8 to fit)
+        const displayTasks = tasks.slice(0, 8);
+        displayTasks.forEach((task, idx) => {
+          if (!task || !task.text) return;
+          const check = task.completed ? '\u2705' : '\u2b1c';
+          const cat = getCategoryEmoji(task.category);
+          const pri = task.priority === 'high' ? '\ud83d\udd34' : task.priority === 'medium' ? '\ud83d\udfe1' : '';
+          const overdue = !task.completed && isOverdue(task.dueDate) ? '\u26a0\ufe0f' : '';
+          const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
+          keyboard.text(label, `itodo_tap:${task.id}`).row();
+        });
+        
+        if (tasks.length > 8) {
+          keyboard.text(`... +${tasks.length - 8} more`, "itodo_back").row();
+        }
+        
+        // Action buttons
+        keyboard
+          .switchInlineCurrent("\u2795", "t:add ")
+          .text("\ud83d\udd0d", "itodo_filter")
+          .text("\ud83d\udcca", "itodo_stats")
+          .text("\ud83d\udc65", "itodo_collab")
+          .row()
+          .text("\u2190 Back", "inline_main_menu");
+        
+        await bot.api.editMessageTextInline(
+          scMsg.inlineMessageId,
+          text,
+          {
+            parse_mode: "HTML",
+            reply_markup: keyboard,
+          }
+        );
+        console.log(`Updated original Starz Check message after edit for user ${userId}`);
+      } catch (e) {
+        console.log("Could not update original Starz Check message:", e.message);
+      }
+    }
+    
+    inlineCache.delete(`tedit_pending_${editKey}`);
     return;
   }
   
