@@ -167,24 +167,54 @@ function getProviderForModel(model) {
 // MegaLLM: "gpt-4o", "gpt-4o-mini", etc.
 
 // Clean response from thinking tokens and artifacts
+// Properly handles thinking models by extracting actual response content
 function cleanLLMResponse(text) {
   if (!text) return '';
   
   let cleaned = text;
   
-  // Remove <think>...</think> blocks (some models use this)
-  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Handle thinking models that wrap entire response in thinking tags
+  // Extract content AFTER the thinking block, or content OUTSIDE thinking blocks
   
-  // Remove <thinking>...</thinking> blocks
-  cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  // Pattern 1: <think>...</think> followed by actual response
+  const thinkMatch = cleaned.match(/<think>[\s\S]*?<\/think>([\s\S]*)/i);
+  if (thinkMatch && thinkMatch[1]?.trim()) {
+    cleaned = thinkMatch[1];
+  } else {
+    // Just remove thinking blocks if there's content outside them
+    cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  }
   
-  // Remove Chinese thinking phrases mixed with English
-  // Common patterns: "I'm思考ing", "让我think", etc.
-  cleaned = cleaned.replace(/I'm[\u4e00-\u9fff]+ing/gi, '');
-  cleaned = cleaned.replace(/[\u4e00-\u9fff]+ing\s*(about|your|the|this)/gi, '');
+  // Pattern 2: <thinking>...</thinking> followed by actual response
+  const thinkingMatch = cleaned.match(/<thinking>[\s\S]*?<\/thinking>([\s\S]*)/i);
+  if (thinkingMatch && thinkingMatch[1]?.trim()) {
+    cleaned = thinkingMatch[1];
+  } else {
+    cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  }
   
-  // Remove standalone thinking status lines
-  cleaned = cleaned.replace(/^.*?(thinking|reasoning|思考|考虑)\s*(in progress|about|\.\.\.).*$/gim, '');
+  // Pattern 3: Some models use **Thinking:** or similar headers
+  // Remove thinking sections that start with headers
+  cleaned = cleaned.replace(/\*\*(?:Thinking|Reasoning|Analysis):\*\*[\s\S]*?(?=\*\*(?:Response|Answer|Output):\*\*|$)/gi, '');
+  cleaned = cleaned.replace(/\*\*(?:Response|Answer|Output):\*\*/gi, ''); // Remove the header itself
+  
+  // Pattern 4: Chinese thinking markers
+  // 思考过程：... 回答：...
+  const chineseThinkMatch = cleaned.match(/[思考过程分析]+[:：][\s\S]*?[回答结果输出]+[:：]([\s\S]*)/i);
+  if (chineseThinkMatch && chineseThinkMatch[1]?.trim()) {
+    cleaned = chineseThinkMatch[1];
+  }
+  
+  // Remove remaining Chinese thinking phrases mixed with English
+  cleaned = cleaned.replace(/I'm[\u4e00-\u9fff]+ing[^.!?]*/gi, '');
+  cleaned = cleaned.replace(/[\u4e00-\u9fff]+ing\s*(about|your|the|this)[^.!?]*/gi, '');
+  
+  // Remove standalone thinking status lines (but not if they're the only content)
+  const statusLinePattern = /^.*?(thinking|reasoning|\u601d\u8003|\u8003\u8651)\s*(in progress|about|\.\.\.).*$/gim;
+  const withoutStatus = cleaned.replace(statusLinePattern, '');
+  if (withoutStatus.trim()) {
+    cleaned = withoutStatus;
+  }
   
   // Remove lines that are just "..." or similar
   cleaned = cleaned.replace(/^\s*\.{3,}\s*$/gm, '');
