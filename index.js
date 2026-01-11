@@ -8789,13 +8789,14 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   }
   
   // Refresh the task list
-  const todos = getUserTodos(userId);
+  const userTodos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const taskCount = todos.length;
-  const doneCount = todos.filter(t => t.completed).length;
+  const tasks = userTodos.tasks || [];
+  const taskCount = tasks.length;
+  const doneCount = tasks.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
-  const filteredTodos = filterTodos(todos, filters);
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
@@ -8851,13 +8852,14 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   }
   
   // Go back to list
-  const todos = getUserTodos(userId);
+  const userTodos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const taskCount = todos.length;
-  const doneCount = todos.filter(t => t.completed).length;
+  const tasks = userTodos.tasks || [];
+  const taskCount = tasks.length;
+  const doneCount = tasks.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
-  const filteredTodos = filterTodos(todos, filters);
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
@@ -8913,10 +8915,11 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   }
   
   // Go back to list
-  const todos = getUserTodos(userId);
+  const userTodos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const taskCount = todos.length;
-  const doneCount = todos.filter(t => t.completed).length;
+  const tasks = userTodos.tasks || [];
+  const taskCount = tasks.length;
+  const doneCount = tasks.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
   if (taskCount === 0) {
@@ -8932,7 +8935,7 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
     return;
   }
   
-  const filteredTodos = filterTodos(todos, filters);
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
@@ -9328,9 +9331,10 @@ bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${priority} priority` });
   
   // Go back to list with filter applied
-  const todos = getUserTodos(userId);
+  const userTodos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const filteredTodos = filterTodos(todos, filters);
+  const tasks = userTodos.tasks || [];
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
@@ -9382,9 +9386,10 @@ bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${category}` });
   
   // Go back to list with filter applied
-  const todos = getUserTodos(userId);
+  const userTodos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const filteredTodos = filterTodos(todos, filters);
+  const tasks = userTodos.tasks || [];
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
@@ -15760,8 +15765,9 @@ bot.on("inline_query", async (ctx) => {
   // Uses double-tap pattern: first tap toggles, second tap within 3s opens action menu
   if (qLower.startsWith("t:") || qLower.startsWith("t ")) {
     const subCommand = q.slice(2).trim();
-    const todos = getUserTodos(userId);
+    const userTodos = getUserTodos(userId);
     const filters = getTodoFilters(userId);
+    const todos = userTodos.tasks || [];
     
     // t: or t (empty) - show task list
     if (!subCommand) {
