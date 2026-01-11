@@ -4799,7 +4799,7 @@ bot.command("imagine", async (ctx) => {
       "`/imagine a cute cat in space`\n" +
       "`/imagine fantasy landscape with mountains`\n" +
       "`/imagine cyberpunk city at night`\n\n" +
-      `_${getRandomTagline()}_`,
+      `_Powered by ${getRandomTagline()}_`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -4846,7 +4846,7 @@ bot.command("imagine", async (ctx) => {
     await ctx.replyWithPhoto(
       new InputFile(imageBuffer, "generated_image.jpg"),
       {
-        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _${getRandomTagline(prompt)}_`,
+        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _Powered by ${getRandomTagline(prompt)}_`,
         parse_mode: "Markdown"
       }
     );
@@ -5327,7 +5327,7 @@ bot.command("img", async (ctx) => {
       "• _square_ → 1:1\n\n" +
       `📌 *Your default:* ${defaultConfig?.icon || '⬜'} ${defaultConfig?.label || 'Square'}\n` +
       `_Use /imgset to change default_\n\n` +
-      `_${getRandomTagline()}_`,
+      `_Powered by ${getRandomTagline()}_`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -5399,7 +5399,7 @@ bot.command("img", async (ctx) => {
           caption: `🎨 *Generated Image*\n\n` +
                    `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
                    `📐 ${config.icon} ${config.label}\n` +
-                   `⚡ _${getRandomTagline(finalPrompt)}_`,
+                   `⚡ _Powered by ${getRandomTagline(finalPrompt)}_`,
           parse_mode: "Markdown",
           reply_markup: { inline_keyboard: actionButtons }
         }
@@ -5436,49 +5436,79 @@ bot.command("img", async (ctx) => {
     }
   }
   
-  // No ratio detected - show selection with user's default highlighted
+  // Use user's default ratio directly - no picker needed!
   const userDefault = user.imagePrefs?.defaultRatio || "1:1";
+  const config = IMG_ASPECT_RATIOS[userDefault];
   
-  const aspectButtons = [
-    [
-      { text: `${userDefault === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: `img_ar:1:1` },
-      { text: `${userDefault === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: `img_ar:4:3` },
-      { text: `${userDefault === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: `img_ar:3:4` }
-    ],
-    [
-      { text: `${userDefault === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: `img_ar:16:9` },
-      { text: `${userDefault === "9:16" ? "✅ " : ""}📲 Story`, callback_data: `img_ar:9:16` },
-      { text: `${userDefault === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: `img_ar:3:2` }
-    ],
-    [
-      { text: "⚡ Use Default", callback_data: `img_ar:${userDefault.replace(':', ':')}` },
-      { text: "❌ Cancel", callback_data: "img_cancel" }
-    ]
-  ];
-  
-  const msg = await ctx.reply(
-    "🎨 *Select Aspect Ratio*\n\n" +
-    `📝 _${finalPrompt.slice(0, 150)}${finalPrompt.length > 150 ? '...' : ''}_\n\n` +
-    "Choose format or tap ⚡ Use Default:",
-    {
-      parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: aspectButtons }
-    }
+  const statusMsg = await ctx.reply(
+    "🎨 *Generating your image...*\n\n" +
+    `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
+    `📐 ${config.icon} ${config.label} (${userDefault})\n\n` +
+    "⏳ Please wait 5-15 seconds...",
+    { parse_mode: "Markdown" }
   );
   
-  // Store pending prompt
+  // Store for regenerate
   pendingImagePrompts.set(u.id, {
     prompt: finalPrompt,
-    messageId: msg.message_id,
-    chatId: ctx.chat.id
+    messageId: statusMsg.message_id,
+    chatId: ctx.chat.id,
+    lastAspectRatio: userDefault
   });
   
-  // Auto-expire after 5 minutes
-  setTimeout(() => {
-    if (pendingImagePrompts.get(u.id)?.messageId === msg.message_id) {
-      pendingImagePrompts.delete(u.id);
+  try {
+    const imageBuffer = await generateDeAPIImage(finalPrompt, userDefault, u.id);
+    
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img_regen:${userDefault}` },
+        { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img_new" }
+      ]
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(imageBuffer, "generated_image.jpg"),
+      {
+        caption: `🎨 *Generated Image*\n\n` +
+                 `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by ${getRandomTagline(finalPrompt)}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    
+    console.log(`[IMG] User ${u.id} generated image (${userDefault}, default): "${finalPrompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("Image generation error:", error);
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "❌ *Image generation failed*\n\n" +
+        `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+        "Try again or use /imagine for free alternative.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔄 Try Again", callback_data: `img_ar:${userDefault.replace(':', ':')}` }],
+              [{ text: "❌ Cancel", callback_data: "img_cancel" }]
+            ]
+          }
+        }
+      );
+    } catch (e) {
+      await ctx.reply("❌ Image generation failed. Please try /imagine instead.");
     }
-  }, 5 * 60 * 1000);
+  }
 });
 
 // Handle aspect ratio selection
@@ -5537,7 +5567,7 @@ bot.callbackQuery(/^img_ar:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Generated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _${getRandomTagline(pending.prompt)}_`,
+                 `⚡ _Powered by ${getRandomTagline(pending.prompt)}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -5639,7 +5669,7 @@ bot.callbackQuery(/^img_regen:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Regenerated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}..._\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _${getRandomTagline(pending.prompt)}_`,
+                 `⚡ _Powered by ${getRandomTagline(pending.prompt)}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -10063,7 +10093,7 @@ bot.on("message:text", async (ctx) => {
           caption: `🎨 *Generated Image*\n\n` +
                    `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
                    `📐 ${config.icon} ${config.label}\n` +
-                   `⚡ _${getRandomTagline(finalPrompt)}_`,
+                   `⚡ _Powered by ${getRandomTagline(finalPrompt)}_`,
           parse_mode: "Markdown",
           reply_markup: { inline_keyboard: actionButtons },
           reply_to_message_id: messageId
