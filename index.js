@@ -8905,7 +8905,7 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   if (!userId) return;
   
   const taskId = ctx.match[1];
-  const deleted = deleteTask(userId, taskId);
+  const deleted = deleteTaskById(userId, taskId);
   
   if (deleted) {
     await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
