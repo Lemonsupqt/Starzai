@@ -32,8 +32,9 @@ const execAsync = promisify(exec);
 
 const CONFIG = {
   cobalt: {
-    api: 'https://api.cobalt.tools',
-    timeout: 60000
+    api: process.env.COBALT_API_URL || '',
+    timeout: 60000,
+    authHeader: process.env.COBALT_API_AUTH || ''
   },
   tmdb: {
     api: 'https://api.themoviedb.org/3',
@@ -115,21 +116,43 @@ async function downloadMedia(url, audioOnly = false) {
       localProcessing: 'disabled'
     };
 
+    const headers = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    };
+    if (CONFIG.cobalt.authHeader) {
+      headers.Authorization = CONFIG.cobalt.authHeader;
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
+      headers,
       body: JSON.stringify(body),
       timeout
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const raw = await response.text().catch(() => '');
+      let friendlyError = '';
+
+      try {
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const code = parsed?.error?.code || parsed?.code || '';
+          if (code === 'error.api.auth.jwt.missing') {
+            friendlyError =
+              'Download server requires authentication. The bot owner must configure a Cobalt API instance and auth token.';
+          }
+        }
+      } catch (_) {}
+
+      if (friendlyError) {
+        return { success: false, error: friendlyError };
+      }
+
       return {
         success: false,
-        error: `Download server error (${response.status}): ${text.slice(0, 200) || response.statusText}`
+        error: `Download server error (${response.status}): ${raw.slice(0, 200) || response.statusText}`
       };
     }
 
