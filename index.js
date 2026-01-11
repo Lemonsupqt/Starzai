@@ -15840,7 +15840,7 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // t:add <task> - quick add task
+    // t:add <task> - quick add task (deferred - adds on send and updates original message)
     if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
       const taskText = subCommand.slice(4).trim();
       
@@ -15849,55 +15849,39 @@ bot.on("inline_query", async (ctx) => {
           {
             type: "article",
             id: `t_add_hint_${sessionKey}`,
-            title: "➕ Add Task",
-            description: "Type your task after t:add",
+            title: "➕ Type your task...",
+            description: "Example: Buy groceries #shopping !high @tomorrow",
             thumbnail_url: "https://img.icons8.com/fluency/96/plus.png",
             input_message_content: { message_text: "_" },
-            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Tasks", "t: "),
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "t: "),
           },
         ], { cache_time: 0, is_personal: true });
       }
       
-      // Parse quick add syntax: #category !priority @date
-      const parsed = parseTaskText(taskText);
-      const newTask = createTask(userId, parsed.text, {
-        category: parsed.category,
-        priority: parsed.priority,
-        dueDate: parsed.dueDate,
+      // Store pending task - will be added when chosen_inline_result fires
+      const addKey = makeId(8);
+      inlineCache.set(`tadd_pending_${addKey}`, {
+        userId: String(userId),
+        taskText,
+        timestamp: Date.now(),
       });
+      setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
       
-      if (!newTask) {
-        return safeAnswerInline(ctx, [
-          {
-            type: "article",
-            id: `t_add_err_${sessionKey}`,
-            title: "⚠️ Failed to add task",
-            description: "Try again",
-            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
-            input_message_content: { message_text: "_" },
-            reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `t:add ${taskText}`),
-          },
-        ], { cache_time: 0, is_personal: true });
-      }
-      
-      const categoryEmoji = getCategoryEmoji(newTask.category);
-      const priorityText = newTask.priority === "high" ? "🔴 High" : newTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
-      const dueText = newTask.dueDate ? `📅 ${newTask.dueDate}` : "";
+      const parsed = parseTaskText(taskText);
+      const categoryEmoji = getCategoryEmoji(parsed.category || 'personal');
+      const priorityText = parsed.priority === "high" ? "🔴" : parsed.priority === "medium" ? "🟡" : "🟢";
       
       return safeAnswerInline(ctx, [
         {
           type: "article",
-          id: `t_added_${makeId(6)}`,
-          title: `✅ Task Added: ${parsed.text.slice(0, 30)}`,
-          description: `${categoryEmoji} ${priorityText} ${dueText}`.trim(),
+          id: `tadd_${addKey}`,
+          title: `➕ Add: ${parsed.text.slice(0, 35)}`,
+          description: `${categoryEmoji} ${priorityText} Tap to add`,
           thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
           input_message_content: {
-            message_text: `✅ <b>Task Added!</b>\n\n⬜ ${escapeHTML(newTask.text)}\n\n${categoryEmoji} ${escapeHTML(newTask.category || "personal")} • ${priorityText}${dueText ? "\n" + dueText : ""}\n\n<i>via StarzAI • Tasks</i>`,
+            message_text: `✅ Added: ${escapeHTML(parsed.text)}`,
             parse_mode: "HTML",
           },
-          reply_markup: new InlineKeyboard()
-            .switchInlineCurrent("📋 View Tasks", "t: ")
-            .switchInlineCurrent("➕ Add Another", "t:add "),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -16107,7 +16091,7 @@ bot.on("inline_query", async (ctx) => {
       ], { cache_time: 0, is_personal: true });
     }
     
-    // sc:add <task> - quick add task
+    // sc:add <task> - quick add task (deferred - adds on send and updates original message)
     if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
       const taskText = subCommand.slice(4).trim();
       
@@ -16116,8 +16100,8 @@ bot.on("inline_query", async (ctx) => {
           {
             type: "article",
             id: `sc_add_help_${sessionKey}`,
-            title: "➕ Add Personal Task",
-            description: "sc:add Buy groceries #shopping !high @tomorrow",
+            title: "➕ Type your task...",
+            description: "Example: Buy groceries #shopping !high @tomorrow",
             thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
             input_message_content: { message_text: "_" },
             reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
@@ -16125,27 +16109,30 @@ bot.on("inline_query", async (ctx) => {
         ], { cache_time: 0, is_personal: true });
       }
       
-      const parsed = parseTaskText(taskText);
-      const newTask = createTask(userId, parsed);
+      // Store pending task - will be added when chosen_inline_result fires
+      const addKey = makeId(8);
+      inlineCache.set(`tadd_pending_${addKey}`, {
+        userId: String(userId),
+        taskText,
+        timestamp: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
       
-      const categoryEmoji = getCategoryEmoji(newTask.category);
-      const priorityText = newTask.priority === "high" ? "🔴 High" : newTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
-      const dueText = newTask.dueDate ? `📅 ${newTask.dueDate}` : "";
+      const parsed = parseTaskText(taskText);
+      const categoryEmoji = getCategoryEmoji(parsed.category || 'personal');
+      const priorityText = parsed.priority === "high" ? "🔴" : parsed.priority === "medium" ? "🟡" : "🟢";
       
       return safeAnswerInline(ctx, [
         {
           type: "article",
-          id: `sc_added_${makeId(6)}`,
-          title: `✅ Task Added: ${parsed.text.slice(0, 30)}`,
-          description: `${categoryEmoji} ${priorityText} ${dueText}`.trim(),
+          id: `tadd_${addKey}`,
+          title: `➕ Add: ${parsed.text.slice(0, 35)}`,
+          description: `${categoryEmoji} ${priorityText} Tap to add`,
           thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
           input_message_content: {
-            message_text: `✅ <b>Task Added!</b>\n\n⬜ ${escapeHTML(parsed.text)}\n\n${categoryEmoji} ${escapeHTML(newTask.category || "personal")} • ${priorityText}${dueText ? "\n" + dueText : ""}\n\n<i>via StarzAI • Starz Check</i>`,
+            message_text: `✅ Added: ${escapeHTML(parsed.text)}`,
             parse_mode: "HTML",
           },
-          reply_markup: new InlineKeyboard()
-            .switchInlineCurrent("📋 View Tasks", "sc: ")
-            .switchInlineCurrent("➕ Add Another", "sc:add "),
         },
       ], { cache_time: 0, is_personal: true });
     }
@@ -19471,6 +19458,120 @@ bot.on("chosen_inline_result", async (ctx) => {
     }
     
     inlineCache.delete(`p_pending_${pKey}`);
+    return;
+  }
+  
+  // Handle Starz Check - store the inline_message_id for later updates
+  if (resultId.startsWith("starz_check_")) {
+    const checkKey = resultId.replace("starz_check_", "");
+    const userId = String(ctx.from?.id || "");
+    
+    if (inlineMessageId && userId) {
+      // Store the inline message ID so we can update it when tasks change
+      inlineCache.set(`sc_msg_${userId}`, {
+        inlineMessageId,
+        timestamp: Date.now(),
+      });
+      console.log(`Stored Starz Check inlineMessageId for user ${userId}`);
+    }
+    return;
+  }
+  
+  // Handle t:add - add task, delete new message, update original
+  if (resultId.startsWith("tadd_")) {
+    const addKey = resultId.replace("tadd_", "");
+    const pending = inlineCache.get(`tadd_pending_${addKey}`);
+    
+    if (!pending) {
+      console.log(`Task add pending not found: addKey=${addKey}`);
+      return;
+    }
+    
+    const { userId, taskText, chatId } = pending;
+    console.log(`Processing task add: ${taskText} for user ${userId}`);
+    
+    // Parse and add the task
+    const parsed = parseTaskText(taskText);
+    const userTodos = getUserTodos(userId);
+    const newTask = {
+      id: makeId(8),
+      text: parsed.text || taskText,
+      completed: false,
+      priority: parsed.priority || 'low',
+      category: parsed.category || 'personal',
+      dueDate: parsed.dueDate || null,
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+    };
+    userTodos.tasks.push(newTask);
+    saveTodos();
+    
+    // Try to delete the "Task Added" message we just sent
+    if (inlineMessageId) {
+      try {
+        // We can't delete inline messages, but we can edit them to be minimal
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `✅ Added: ${parsed.text || taskText}`,
+          { parse_mode: "HTML" }
+        );
+      } catch (e) {
+        console.log("Could not edit task added message:", e.message);
+      }
+    }
+    
+    // Try to update the original Starz Check message
+    const scMsg = inlineCache.get(`sc_msg_${userId}`);
+    if (scMsg && scMsg.inlineMessageId) {
+      try {
+        const tasks = userTodos.tasks || [];
+        const streak = getCompletionStreak(userId);
+        
+        // Build compact task list
+        let text = `✅ Starz Check`;
+        if (streak > 0) text += ` 🔥${streak}`;
+        
+        const keyboard = new InlineKeyboard();
+        
+        // Add task buttons (max 8 to fit)
+        const displayTasks = tasks.slice(0, 8);
+        displayTasks.forEach((task, idx) => {
+          const check = task.completed ? '✅' : '⬜';
+          const cat = getCategoryEmoji(task.category);
+          const pri = task.priority === 'high' ? '🔴' : task.priority === 'med' ? '🟡' : '';
+          const overdue = !task.completed && isOverdue(task.dueDate) ? '⚠️' : '';
+          const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
+          keyboard.text(label, `itodo_tap:${task.id}`).row();
+        });
+        
+        if (tasks.length > 8) {
+          keyboard.text(`... +${tasks.length - 8} more`, "itodo_back").row();
+        }
+        
+        // Action buttons
+        keyboard
+          .switchInlineCurrent("➕", "t:add ")
+          .text("🔍", "itodo_filter")
+          .text("📊", "itodo_stats")
+          .text("👥", "itodo_collab")
+          .row()
+          .text("← Back", "inline_main_menu");
+        
+        await bot.api.editMessageTextInline(
+          scMsg.inlineMessageId,
+          text,
+          {
+            parse_mode: "HTML",
+            reply_markup: keyboard,
+          }
+        );
+        console.log(`Updated original Starz Check message for user ${userId}`);
+      } catch (e) {
+        console.log("Could not update original Starz Check message:", e.message);
+      }
+    }
+    
+    inlineCache.delete(`tadd_pending_${addKey}`);
     return;
   }
   
