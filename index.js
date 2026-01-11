@@ -7200,14 +7200,11 @@ function buildTodoKeyboard(userId, page = 0, filters = {}) {
     kb.row();
   }
   
-  // Action buttons
+  // Action buttons - simplified to match inline style
   kb.text("➕ Add", "todo_add")
-    .text("🗑️ Clear Done", "todo_clear_done")
-    .row()
     .text("🔍 Filter", "todo_filter")
-    .text("📊 Stats", "todo_stats")
+    .text("👥 Collab", "collab_list")
     .row()
-    .text("👥 Collab Lists", "collab_list")
     .text("« Menu", "menu_back");
   
   return kb;
@@ -7839,14 +7836,12 @@ function buildCollabListKeyboard(list, page = 0) {
     kb.row();
   }
   
-  // Action buttons
-  kb.text("➕ Add Task", `ct_add:${list.id}`)
-    .text("🗑️ Clear Done", `ct_clear:${list.id}`)
-    .row()
+  // Action buttons - simplified
+  kb.text("➕ Add", `ct_add:${list.id}`)
     .text("👥 Members", `ct_members:${list.id}`)
     .text("🔗 Share", `ct_share:${list.id}`)
     .row()
-    .switchInlineCurrent("← My Lists", "ct: ");
+    .text("← My Lists", "collab_list");
   
   return kb;
 }
