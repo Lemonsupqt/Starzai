@@ -6523,7 +6523,7 @@ bot.command("gstat", async (ctx) => {
 // Dev Status callback - detailed API diagnostics (owner only)
 bot.callbackQuery("dev_status", async (ctx) => {
   const userId = ctx.from?.id;
-  if (!OWNER_IDS.includes(String(userId))) {
+  if (!OWNER_IDS.has(String(userId))) {
     return ctx.answerCallbackQuery({ text: "🚫 Owner only", show_alert: true });
   }
   
@@ -6662,7 +6662,7 @@ bot.callbackQuery("dev_status", async (ctx) => {
 // Back to status callback
 bot.callbackQuery("back_to_status", async (ctx) => {
   const userId = ctx.from?.id;
-  if (!OWNER_IDS.includes(String(userId))) {
+  if (!OWNER_IDS.has(String(userId))) {
     return ctx.answerCallbackQuery({ text: "🚫 Owner only", show_alert: true });
   }
   
