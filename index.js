@@ -13800,12 +13800,17 @@ bot.callbackQuery(/^wp_next:/, async (ctx) => {
   }
 });
 
-// Callback for auto-detected media download
-bot.callbackQuery(/^auto_dl:/, async (ctx) => {
-  const [, mode, encodedUrl] = ctx.callbackQuery.data.split(':');
-  const url = decodeURIComponent(encodedUrl);
-  const audioOnly = mode === 'audio';
+// Callback for auto-detected media download (uses URL cache to avoid 64-byte limit)
+bot.callbackQuery(/^adl:/, async (ctx) => {
+  const [, mode, urlId] = ctx.callbackQuery.data.split(':');
+  const url = pendingDownloadUrls.get(urlId);
   
+  if (!url) {
+    await ctx.answerCallbackQuery({ text: 'Link expired. Please send the link again.', show_alert: true });
+    return;
+  }
+  
+  const audioOnly = mode === 'a';
   await ctx.answerCallbackQuery({ text: 'Starting download...' });
   
   const platform = detectPlatform(url);
@@ -13843,6 +13848,7 @@ bot.callbackQuery(/^auto_dl:/, async (ctx) => {
     }
     
     await ctx.deleteMessage();
+    pendingDownloadUrls.delete(urlId); // Clean up
     
   } catch (error) {
     await ctx.editMessageText(
@@ -15231,6 +15237,7 @@ bot.on("message:web_app_data", async (ctx) => {
 
 // Track processing messages to prevent duplicates
 const processingMessages = new Map(); // chatId:messageId -> timestamp
+const pendingDownloadUrls = new Map(); // urlId -> url (for auto-detect download buttons)
 
 bot.on("message:text", async (ctx) => {
   const chat = ctx.chat;
@@ -15274,9 +15281,15 @@ bot.on("message:text", async (ctx) => {
       const url = urlMatch[0];
       const emoji = PLATFORM_EMOJI[detectedPlatform] || '📥';
       
+      // Store URL in cache with short ID to avoid callback data limit (64 bytes)
+      const urlId = `${u.id}_${Date.now()}`;
+      pendingDownloadUrls.set(urlId, url);
+      // Clean up old entries after 10 minutes
+      setTimeout(() => pendingDownloadUrls.delete(urlId), 10 * 60 * 1000);
+      
       const kb = new InlineKeyboard()
-        .text(`${emoji} Download Video`, `auto_dl:video:${encodeURIComponent(url)}`)
-        .text(`🎵 Audio Only`, `auto_dl:audio:${encodeURIComponent(url)}`);
+        .text(`${emoji} Download Video`, `adl:v:${urlId}`)
+        .text(`🎵 Audio Only`, `adl:a:${urlId}`);
       
       await ctx.reply(
         `${emoji} <b>${detectedPlatform.charAt(0).toUpperCase() + detectedPlatform.slice(1)} link detected!</b>\n\nWhat would you like to download?`,
