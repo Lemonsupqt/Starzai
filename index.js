@@ -725,6 +725,8 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
 const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
 const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
+const TODOS_FILE = path.join(DATA_DIR, "todos.json");
+const COLLAB_TODOS_FILE = path.join(DATA_DIR, "collab_todos.json");
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -748,6 +750,8 @@ let usersDb = readJson(USERS_FILE, { users: {} });
 let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
+let todosDb = readJson(TODOS_FILE, { todos: {} });
+let collabTodosDb = readJson(COLLAB_TODOS_FILE, { lists: {}, userLists: {} });
 
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
@@ -803,11 +807,13 @@ async function loadFromSupabase() {
   console.log("Loading data from Supabase...");
   
   try {
-    const [users, prefs, sessions, imageStats] = await Promise.all([
+    const [users, prefs, sessions, imageStats, todos, collabTodos] = await Promise.all([
       supabaseGet("users"),
       supabaseGet("prefs"),
       supabaseGet("inlineSessions"),
       supabaseGet("imageStats"),
+      supabaseGet("todos"),
+      supabaseGet("collabTodos"),
     ]);
     
     if (users) {
@@ -824,6 +830,14 @@ async function loadFromSupabase() {
     }
     if (imageStats) {
       deapiKeyManager.loadStats(imageStats);
+    }
+    if (todos) {
+      todosDb = todos;
+      console.log(`Loaded todos from Supabase`);
+    }
+    if (collabTodos) {
+      collabTodosDb = collabTodos;
+      console.log(`Loaded ${Object.keys(collabTodosDb.lists || {}).length} collab lists from Supabase`);
     }
     
     return true;
@@ -842,6 +856,8 @@ async function saveToSupabase(dataType) {
   else if (dataType === "inlineSessions") data = inlineSessionsDb;
   else if (dataType === "partners") data = partnersDb;
   else if (dataType === "imageStats") data = deapiKeyManager.getPersistentStats();
+  else if (dataType === "todos") data = todosDb;
+  else if (dataType === "collabTodos") data = collabTodosDb;
   else return false;
   
   const success = await supabaseSet(dataType, data);
@@ -904,6 +920,7 @@ async function flushSaves() {
       if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
       if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
       if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+      if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
     }
   }
 }
@@ -915,6 +932,8 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
     return;
   }
   
@@ -932,6 +951,12 @@ async function saveToTelegram(dataType) {
     } else if (dataType === "partners") {
       data = partnersDb;
       label = "🤝🏻 PARTNERS_DATA";
+    } else if (dataType === "todos") {
+      data = todosDb;
+      label = "📋 TODOS_DATA";
+    } else if (dataType === "collabTodos") {
+      data = collabTodosDb;
+      label = "👥 COLLAB_TODOS_DATA";
     } else {
       return;
     }
@@ -963,6 +988,8 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
     
   } catch (e) {
     console.error(`Failed to save ${dataType} to Telegram:`, e.message);
@@ -971,6 +998,8 @@ async function saveToTelegram(dataType) {
     if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
   }
 }
 
@@ -1027,6 +1056,12 @@ function saveInlineSessions() {
 }
 function savePartners() {
   scheduleSave("partners");
+}
+function saveTodos() {
+  scheduleSave("todos");
+}
+function saveCollabTodos() {
+  scheduleSave("collabTodos");
 }
 
 // =====================
@@ -3788,11 +3823,12 @@ function mainMenuKeyboard(userId) {
     .text("⚙️ Model", "menu_model")
     .row()
     .text("🤝🏻 Partner", "menu_partner")
-    .text("📊 Stats", "menu_stats")
+    .text("📋 Tasks", "todo_list")
     .row()
     .text("🎭 Character", "menu_char")
-    .text(webSearchIcon, "toggle_websearch")
+    .text("📊 Stats", "menu_stats")
     .row()
+    .text(webSearchIcon, "toggle_websearch")
     .switchInline("⚡ Try Inline", "");
 
   if (FEEDBACK_CHAT_ID) {
@@ -6709,6 +6745,3425 @@ _Keep chatting to grow your stats!_`;
   });
 });
 
+// =====================
+// ADVANCED TODO/CHECKLIST SYSTEM
+// =====================
+
+// Priority emoji mapping
+const PRIORITY_EMOJI = {
+  high: "🔴",
+  medium: "🟡",
+  low: "🟢",
+  none: "⚪"
+};
+
+const PRIORITY_LABELS = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  none: "None"
+};
+
+// Category emoji mapping
+const CATEGORY_EMOJI = {
+  work: "💼",
+  personal: "👤",
+  shopping: "🛒",
+  health: "💪",
+  learning: "📚",
+  finance: "💰",
+  home: "🏠",
+  social: "👥",
+  travel: "✈️",
+  other: "📌"
+};
+
+// Get category emoji
+function getCategoryEmoji(category) {
+  if (!category) return "📌";
+  return CATEGORY_EMOJI[category.toLowerCase()] || "📌";
+}
+
+// Get task by ID
+function getTaskById(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  return userTodos.tasks.find(t => t.id === taskId) || null;
+}
+
+// Check if a due date is overdue
+function isOverdue(dueDate) {
+  if (!dueDate) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return dueDate < today;
+}
+
+// Get user's completion streak
+function getCompletionStreak(userId) {
+  const userTodos = getUserTodos(userId);
+  return userTodos.stats?.currentStreak || 0;
+}
+
+// Category emoji mapping
+const DEFAULT_CATEGORIES = {
+  personal: "👤",
+  work: "💼",
+  shopping: "🛒",
+  health: "💪",
+  learning: "📚",
+  finance: "💰",
+  home: "🏠",
+  other: "📌"
+};
+
+// Get user's todo list
+function getUserTodos(userId) {
+  const id = String(userId);
+  if (!todosDb.todos[id]) {
+    todosDb.todos[id] = {
+      tasks: [],
+      categories: { ...DEFAULT_CATEGORIES },
+      settings: {
+        defaultCategory: "personal",
+        defaultPriority: "none",
+        showCompleted: true,
+        sortBy: "created"
+      },
+      stats: {
+        totalCreated: 0,
+        totalCompleted: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastCompletedDate: null
+      }
+    };
+    saveTodos();
+  }
+  return todosDb.todos[id];
+}
+
+// Generate unique task ID
+function generateTaskId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+// Create a new task
+function createTask(userId, taskData) {
+  const userTodos = getUserTodos(userId);
+  const task = {
+    id: generateTaskId(),
+    text: taskData.text,
+    completed: false,
+    priority: taskData.priority || userTodos.settings.defaultPriority,
+    category: taskData.category || userTodos.settings.defaultCategory,
+    dueDate: taskData.dueDate || null,
+    dueTime: taskData.dueTime || null,
+    recurring: taskData.recurring || null,
+    subtasks: [],
+    notes: taskData.notes || "",
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+    parentId: taskData.parentId || null
+  };
+  
+  if (task.parentId) {
+    const parentTask = userTodos.tasks.find(t => t.id === task.parentId);
+    if (parentTask) {
+      parentTask.subtasks.push(task);
+    }
+  } else {
+    userTodos.tasks.push(task);
+  }
+  
+  userTodos.stats.totalCreated++;
+  saveTodos();
+  return task;
+}
+
+// Toggle task completion
+function toggleTaskCompletion(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  
+  let task = userTodos.tasks.find(t => t.id === taskId);
+  let isSubtask = false;
+  
+  if (!task) {
+    for (const t of userTodos.tasks) {
+      const subtask = t.subtasks?.find(st => st.id === taskId);
+      if (subtask) {
+        task = subtask;
+        isSubtask = true;
+        break;
+      }
+    }
+  }
+  
+  if (!task) return null;
+  
+  task.completed = !task.completed;
+  task.completedAt = task.completed ? new Date().toISOString() : null;
+  
+  if (task.completed) {
+    userTodos.stats.totalCompleted++;
+    
+    const today = new Date().toISOString().slice(0, 10);
+    const lastCompleted = userTodos.stats.lastCompletedDate;
+    
+    if (!lastCompleted) {
+      userTodos.stats.currentStreak = 1;
+    } else {
+      const lastDate = new Date(lastCompleted);
+      const todayDate = new Date(today);
+      const diffDays = Math.floor((todayDate - lastDate) / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 1) {
+        userTodos.stats.currentStreak++;
+      } else if (diffDays > 1) {
+        userTodos.stats.currentStreak = 1;
+      }
+    }
+    
+    userTodos.stats.lastCompletedDate = today;
+    userTodos.stats.longestStreak = Math.max(
+      userTodos.stats.longestStreak,
+      userTodos.stats.currentStreak
+    );
+    
+    // Handle recurring tasks
+    if (task.recurring && !isSubtask) {
+      const newTask = { ...task };
+      newTask.id = generateTaskId();
+      newTask.completed = false;
+      newTask.completedAt = null;
+      newTask.createdAt = new Date().toISOString();
+      
+      if (task.dueDate) {
+        const dueDate = new Date(task.dueDate);
+        const interval = task.recurring.interval || 1;
+        
+        switch (task.recurring.type) {
+          case 'daily':
+            dueDate.setDate(dueDate.getDate() + interval);
+            break;
+          case 'weekly':
+            dueDate.setDate(dueDate.getDate() + (7 * interval));
+            break;
+          case 'monthly':
+            dueDate.setMonth(dueDate.getMonth() + interval);
+            break;
+        }
+        newTask.dueDate = dueDate.toISOString().slice(0, 10);
+      }
+      
+      userTodos.tasks.push(newTask);
+    }
+  }
+  
+  saveTodos();
+  return task;
+}
+
+// Delete a task
+function deleteTaskById(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  
+  const index = userTodos.tasks.findIndex(t => t.id === taskId);
+  if (index !== -1) {
+    userTodos.tasks.splice(index, 1);
+    saveTodos();
+    return true;
+  }
+  
+  for (const task of userTodos.tasks) {
+    const subIndex = task.subtasks?.findIndex(st => st.id === taskId);
+    if (subIndex !== -1) {
+      task.subtasks.splice(subIndex, 1);
+      saveTodos();
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// Get tasks with filters
+function getFilteredTasks(userId, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  let tasks = [...userTodos.tasks];
+  
+  if (!userTodos.settings.showCompleted && !filters.showCompleted) {
+    tasks = tasks.filter(t => !t.completed);
+  }
+  
+  if (filters.category) {
+    tasks = tasks.filter(t => t.category === filters.category);
+  }
+  
+  if (filters.priority) {
+    tasks = tasks.filter(t => t.priority === filters.priority);
+  }
+  
+  if (filters.dueFilter) {
+    const today = new Date().toISOString().slice(0, 10);
+    
+    switch (filters.dueFilter) {
+      case 'today':
+        tasks = tasks.filter(t => t.dueDate === today);
+        break;
+      case 'overdue':
+        tasks = tasks.filter(t => t.dueDate && t.dueDate < today && !t.completed);
+        break;
+      case 'upcoming':
+        tasks = tasks.filter(t => t.dueDate && t.dueDate > today);
+        break;
+      case 'noduedate':
+        tasks = tasks.filter(t => !t.dueDate);
+        break;
+    }
+  }
+  
+  if (filters.search) {
+    const searchLower = filters.search.toLowerCase();
+    tasks = tasks.filter(t => 
+      t.text.toLowerCase().includes(searchLower) ||
+      t.notes?.toLowerCase().includes(searchLower)
+    );
+  }
+  
+  const sortBy = filters.sortBy || userTodos.settings.sortBy;
+  tasks.sort((a, b) => {
+    if (a.completed !== b.completed) {
+      return a.completed ? 1 : -1;
+    }
+    
+    switch (sortBy) {
+      case 'priority':
+        const priorityOrder = { high: 0, medium: 1, low: 2, none: 3 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
+      case 'dueDate':
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
+      case 'category':
+        return (a.category || '').localeCompare(b.category || '');
+      case 'created':
+      default:
+        return new Date(b.createdAt) - new Date(a.createdAt);
+    }
+  });
+  
+  return tasks;
+}
+
+// Format task for display
+function formatTaskDisplay(task, userTodos, showIndex = true, index = 0) {
+  const checkbox = task.completed ? "✅" : "⬜";
+  const priority = PRIORITY_EMOJI[task.priority] || "";
+  const category = userTodos.categories[task.category] || "📌";
+  
+  let text = `${checkbox} `;
+  if (showIndex) text += `*${index}.* `;
+  if (priority && task.priority !== 'none') text += `${priority} `;
+  
+  if (task.completed) {
+    text += `~${task.text}~`;
+  } else {
+    text += task.text;
+  }
+  
+  if (task.dueDate) {
+    const today = new Date().toISOString().slice(0, 10);
+    const isOverdue = task.dueDate < today && !task.completed;
+    const isToday = task.dueDate === today;
+    
+    if (isOverdue) {
+      text += ` ⚠️ _Overdue_`;
+    } else if (isToday) {
+      text += ` 📅 _Today_`;
+    } else {
+      text += ` 📅 _${task.dueDate}_`;
+    }
+  }
+  
+  if (task.recurring) {
+    text += ` 🔄`;
+  }
+  
+  text += ` ${category}`;
+  
+  return text;
+}
+
+// Build todo list message
+function buildTodoListMessage(userId, page = 0, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  const tasks = getFilteredTasks(userId, filters);
+  const pageSize = 8;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const totalTasks = userTodos.tasks.length;
+  const completedTasks = userTodos.tasks.filter(t => t.completed).length;
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const overdueTasks = userTodos.tasks.filter(t => 
+    t.dueDate && t.dueDate < todayDate && !t.completed
+  ).length;
+  
+  let message = [
+    "✅ *Starz Check - Personal*",
+    "",
+    `📊 *Progress:* ${completedTasks}/${totalTasks} completed`,
+  ];
+  
+  if (overdueTasks > 0) {
+    message.push(`⚠️ *Overdue:* ${overdueTasks} task${overdueTasks > 1 ? 's' : ''}`);
+  }
+  
+  if (userTodos.stats.currentStreak > 0) {
+    message.push(`🔥 *Streak:* ${userTodos.stats.currentStreak} day${userTodos.stats.currentStreak > 1 ? 's' : ''}`);
+  }
+  
+  message.push("");
+  message.push("━━━━━━━━━━━━━━━━━━━━━━");
+  message.push("");
+  
+  if (pageTasks.length === 0) {
+    if (filters.category || filters.priority || filters.dueFilter || filters.search) {
+      message.push("_No tasks match your filters._");
+    } else {
+      message.push("_No tasks yet! Add one with:_");
+      message.push("`/todo add Buy groceries`");
+    }
+  } else {
+    pageTasks.forEach((task, i) => {
+      const globalIndex = startIndex + i + 1;
+      message.push(formatTaskDisplay(task, userTodos, true, globalIndex));
+      
+      if (task.subtasks && task.subtasks.length > 0) {
+        task.subtasks.forEach(subtask => {
+          const subCheckbox = subtask.completed ? "✅" : "⬜";
+          const subText = subtask.completed ? `~${subtask.text}~` : subtask.text;
+          message.push(`    ${subCheckbox} ${subText}`);
+        });
+      }
+    });
+  }
+  
+  if (totalPages > 1) {
+    message.push("");
+    message.push(`_Page ${currentPage + 1}/${totalPages}_`);
+  }
+  
+  return message.join("\n");
+}
+
+// Build todo keyboard
+function buildTodoKeyboard(userId, page = 0, filters = {}) {
+  const userTodos = getUserTodos(userId);
+  const tasks = getFilteredTasks(userId, filters);
+  const pageSize = 8;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const kb = new InlineKeyboard();
+  
+  // Task toggle buttons (2 per row)
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const task2 = pageTasks[i + 1];
+    
+    const idx1 = startIndex + i + 1;
+    const icon1 = task1.completed ? "✅" : "⬜";
+    kb.text(`${icon1} ${idx1}`, `todo_toggle:${task1.id}`);
+    
+    if (task2) {
+      const idx2 = startIndex + i + 2;
+      const icon2 = task2.completed ? "✅" : "⬜";
+      kb.text(`${icon2} ${idx2}`, `todo_toggle:${task2.id}`);
+    }
+    kb.row();
+  }
+  
+  // Pagination
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      kb.text("◀️", `todo_page:${currentPage - 1}`);
+    }
+    kb.text(`${currentPage + 1}/${totalPages}`, "todo_noop");
+    if (currentPage < totalPages - 1) {
+      kb.text("▶️", `todo_page:${currentPage + 1}`);
+    }
+    kb.row();
+  }
+  
+  // Action buttons
+  kb.text("➕ Add", "todo_add")
+    .text("🗑️ Clear Done", "todo_clear_done")
+    .row()
+    .text("🔍 Filter", "todo_filter")
+    .text("📊 Stats", "todo_stats")
+    .row()
+    .text("👥 Collab Lists", "collab_list")
+    .text("« Menu", "menu_back");
+  
+  return kb;
+}
+
+// Build filter keyboard
+function buildTodoFilterKeyboard(userId) {
+  const userTodos = getUserTodos(userId);
+  const kb = new InlineKeyboard();
+  
+  kb.text("📅 Today", "todo_filter_due:today")
+    .text("⚠️ Overdue", "todo_filter_due:overdue")
+    .row()
+    .text("🔜 Upcoming", "todo_filter_due:upcoming")
+    .text("📭 No Date", "todo_filter_due:noduedate")
+    .row();
+  
+  kb.text("🔴 High", "todo_filter_priority:high")
+    .text("🟡 Med", "todo_filter_priority:medium")
+    .text("🟢 Low", "todo_filter_priority:low")
+    .row();
+  
+  const categories = Object.entries(userTodos.categories).slice(0, 4);
+  categories.forEach(([key, emoji]) => {
+    kb.text(`${emoji}`, `todo_filter_category:${key}`);
+  });
+  kb.row();
+  
+  const showCompleted = userTodos.settings.showCompleted;
+  kb.text(showCompleted ? "👁️ Hide Done" : "👁️ Show Done", "todo_toggle_completed")
+    .row();
+  
+  kb.text("🔄 Clear Filters", "todo_clear_filters")
+    .text("« Back", "todo_list")
+    .row();
+  
+  return kb;
+}
+
+// Build settings keyboard
+function buildTodoSettingsKeyboard(userId) {
+  const userTodos = getUserTodos(userId);
+  const kb = new InlineKeyboard();
+  
+  kb.text("📊 Sort by:", "todo_noop").row();
+  
+  const sortOptions = [
+    { key: 'created', label: '🕐' },
+    { key: 'priority', label: '🎯' },
+    { key: 'dueDate', label: '📅' },
+    { key: 'category', label: '📁' }
+  ];
+  
+  sortOptions.forEach(opt => {
+    const isActive = userTodos.settings.sortBy === opt.key;
+    kb.text(`${isActive ? '✓ ' : ''}${opt.label}`, `todo_sort:${opt.key}`);
+  });
+  kb.row();
+  
+  kb.text("Default Priority:", "todo_noop").row();
+  ['none', 'low', 'medium', 'high'].forEach(p => {
+    const isActive = userTodos.settings.defaultPriority === p;
+    kb.text(`${isActive ? '✓ ' : ''}${PRIORITY_EMOJI[p]}`, `todo_default_priority:${p}`);
+  });
+  kb.row();
+  
+  kb.text("📊 View Stats", "todo_stats").row();
+  
+  kb.text("« Back to Tasks", "todo_list");
+  
+  return kb;
+}
+
+// Build stats message
+function buildTodoStatsMessage(userId) {
+  const userTodos = getUserTodos(userId);
+  const stats = userTodos.stats;
+  const tasks = userTodos.tasks;
+  
+  const totalTasks = tasks.length;
+  const completedTasks = tasks.filter(t => t.completed).length;
+  const pendingTasks = totalTasks - completedTasks;
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  
+  const categoryStats = {};
+  tasks.forEach(t => {
+    const cat = t.category || 'other';
+    if (!categoryStats[cat]) categoryStats[cat] = { total: 0, completed: 0 };
+    categoryStats[cat].total++;
+    if (t.completed) categoryStats[cat].completed++;
+  });
+  
+  const priorityStats = { high: 0, medium: 0, low: 0, none: 0 };
+  tasks.filter(t => !t.completed).forEach(t => {
+    priorityStats[t.priority || 'none']++;
+  });
+  
+  let message = [
+    "📊 *Task Statistics*",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    `📋 *Total Tasks:* ${totalTasks}`,
+    `✅ *Completed:* ${completedTasks}`,
+    `⏳ *Pending:* ${pendingTasks}`,
+    `📈 *Completion Rate:* ${completionRate}%`,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    `🔥 *Current Streak:* ${stats.currentStreak} day${stats.currentStreak !== 1 ? 's' : ''}`,
+    `🏆 *Longest Streak:* ${stats.longestStreak} day${stats.longestStreak !== 1 ? 's' : ''}`,
+    `📅 *All-time Completed:* ${stats.totalCompleted}`,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "*Pending by Priority:*",
+    `${PRIORITY_EMOJI.high} High: ${priorityStats.high}`,
+    `${PRIORITY_EMOJI.medium} Medium: ${priorityStats.medium}`,
+    `${PRIORITY_EMOJI.low} Low: ${priorityStats.low}`,
+  ];
+  
+  if (Object.keys(categoryStats).length > 0) {
+    message.push("");
+    message.push("*By Category:*");
+    Object.entries(categoryStats).forEach(([cat, s]) => {
+      const emoji = userTodos.categories[cat] || "📌";
+      message.push(`${emoji} ${cat}: ${s.completed}/${s.total}`);
+    });
+  }
+  
+  return message.join("\n");
+}
+
+// Pending task input tracking
+const pendingTodoInput = new Map();
+
+// Current filter state per user
+const todoFilters = new Map();
+
+function getTodoFilters(userId) {
+  return todoFilters.get(String(userId)) || {};
+}
+
+function setTodoFilters(userId, filters) {
+  todoFilters.set(String(userId), filters);
+}
+
+function clearTodoFilters(userId) {
+  todoFilters.delete(String(userId));
+}
+
+// Filter todos based on filters
+function filterTodos(tasks, filters) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  if (!filters || Object.keys(filters).length === 0) return tasks;
+  
+  return tasks.filter(task => {
+    if (filters.priority && task.priority !== filters.priority) return false;
+    if (filters.category && task.category !== filters.category) return false;
+    if (filters.completed !== undefined && task.completed !== filters.completed) return false;
+    if (filters.hasDueDate && !task.dueDate) return false;
+    return true;
+  });
+}
+
+// Sort todos based on sort option
+function sortTodos(tasks, sortBy) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  
+  const sorted = [...tasks];
+  
+  switch (sortBy) {
+    case 'priority':
+      const priorityOrder = { high: 0, medium: 1, low: 2, null: 3 };
+      sorted.sort((a, b) => (priorityOrder[a.priority] || 3) - (priorityOrder[b.priority] || 3));
+      break;
+    case 'dueDate':
+      sorted.sort((a, b) => {
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
+      });
+      break;
+    case 'category':
+      sorted.sort((a, b) => (a.category || 'zzz').localeCompare(b.category || 'zzz'));
+      break;
+    case 'created':
+    default:
+      sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      break;
+  }
+  
+  return sorted;
+}
+
+// Parse due date from natural language
+function parseTodoDueDate(input) {
+  const lower = input.toLowerCase().trim();
+  const today = new Date();
+  
+  if (lower === 'today') {
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'tomorrow') {
+    today.setDate(today.getDate() + 1);
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'nextweek' || lower === 'next week') {
+    today.setDate(today.getDate() + 7);
+    return today.toISOString().slice(0, 10);
+  }
+  
+  const dateMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    return input;
+  }
+  
+  const shortMatch = input.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (shortMatch) {
+    const month = parseInt(shortMatch[1]);
+    const day = parseInt(shortMatch[2]);
+    const year = today.getFullYear();
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  
+  return null;
+}
+
+// Parse task from text (supports inline options)
+// Format: task text #category !priority @date
+function parseTaskText(text) {
+  const result = {
+    text: text,
+    category: null,
+    priority: null,
+    dueDate: null
+  };
+  
+  const categoryMatch = text.match(/#(\w+)/);
+  if (categoryMatch) {
+    result.category = categoryMatch[1].toLowerCase();
+    result.text = result.text.replace(/#\w+/, '').trim();
+  }
+  
+  const priorityMatch = text.match(/!(high|med|medium|low|h|m|l)/i);
+  if (priorityMatch) {
+    const p = priorityMatch[1].toLowerCase();
+    if (p === 'h' || p === 'high') result.priority = 'high';
+    else if (p === 'm' || p === 'med' || p === 'medium') result.priority = 'medium';
+    else if (p === 'l' || p === 'low') result.priority = 'low';
+    result.text = result.text.replace(/!(high|med|medium|low|h|m|l)/i, '').trim();
+  }
+  
+  const dateMatch = text.match(/@(\S+)/);
+  if (dateMatch) {
+    result.dueDate = parseTodoDueDate(dateMatch[1]);
+    result.text = result.text.replace(/@\S+/, '').trim();
+  }
+  
+  return result;
+}
+
+// =====================
+// COLLABORATIVE TODO SYSTEM (Starz Check - Collab)
+// =====================
+
+// Generate unique list ID
+function generateCollabListId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+// Generate join code (shorter, user-friendly)
+function generateJoinCode() {
+  return crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+// Get all collab lists for a user
+function getCollabListsForUser(userId) {
+  const id = String(userId);
+  if (!collabTodosDb.userLists) collabTodosDb.userLists = {};
+  if (!collabTodosDb.userLists[id]) collabTodosDb.userLists[id] = [];
+  
+  // Return actual list objects
+  return collabTodosDb.userLists[id]
+    .map(listId => collabTodosDb.lists[listId])
+    .filter(Boolean);
+}
+
+// Get a specific collab list by ID
+function getCollabList(listId) {
+  return collabTodosDb.lists?.[listId] || null;
+}
+
+// Get a collab list by join code
+function getCollabListByCode(code) {
+  const upperCode = code.toUpperCase();
+  return Object.values(collabTodosDb.lists || {}).find(l => l.joinCode === upperCode) || null;
+}
+
+// Create a new collaborative list
+function createCollabList(userId, name, description = "") {
+  const listId = generateCollabListId();
+  const joinCode = generateJoinCode();
+  
+  if (!collabTodosDb.lists) collabTodosDb.lists = {};
+  if (!collabTodosDb.userLists) collabTodosDb.userLists = {};
+  
+  const list = {
+    id: listId,
+    name: name,
+    description: description,
+    joinCode: joinCode,
+    ownerId: String(userId),
+    members: [{ userId: String(userId), username: null, joinedAt: new Date().toISOString(), role: "owner" }],
+    tasks: [],
+    createdAt: new Date().toISOString(),
+    settings: {
+      allowMemberAdd: true,
+      showCompletedBy: true,
+      notifyOnComplete: true
+    },
+    stats: {
+      totalCreated: 0,
+      totalCompleted: 0
+    }
+  };
+  
+  collabTodosDb.lists[listId] = list;
+  
+  // Add to user's list
+  if (!collabTodosDb.userLists[String(userId)]) {
+    collabTodosDb.userLists[String(userId)] = [];
+  }
+  collabTodosDb.userLists[String(userId)].push(listId);
+  
+  saveCollabTodos();
+  return list;
+}
+
+// Join a collaborative list
+function joinCollabList(userId, joinCode, username = null) {
+  const list = getCollabListByCode(joinCode);
+  if (!list) return { success: false, error: "List not found" };
+  
+  const id = String(userId);
+  
+  // Check if already a member
+  if (list.members.some(m => m.userId === id)) {
+    return { success: false, error: "Already a member", list };
+  }
+  
+  // Add member
+  list.members.push({
+    userId: id,
+    username: username,
+    joinedAt: new Date().toISOString(),
+    role: "member"
+  });
+  
+  // Add to user's lists
+  if (!collabTodosDb.userLists[id]) {
+    collabTodosDb.userLists[id] = [];
+  }
+  if (!collabTodosDb.userLists[id].includes(list.id)) {
+    collabTodosDb.userLists[id].push(list.id);
+  }
+  
+  saveCollabTodos();
+  return { success: true, list };
+}
+
+// Leave a collaborative list
+function leaveCollabList(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return false;
+  
+  const id = String(userId);
+  
+  // Can't leave if owner
+  if (list.ownerId === id) {
+    return { success: false, error: "Owner cannot leave. Delete the list instead." };
+  }
+  
+  // Remove from members
+  list.members = list.members.filter(m => m.userId !== id);
+  
+  // Remove from user's lists
+  if (collabTodosDb.userLists[id]) {
+    collabTodosDb.userLists[id] = collabTodosDb.userLists[id].filter(lid => lid !== listId);
+  }
+  
+  saveCollabTodos();
+  return { success: true };
+}
+
+// Delete a collaborative list (owner only)
+function deleteCollabList(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return { success: false, error: "List not found" };
+  
+  if (list.ownerId !== String(userId)) {
+    return { success: false, error: "Only the owner can delete this list" };
+  }
+  
+  // Remove from all members' lists
+  list.members.forEach(m => {
+    if (collabTodosDb.userLists[m.userId]) {
+      collabTodosDb.userLists[m.userId] = collabTodosDb.userLists[m.userId].filter(lid => lid !== listId);
+    }
+  });
+  
+  // Delete the list
+  delete collabTodosDb.lists[listId];
+  
+  saveCollabTodos();
+  return { success: true };
+}
+
+// Add task to collaborative list
+function addCollabTask(userId, listId, taskData, username = null) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = {
+    id: generateTaskId(),
+    text: taskData.text,
+    completed: false,
+    priority: taskData.priority || "none",
+    category: taskData.category || "other",
+    dueDate: taskData.dueDate || null,
+    createdAt: new Date().toISOString(),
+    createdBy: { userId: String(userId), username },
+    completedAt: null,
+    completedBy: null,
+    assignedTo: taskData.assignedTo || null
+  };
+  
+  list.tasks.push(task);
+  list.stats.totalCreated++;
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Toggle collab task completion
+function toggleCollabTask(userId, listId, taskId, username = null) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = list.tasks.find(t => t.id === taskId);
+  if (!task) return null;
+  
+  task.completed = !task.completed;
+  
+  if (task.completed) {
+    task.completedAt = new Date().toISOString();
+    task.completedBy = { userId: String(userId), username };
+    list.stats.totalCompleted++;
+  } else {
+    task.completedAt = null;
+    task.completedBy = null;
+  }
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Delete collab task
+function deleteCollabTask(userId, listId, taskId) {
+  const list = getCollabList(listId);
+  if (!list) return false;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return false;
+  }
+  
+  const index = list.tasks.findIndex(t => t.id === taskId);
+  if (index === -1) return false;
+  
+  list.tasks.splice(index, 1);
+  saveCollabTodos();
+  return true;
+}
+
+// Get collab task by ID
+function getCollabTaskById(listId, taskId) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  return list.tasks.find(t => t.id === taskId) || null;
+}
+
+// Update collab task
+function updateCollabTask(userId, listId, taskId, updates) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = list.tasks.find(t => t.id === taskId);
+  if (!task) return null;
+  
+  if (updates.text !== undefined) task.text = updates.text;
+  if (updates.priority !== undefined) task.priority = updates.priority;
+  if (updates.category !== undefined) task.category = updates.category;
+  if (updates.dueDate !== undefined) task.dueDate = updates.dueDate;
+  if (updates.assignedTo !== undefined) task.assignedTo = updates.assignedTo;
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Clear completed tasks from collab list
+function clearCollabCompletedTasks(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return 0;
+  
+  // Check if user is owner or member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return 0;
+  }
+  
+  const beforeCount = list.tasks.length;
+  list.tasks = list.tasks.filter(t => !t.completed);
+  const removed = beforeCount - list.tasks.length;
+  
+  if (removed > 0) saveCollabTodos();
+  return removed;
+}
+
+// Build collab list display message
+function buildCollabListMessage(list, page = 0) {
+  const pageSize = 8;
+  const tasks = list.tasks;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const completedCount = tasks.filter(t => t.completed).length;
+  const pendingCount = tasks.length - completedCount;
+  
+  let message = [
+    `👥 <b>${escapeHTML(list.name)}</b>`,
+    ``,
+    `📊 ${pendingCount} pending • ${completedCount} done • ${list.members.length} members`,
+    `🔑 Join code: <code>${list.joinCode}</code>`,
+    ``,
+  ];
+  
+  if (pageTasks.length === 0) {
+    message.push(`<i>No tasks yet! Add one with the button below.</i>`);
+  } else {
+    pageTasks.forEach((task, i) => {
+      const idx = startIndex + i + 1;
+      const checkbox = task.completed ? "✅" : "⬜";
+      const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+      const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+      
+      let completedByText = "";
+      if (task.completed && task.completedBy && list.settings.showCompletedBy) {
+        const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+        completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+      }
+      
+      message.push(`${checkbox} ${idx}. ${text}${priorityIndicator}${completedByText}`);
+    });
+  }
+  
+  if (totalPages > 1) {
+    message.push(``);
+    message.push(`<i>Page ${currentPage + 1}/${totalPages}</i>`);
+  }
+  
+  message.push(``);
+  message.push(`<i>Tap task to toggle • Tap again for options</i>`);
+  
+  return message.join("\n");
+}
+
+// Build collab list keyboard
+function buildCollabListKeyboard(list, page = 0) {
+  const pageSize = 8;
+  const tasks = list.tasks;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const kb = new InlineKeyboard();
+  
+  // Task toggle buttons (2 per row)
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    kb.text(`${icon1} ${startIndex + i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (pageTasks[i + 1]) {
+      const task2 = pageTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      kb.text(`${icon2} ${startIndex + i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    kb.row();
+  }
+  
+  // Pagination
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      kb.text("◀️", `ct_page:${list.id}:${currentPage - 1}`);
+    }
+    kb.text(`${currentPage + 1}/${totalPages}`, "ct_noop");
+    if (currentPage < totalPages - 1) {
+      kb.text("▶️", `ct_page:${list.id}:${currentPage + 1}`);
+    }
+    kb.row();
+  }
+  
+  // Action buttons
+  kb.text("➕ Add Task", `ct_add:${list.id}`)
+    .text("🗑️ Clear Done", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .switchInlineCurrent("← My Lists", "ct: ");
+  
+  return kb;
+}
+
+// /todo - Advanced todo/checklist command
+bot.command("todo", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  const args = ctx.message.text.replace(/^\/todo\s*/i, "").trim();
+  const parts = args.split(/\s+/);
+  const subcommand = parts[0]?.toLowerCase();
+  const rest = parts.slice(1).join(" ").trim();
+  
+  // No subcommand - show task list
+  if (!subcommand) {
+    const filters = getTodoFilters(u.id);
+    await ctx.reply(buildTodoListMessage(u.id, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(u.id, 0, filters),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo add <task>
+  if (subcommand === "add" || subcommand === "a") {
+    if (!rest) {
+      return ctx.reply(
+        "📋 *Add Task*\n\n" +
+        "Usage: `/todo add Buy groceries`\n\n" +
+        "*Quick options:*\n" +
+        "• `#work` - Set category\n" +
+        "• `!high` - Set priority (high/med/low)\n" +
+        "• `@today` - Set due date (today/tomorrow/nextweek)\n\n" +
+        "Example: `/todo add Finish report #work !high @tomorrow`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const parsed = parseTaskText(rest);
+    if (!parsed.text) {
+      return ctx.reply("❌ Task text cannot be empty!", { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = createTask(u.id, parsed);
+    const userTodos = getUserTodos(u.id);
+    
+    let confirmMsg = `✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`;
+    if (parsed.dueDate) confirmMsg += `\n📅 Due: ${parsed.dueDate}`;
+    if (parsed.priority) confirmMsg += `\n${PRIORITY_EMOJI[parsed.priority]} Priority: ${PRIORITY_LABELS[parsed.priority]}`;
+    
+    await ctx.reply(confirmMsg, {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo done <number>
+  if (subcommand === "done" || subcommand === "d" || subcommand === "check") {
+    const num = parseInt(rest);
+    if (!num || num < 1) {
+      return ctx.reply("Usage: `/todo done 1` (task number)", { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const tasks = getFilteredTasks(u.id, getTodoFilters(u.id));
+    if (num > tasks.length) {
+      return ctx.reply(`❌ Task #${num} not found. You have ${tasks.length} tasks.`, { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = tasks[num - 1];
+    toggleTaskCompletion(u.id, task.id);
+    
+    const status = task.completed ? "completed" : "marked incomplete";
+    const emoji = task.completed ? "✅" : "⬜";
+    
+    await ctx.reply(`${emoji} Task #${num} ${status}!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo delete <number>
+  if (subcommand === "delete" || subcommand === "del" || subcommand === "rm") {
+    const num = parseInt(rest);
+    if (!num || num < 1) {
+      return ctx.reply("Usage: `/todo delete 1` (task number)", { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const tasks = getFilteredTasks(u.id, getTodoFilters(u.id));
+    if (num > tasks.length) {
+      return ctx.reply(`❌ Task #${num} not found. You have ${tasks.length} tasks.`, { reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const task = tasks[num - 1];
+    deleteTaskById(u.id, task.id);
+    
+    await ctx.reply(`🗑️ Task #${num} deleted!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo clear - Clear all completed tasks
+  if (subcommand === "clear") {
+    const userTodos = getUserTodos(u.id);
+    const beforeCount = userTodos.tasks.length;
+    userTodos.tasks = userTodos.tasks.filter(t => !t.completed);
+    const removed = beforeCount - userTodos.tasks.length;
+    saveTodos();
+    
+    await ctx.reply(`🗑️ Cleared ${removed} completed task${removed !== 1 ? 's' : ''}!`, {
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo stats - Show statistics
+  if (subcommand === "stats") {
+    await ctx.reply(buildTodoStatsMessage(u.id), {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // /todo help
+  if (subcommand === "help") {
+    const helpMsg = [
+      "📋 *Todo Commands*",
+      "",
+      "`/todo` - View your task list",
+      "`/todo add <task>` - Add a new task",
+      "`/todo done <#>` - Toggle task completion",
+      "`/todo delete <#>` - Delete a task",
+      "`/todo clear` - Clear completed tasks",
+      "`/todo stats` - View statistics",
+      "",
+      "*Quick Add Options:*",
+      "• `#category` - work, personal, shopping, etc.",
+      "• `!priority` - high, med, low",
+      "• `@date` - today, tomorrow, nextweek, or YYYY-MM-DD",
+      "",
+      "*Example:*",
+      "`/todo add Buy milk #shopping !low @tomorrow`",
+    ].join("\n");
+    
+    await ctx.reply(helpMsg, {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+    return;
+  }
+  
+  // Unknown subcommand - treat as quick add
+  const parsed = parseTaskText(args);
+  if (parsed.text) {
+    const task = createTask(u.id, parsed);
+    const userTodos = getUserTodos(u.id);
+    
+    await ctx.reply(`✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`, {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list"),
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  } else {
+    await ctx.reply("Use `/todo help` to see available commands.", {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    });
+  }
+});
+
+// /collab - Collaborative todo lists command
+bot.command("collab", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  const args = ctx.message.text.replace(/^\/collab\s*/i, "").trim();
+  const parts = args.split(/\s+/);
+  const subcommand = parts[0]?.toLowerCase();
+  const rest = parts.slice(1).join(" ").trim();
+  
+  // No subcommand - show collab lists
+  if (!subcommand) {
+    const userLists = getCollabListsForUser(u.id);
+    
+    if (userLists.length === 0) {
+      await ctx.reply(
+        "👥 *Starz Check - Collaborative*\n\n" +
+        "_No shared lists yet!_\n\n" +
+        "*Create a new list:*\n" +
+        "`/collab new Party Planning`\n\n" +
+        "*Or join with a code:*\n" +
+        "`/collab join ABC123`",
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("➕ Create List", "collab_create")
+            .text("🔗 Join List", "collab_join")
+            .row()
+            .text("📋 Personal Tasks", "todo_list"),
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+      return;
+    }
+    
+    let message = [
+      "👥 *Starz Check - Collaborative*",
+      "",
+      `You have ${userLists.length} shared list${userLists.length !== 1 ? 's' : ''}:`,
+      "",
+    ];
+    
+    const kb = new InlineKeyboard();
+    
+    userLists.slice(0, 8).forEach((list, i) => {
+      const pendingCount = list.tasks.filter(t => !t.completed).length;
+      const isOwner = list.ownerId === String(u.id);
+      const ownerBadge = isOwner ? " 👑" : "";
+      message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
+      
+      kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
+      if ((i + 1) % 2 === 0) kb.row();
+    });
+    
+    if (userLists.length % 2 !== 0) kb.row();
+    
+    kb.text("➕ Create", "collab_create")
+      .text("🔗 Join", "collab_join")
+      .row()
+      .text("📋 Personal Tasks", "todo_list");
+    
+    await ctx.reply(message.join("\n"), {
+      parse_mode: "Markdown",
+      reply_markup: kb,
+      reply_to_message_id: ctx.message?.message_id
+    });
+    return;
+  }
+  
+  // /collab new <name>
+  if (subcommand === "new" || subcommand === "create") {
+    if (!rest) {
+      return ctx.reply(
+        "➕ *Create Collaborative List*\n\n" +
+        "Usage: `/collab new Party Planning`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const listName = rest.slice(0, 50);
+    const newList = createCollabList(u.id, listName);
+    
+    await ctx.reply(
+      `✅ *List Created!*\n\n👥 *${listName}*\n\n🔑 Share this code with others:\n\`${newList.joinCode}\`\n\nThey can join with:\n\`/collab join ${newList.joinCode}\``,
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard()
+          .text("📋 View List", `collab_open:${newList.id}`)
+          .text("👥 All Lists", "collab_list"),
+        reply_to_message_id: ctx.message?.message_id
+      }
+    );
+    return;
+  }
+  
+  // /collab join <code>
+  if (subcommand === "join") {
+    if (!rest) {
+      return ctx.reply(
+        "🔗 *Join Collaborative List*\n\n" +
+        "Usage: `/collab join ABC123`",
+        { parse_mode: "Markdown", reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    const joinCode = rest.toUpperCase();
+    const result = joinCollabList(u.id, joinCode, ctx.from?.username);
+    
+    if (result.success) {
+      const list = result.list;
+      await ctx.reply(
+        `✅ *Joined Successfully!*\n\n👥 *${list.name}*\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("📋 View List", `collab_open:${list.id}`)
+            .text("👥 All Lists", "collab_list"),
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+    } else {
+      await ctx.reply(
+        `⚠️ *${result.error || "Could not join list"}*\n\nCheck the code and try again.`,
+        {
+          parse_mode: "Markdown",
+          reply_to_message_id: ctx.message?.message_id
+        }
+      );
+    }
+    return;
+  }
+  
+  // /collab help
+  if (subcommand === "help") {
+    const helpMsg = [
+      "👥 *Collaborative Lists Commands*",
+      "",
+      "`/collab` - View your shared lists",
+      "`/collab new <name>` - Create a new list",
+      "`/collab join <code>` - Join with a code",
+      "",
+      "*Inside a list:*",
+      "• Tap task numbers to toggle",
+      "• Tap again for options",
+      "• Share the code with friends",
+      "• Everyone can add & check tasks",
+    ].join("\n");
+    
+    await ctx.reply(helpMsg, {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id
+    });
+    return;
+  }
+  
+  // Unknown - show help
+  await ctx.reply("Use `/collab help` to see available commands.", {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// Todo callback handlers
+bot.callbackQuery("todo_list", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {
+    // Message unchanged, ignore
+  }
+});
+
+bot.callbackQuery(/^todo_toggle:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_page:(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const page = parseInt(ctx.match[1]);
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, page, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, page, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_add", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "add", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "📋 *Add New Task*\n\n" +
+      "Type your task below:\n\n" +
+      "*Quick options:*\n" +
+      "• `#work` - Set category\n" +
+      "• `!high` - Set priority\n" +
+      "• `@today` - Set due date\n\n" +
+      "_Example: Buy groceries #shopping !low @tomorrow_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "todo_list")
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_clear_done", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  const beforeCount = userTodos.tasks.length;
+  userTodos.tasks = userTodos.tasks.filter(t => !t.completed);
+  const removed = beforeCount - userTodos.tasks.length;
+  saveTodos();
+  
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${removed} completed task${removed !== 1 ? 's' : ''}!` });
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_filter", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  try {
+    await ctx.editMessageText(
+      "🔍 *Filter Tasks*\n\n" +
+      "Select a filter to apply:",
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoFilterKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_due:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const dueFilter = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), dueFilter };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${dueFilter}` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_priority:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), priority };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${priority} priority` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_filter_category:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const category = ctx.match[1];
+  const filters = { ...getTodoFilters(userId), category };
+  setTodoFilters(userId, filters);
+  
+  await ctx.answerCallbackQuery({ text: `Filter: ${category}` });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_toggle_completed", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.showCompleted = !userTodos.settings.showCompleted;
+  saveTodos();
+  
+  const status = userTodos.settings.showCompleted ? "Showing" : "Hiding";
+  await ctx.answerCallbackQuery({ text: `${status} completed tasks` });
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_clear_filters", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  clearTodoFilters(userId);
+  
+  await ctx.answerCallbackQuery({ text: "Filters cleared" });
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, {}), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, {})
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_settings", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userTodos = getUserTodos(userId);
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_sort:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const sortBy = ctx.match[1];
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.sortBy = sortBy;
+  saveTodos();
+  
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  await ctx.answerCallbackQuery({ text: `Sort by: ${sortLabels[sortBy]}` });
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^todo_default_priority:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  const userTodos = getUserTodos(userId);
+  userTodos.settings.defaultPriority = priority;
+  saveTodos();
+  
+  await ctx.answerCallbackQuery({ text: `Default priority: ${PRIORITY_LABELS[priority]}` });
+  
+  const sortLabels = { created: 'Created', priority: 'Priority', dueDate: 'Due Date', category: 'Category' };
+  
+  try {
+    await ctx.editMessageText(
+      "⚙️ *Task Settings*\n\n" +
+      `📊 *Sort by:* ${sortLabels[userTodos.settings.sortBy]}\n` +
+      `${PRIORITY_EMOJI[userTodos.settings.defaultPriority]} *Default Priority:* ${PRIORITY_LABELS[userTodos.settings.defaultPriority]}\n` +
+      `👁️ *Show Completed:* ${userTodos.settings.showCompleted ? 'Yes' : 'No'}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildTodoSettingsKeyboard(userId)
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  try {
+    await ctx.editMessageText(buildTodoStatsMessage(userId), {
+      parse_mode: "Markdown",
+      reply_markup: new InlineKeyboard().text("« Back to Tasks", "todo_list")
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("todo_noop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
+// Collab list callback from personal todo
+bot.callbackQuery("collab_list", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userLists = getCollabListsForUser(userId);
+  
+  if (userLists.length === 0) {
+    try {
+      await ctx.editMessageText(
+        "👥 *Starz Check - Collaborative*\n\n" +
+        "_No shared lists yet!_\n\n" +
+        "*Create a new list:*\n" +
+        "`/collab new Party Planning`\n\n" +
+        "*Or join with a code:*\n" +
+        "`/collab join ABC123`",
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("➕ Create List", "collab_create")
+            .text("🔗 Join List", "collab_join")
+            .row()
+            .text("« Back to Personal", "todo_list")
+        }
+      );
+    } catch (e) {}
+    return;
+  }
+  
+  // Show list of collaborative lists
+  let message = [
+    "👥 *Starz Check - Collaborative*",
+    "",
+    `You have ${userLists.length} shared list${userLists.length !== 1 ? 's' : ''}:`,
+    "",
+  ];
+  
+  const kb = new InlineKeyboard();
+  
+  userLists.slice(0, 8).forEach((list, i) => {
+    const pendingCount = list.tasks.filter(t => !t.completed).length;
+    const isOwner = list.ownerId === String(userId);
+    const ownerBadge = isOwner ? " 👑" : "";
+    message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
+    
+    kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  
+  if (userLists.length % 2 !== 0) kb.row();
+  
+  kb.text("➕ Create", "collab_create")
+    .text("🔗 Join", "collab_join")
+    .row()
+    .text("« Back to Personal", "todo_list");
+  
+  try {
+    await ctx.editMessageText(message.join("\n"), {
+      parse_mode: "Markdown",
+      reply_markup: kb
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^collab_open:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  
+  if (!list) {
+    try {
+      await ctx.editMessageText("⚠️ List not found.", {
+        reply_markup: new InlineKeyboard().text("« Back", "collab_list")
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  // Replace the inline switch button with a DM-friendly back button
+  // We need to rebuild the keyboard for DM context
+  const dmKeyboard = new InlineKeyboard();
+  
+  const pageSize = 8;
+  const pageTasks = list.tasks.slice(0, pageSize);
+  
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    dmKeyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (pageTasks[i + 1]) {
+      const task2 = pageTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      dmKeyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    dmKeyboard.row();
+  }
+  
+  dmKeyboard
+    .text("➕ Add", `ct_add:${list.id}`)
+    .text("🗑️ Clear", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .text("« My Lists", "collab_list");
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: dmKeyboard
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_create", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_create", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "➕ *Create Collaborative List*\n\n" +
+      "Type a name for your shared list:\n\n" +
+      "_Example: Party Planning_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_join", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_join", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "🔗 *Join Collaborative List*\n\n" +
+      "Enter the join code:\n\n" +
+      "_Example: ABC123_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
+});
+
+// =====================
+// INLINE TODO CALLBACK HANDLERS
+// Double-tap pattern: first tap toggles, second tap within 3s opens action menu
+// =====================
+
+// Track last tap for double-tap detection
+const inlineTodoLastTap = new Map(); // oduserId -> { taskId, timestamp }
+
+bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const now = Date.now();
+  const lastTap = inlineTodoLastTap.get(userId);
+  
+  // Check for double-tap (same task within 3 seconds)
+  if (lastTap && lastTap.taskId === taskId && (now - lastTap.timestamp) < 3000) {
+    // Double-tap detected - show action menu
+    inlineTodoLastTap.delete(userId);
+    await ctx.answerCallbackQuery({ text: "⚙️ Opening options..." });
+    
+    const task = getTaskById(userId, taskId);
+    if (!task) {
+      return ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    }
+    
+    const checkbox = task.completed ? "✅" : "⬜";
+    const categoryEmoji = getCategoryEmoji(task.category);
+    const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+    const dueText = task.dueDate ? `\n📅 Due: ${task.dueDate}` : "";
+    
+    const menuText = [
+      `⚙️ <b>Task Options</b>`,
+      ``,
+      `${checkbox} ${escapeHTML(task.text)}`,
+      ``,
+      `${categoryEmoji} ${escapeHTML(task.category || "personal")} • ${priorityText}${dueText}`,
+      ``,
+      `<i>Choose an action:</i>`,
+    ].join("\n");
+    
+    const keyboard = new InlineKeyboard()
+      .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+      .text("🗑️ Delete", `itodo_delete:${taskId}`)
+      .row()
+      .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+      .row()
+      .text("🔴 High", `itodo_priority:${taskId}:high`)
+      .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+      .text("🟢 Low", `itodo_priority:${taskId}:low`)
+      .row()
+      .text("📅 Today", `itodo_due:${taskId}:today`)
+      .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+      .row()
+      .text("← Back to List", "itodo_back");
+    
+    try {
+      await ctx.editMessageText(menuText, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  // First tap - toggle the task
+  inlineTodoLastTap.set(userId, { taskId, timestamp: now });
+  
+  // Auto-clear after 3 seconds
+  setTimeout(() => {
+    const current = inlineTodoLastTap.get(userId);
+    if (current && current.taskId === taskId && current.timestamp === now) {
+      inlineTodoLastTap.delete(userId);
+    }
+  }, 3000);
+  
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    const status = task.completed ? "✅ Done! Tap again for options" : "⬜ Unchecked! Tap again for options";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the task list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+// Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    await ctx.answerCallbackQuery({ text: task.completed ? "✅ Completed!" : "⬜ Unchecked!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  // Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const deleted = deleteTask(userId, taskId);
+  
+  if (deleted) {
+    await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  if (taskCount === 0) {
+    try {
+      await ctx.editMessageText("📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Tasks</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Add Task", "itodo_add")
+          .row()
+          .switchInlineCurrent("← Back", ""),
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  // Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_priority:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const priority = ctx.match[2];
+  
+  const task = updateTask(userId, taskId, { priority });
+  
+  if (task) {
+    const emoji = priority === "high" ? "🔴" : priority === "medium" ? "🟡" : "🟢";
+    await ctx.answerCallbackQuery({ text: `${emoji} Priority set to ${priority}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the action menu
+  const updatedTask = getTaskById(userId, taskId);
+  if (!updatedTask) return;
+  
+  const checkbox = updatedTask.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(updatedTask.category);
+  const priorityText = updatedTask.priority === "high" ? "🔴 High" : updatedTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = updatedTask.dueDate ? `\n📅 Due: ${updatedTask.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(updatedTask.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(updatedTask.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(updatedTask.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_due:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const dueOption = ctx.match[2];
+  
+  let dueDate;
+  const today = new Date();
+  if (dueOption === "today") {
+    dueDate = today.toISOString().split("T")[0];
+  } else if (dueOption === "tomorrow") {
+    today.setDate(today.getDate() + 1);
+    dueDate = today.toISOString().split("T")[0];
+  } else {
+    dueDate = dueOption;
+  }
+  
+  const task = updateTask(userId, taskId, { dueDate });
+  
+  if (task) {
+    await ctx.answerCallbackQuery({ text: `📅 Due date set to ${dueDate}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the action menu
+  const updatedTask = getTaskById(userId, taskId);
+  if (!updatedTask) return;
+  
+  const checkbox = updatedTask.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(updatedTask.category);
+  const priorityText = updatedTask.priority === "high" ? "🔴 High" : updatedTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = updatedTask.dueDate ? `\n📅 Due: ${updatedTask.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(updatedTask.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(updatedTask.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(updatedTask.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_edit:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = getTaskById(userId, taskId);
+  
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery({ text: "✏️ Tap button to edit" });
+  
+  // Show edit with switchInlineCurrent to pre-fill
+  const editText = [
+    `✏️ <b>Edit Task</b>`,
+    ``,
+    `Current: ${escapeHTML(task.text)}`,
+    ``,
+    `Tap the button below to edit:`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(editText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .switchInlineCurrent("✏️ Edit Now", `sc:edit ${taskId} `)
+        .row()
+        .text("← Back to Task", `itodo_view:${taskId}`)
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_view:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = getTaskById(userId, taskId);
+  
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  const checkbox = task.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(task.category);
+  const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = task.dueDate ? `\n📅 Due: ${task.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(task.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(task.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_back", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const tasks = todos.tasks || [];
+  const taskCount = tasks.length;
+  const doneCount = tasks.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  if (taskCount === 0) {
+    try {
+      await ctx.editMessageText("📋 <b>Starz Check - Personal</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Starz Check</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Add Task", "itodo_add")
+          .row()
+          .switchInlineCurrent("← Back", ""),
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const filteredTodos = filterTodos(tasks, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  // Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_add", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  // Just switch to inline mode directly - no instruction text needed
+  try {
+    await ctx.editMessageReplyMarkup({
+      reply_markup: new InlineKeyboard()
+        .switchInlineCurrent("➕ Type task here...", "t:add ")
+        .row()
+        .text("← Back", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_filter", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const filters = getTodoFilters(userId);
+  
+  const filterText = [
+    `🔍 <b>Filter Tasks</b>`,
+    ``,
+    `Current filters:`,
+    `• Priority: ${filters.priority || "All"}`,
+    `• Category: ${filters.category || "All"}`,
+    `• Sort by: ${filters.sortBy || "created"}`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔴 High", "itodo_fpri:high")
+    .text("🟡 Med", "itodo_fpri:medium")
+    .text("🟢 Low", "itodo_fpri:low")
+    .row()
+    .text("💼 Work", "itodo_fcat:work")
+    .text("👤 Personal", "itodo_fcat:personal")
+    .text("🛒 Shop", "itodo_fcat:shopping")
+    .row()
+    .text("📅 By Date", "itodo_sort:dueDate")
+    .text("🔴 By Priority", "itodo_sort:priority")
+    .row()
+    .text("❌ Clear Filters", "itodo_fclear")
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(filterText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  setTodoFilter(userId, "priority", priority);
+  await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${priority} priority` });
+  
+  // Go back to list with filter applied
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  const taskCount = filteredTodos.length;
+  const doneCount = filteredTodos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  // Compact title with filter indicator
+  let taskListText = `✅ <b>Starz Check</b> 🔍${priority}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("❌ Clear", "itodo_fclear")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const category = ctx.match[1];
+  setTodoFilter(userId, "category", category);
+  await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${category}` });
+  
+  // Go back to list with filter applied
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  const taskCount = filteredTodos.length;
+  const doneCount = filteredTodos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  // Compact title with filter indicator
+  let taskListText = `✅ <b>Starz Check</b> 🔍${category}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("❌ Clear", "itodo_fclear")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_sort:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const sortBy = ctx.match[1];
+  setTodoFilter(userId, "sortBy", sortBy);
+  await ctx.answerCallbackQuery({ text: `📊 Sorting by ${sortBy}` });
+  
+  // Go back to filter menu
+  const filters = getTodoFilters(userId);
+  
+  const filterText = [
+    `🔍 <b>Filter Tasks</b>`,
+    ``,
+    `Current filters:`,
+    `• Priority: ${filters.priority || "All"}`,
+    `• Category: ${filters.category || "All"}`,
+    `• Sort by: ${filters.sortBy || "created"}`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔴 High", "itodo_fpri:high")
+    .text("🟡 Med", "itodo_fpri:medium")
+    .text("🟢 Low", "itodo_fpri:low")
+    .row()
+    .text("💼 Work", "itodo_fcat:work")
+    .text("👤 Personal", "itodo_fcat:personal")
+    .text("🛒 Shop", "itodo_fcat:shopping")
+    .row()
+    .text("📅 By Date", "itodo_sort:dueDate")
+    .text("🔴 By Priority", "itodo_sort:priority")
+    .row()
+    .text("❌ Clear Filters", "itodo_fclear")
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(filterText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_fclear", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  clearTodoFilters(userId);
+  await ctx.answerCallbackQuery({ text: "❌ Filters cleared" });
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const sortedTodos = sortTodos(todos, "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  // Compact title only - tasks are buttons
+  const streak = getCompletionStreak(userId);
+  let taskListText = `✅ <b>Starz Check</b>`;
+  if (streak > 0) taskListText += ` 🔥${streak}`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_clear_done", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const cleared = clearCompletedTasks(userId);
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
+  
+  // Go back to stats
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_collab", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userLists = getCollabListsForUser(userId);
+  
+  let collabText = `👥 <b>Collab Lists</b>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  if (userLists.length === 0) {
+    keyboard.text("📋 No lists yet", "ct_create").row();
+  } else {
+    userLists.slice(0, 5).forEach((list) => {
+      const doneCount = list.tasks.filter(t => t.completed).length;
+      const totalCount = list.tasks.length;
+      keyboard.text(`📋 ${list.name} (${doneCount}/${totalCount})`, `ct_open:${list.id}`).row();
+    });
+  }
+  
+  keyboard
+    .text("➕ Create", "ct_create")
+    .text("🔗 Join", "ct_join")
+    .row()
+    .text("← Back", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(collabText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+// =====================
+// COLLABORATIVE TODO CALLBACKS HANDLERS
+// =====================
+
+// Track last tap for collab double-tap detection
+const collabTodoLastTap = new Map();
+
+bot.callbackQuery(/^ct_tap:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  const now = Date.now();
+  const lastTap = collabTodoLastTap.get(userId);
+  
+  // Check for double-tap (same task within 3 seconds)
+  if (lastTap && lastTap.taskId === taskId && lastTap.listId === listId && (now - lastTap.timestamp) < 3000) {
+    // Double-tap detected - show action menu
+    collabTodoLastTap.delete(userId);
+    await ctx.answerCallbackQuery({ text: "⚙️ Opening options..." });
+    
+    const list = getCollabList(listId);
+    const task = list?.tasks.find(t => t.id === taskId);
+    if (!task || !list) {
+      return ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    }
+    
+    const checkbox = task.completed ? "✅" : "⬜";
+    const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+    
+    let completedByText = "";
+    if (task.completed && task.completedBy) {
+      const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+      completedByText = `\n✅ Completed by: ${escapeHTML(completer)}`;
+    }
+    
+    const menuText = [
+      `⚙️ <b>Task Options</b>`,
+      ``,
+      `${checkbox} ${escapeHTML(task.text)}`,
+      ``,
+      `👥 List: <b>${escapeHTML(list.name)}</b>`,
+      `🎯 Priority: ${priorityText}${completedByText}`,
+      ``,
+      `<i>Choose an action:</i>`,
+    ].join("\n");
+    
+    const keyboard = new InlineKeyboard()
+      .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `ct_toggle:${listId}:${taskId}`)
+      .text("🗑️ Delete", `ct_delete:${listId}:${taskId}`)
+      .row()
+      .text("🔴 High", `ct_pri:${listId}:${taskId}:high`)
+      .text("🟡 Med", `ct_pri:${listId}:${taskId}:medium`)
+      .text("🟢 Low", `ct_pri:${listId}:${taskId}:low`)
+      .row()
+      .text("← Back to List", `ct_back:${listId}`);
+    
+    try {
+      await ctx.editMessageText(menuText, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  // First tap - toggle task
+  collabTodoLastTap.set(userId, { listId, taskId, timestamp: now });
+  setTimeout(() => {
+    const tap = collabTodoLastTap.get(userId);
+    if (tap && tap.taskId === taskId && tap.listId === listId) {
+      collabTodoLastTap.delete(userId);
+    }
+  }, 3000);
+  
+  const task = toggleCollabTask(userId, listId, taskId, ctx.from?.username);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not toggle task", show_alert: true });
+    return;
+  }
+  
+  // Refresh the list view
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const pendingCount = list.tasks.filter(t => !t.completed).length;
+  const doneCount = list.tasks.filter(t => t.completed).length;
+  const isOwner = list.ownerId === String(userId);
+  
+  let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+  listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+  listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+  
+  if (list.tasks.length === 0) {
+    listText += `<i>No tasks yet!</i>\n`;
+  } else {
+    const displayTasks = list.tasks.slice(0, 8);
+    displayTasks.forEach((t, i) => {
+      const checkbox = t.completed ? "✅" : "⬜";
+      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+      const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+      
+      let completedByText = "";
+      if (t.completed && t.completedBy && list.settings.showCompletedBy) {
+        const completer = t.completedBy.username || `User ${t.completedBy.userId.slice(-4)}`;
+        completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+      }
+      
+      listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+    });
+    
+    if (list.tasks.length > 8) {
+      listText += `\n<i>+${list.tasks.length - 8} more tasks...</i>\n`;
+    }
+  }
+  
+  listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  const displayTasks = list.tasks.slice(0, 6);
+  for (let i = 0; i < displayTasks.length; i += 2) {
+    const task1 = displayTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (displayTasks[i + 1]) {
+      const task2 = displayTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", `ct_add:${list.id}`)
+    .text("🗑️ Clear", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .switchInlineCurrent("← My Lists", "ct: ");
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_toggle:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  
+  const task = toggleCollabTask(userId, listId, taskId, ctx.from?.username);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not toggle task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const pendingCount = list.tasks.filter(t => !t.completed).length;
+  const doneCount = list.tasks.filter(t => t.completed).length;
+  const isOwner = list.ownerId === String(userId);
+  
+  let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+  listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+  listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+  
+  const displayTasks = list.tasks.slice(0, 8);
+  displayTasks.forEach((t, i) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    
+    let completedByText = "";
+    if (t.completed && t.completedBy && list.settings.showCompletedBy) {
+      const completer = t.completedBy.username || `User ${t.completedBy.userId.slice(-4)}`;
+      completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+    }
+    
+    listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+  });
+  
+  listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_delete:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  
+  const deleted = deleteCollabTask(userId, listId, taskId);
+  
+  if (deleted) {
+    await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not delete task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_pri:(.+):(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  const priority = ctx.match[3];
+  
+  const task = updateCollabTask(userId, listId, taskId, { priority });
+  
+  if (task) {
+    const emoji = priority === "high" ? "🔴" : priority === "medium" ? "🟡" : "🟢";
+    await ctx.answerCallbackQuery({ text: `${emoji} Priority set to ${priority}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not update task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_back:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_add:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery({ text: "➕ Use inline to add task" });
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const addText = [
+    `➕ <b>Add Task to ${escapeHTML(list.name)}</b>`,
+    ``,
+    `Type in inline mode:`,
+    `<code>ct:add:${listId} Your task here</code>`,
+    ``,
+    `<i>Quick options:</i>`,
+    `• <code>#work</code> - Set category`,
+    `• <code>!high</code> - Set priority`,
+    `• <code>@today</code> - Set due date`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(addText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .switchInlineCurrent("➕ Add Task", `ct:add:${listId} `)
+        .row()
+        .text("← Back to List", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_clear:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const cleared = clearCollabCompletedTasks(userId, listId);
+  
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
+  
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_members:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const isOwner = list.ownerId === String(userId);
+  
+  let membersText = [
+    `👥 <b>Members of ${escapeHTML(list.name)}</b>`,
+    ``,
+  ];
+  
+  list.members.forEach((m, i) => {
+    const roleEmoji = m.role === "owner" ? " 👑" : "";
+    const name = m.username ? `@${m.username}` : `User ${m.userId.slice(-4)}`;
+    membersText.push(`${i + 1}. ${escapeHTML(name)}${roleEmoji}`);
+  });
+  
+  membersText.push(``);
+  membersText.push(`🔑 Share code: <code>${list.joinCode}</code>`);
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔗 Share Code", `ct_share:${listId}`)
+    .row();
+  
+  if (isOwner) {
+    keyboard.text("🗑️ Delete List", `ct_delete_list:${listId}`).row();
+  } else {
+    keyboard.text("🚪 Leave List", `ct_leave:${listId}`).row();
+  }
+  
+  keyboard.text("← Back to List", `ct_back:${listId}`);
+  
+  try {
+    await ctx.editMessageText(membersText.join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_share:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const shareText = [
+    `🔗 <b>Share ${escapeHTML(list.name)}</b>`,
+    ``,
+    `Share this code with others:`,
+    `<code>${list.joinCode}</code>`,
+    ``,
+    `They can join by typing:`,
+    `<code>ct:join ${list.joinCode}</code>`,
+    ``,
+    `Or share this message directly!`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(shareText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("← Back to List", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_leave:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const result = leaveCollabList(userId, listId);
+  
+  if (result.success) {
+    await ctx.answerCallbackQuery({ text: "🚪 Left the list!" });
+    
+    try {
+      await ctx.editMessageText("🚪 <b>You left the list.</b>\n\n<i>via StarzAI • Starz Check</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: "),
+      });
+    } catch (e) {}
+  } else {
+    await ctx.answerCallbackQuery({ text: result.error || "Could not leave list", show_alert: true });
+  }
+});
+
+bot.callbackQuery(/^ct_delete_list:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  // Show confirmation
+  const confirmText = [
+    `⚠️ <b>Delete ${escapeHTML(list.name)}?</b>`,
+    ``,
+    `This will permanently delete the list and all ${list.tasks.length} tasks.`,
+    ``,
+    `All ${list.members.length} members will lose access.`,
+    ``,
+    `<b>This cannot be undone!</b>`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(confirmText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Yes, Delete", `ct_confirm_delete:${listId}`)
+        .text("❌ Cancel", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_confirm_delete:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const result = deleteCollabList(userId, listId);
+  
+  if (result.success) {
+    await ctx.answerCallbackQuery({ text: "🗑️ List deleted!" });
+    
+    try {
+      await ctx.editMessageText("🗑️ <b>List deleted.</b>\n\n<i>via StarzAI • Starz Check</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: "),
+      });
+    } catch (e) {}
+  } else {
+    await ctx.answerCallbackQuery({ text: result.error || "Could not delete list", show_alert: true });
+  }
+});
+
+bot.callbackQuery(/^ct_page:(.+):(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const page = parseInt(ctx.match[2]);
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, page);
+  const keyboard = buildCollabListKeyboard(list, page);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("ct_noop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
 // /persona - Set custom AI personality
 bot.command("persona", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -8985,12 +12440,19 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
+    "",
+    "📋 *Task Manager*",
+    "Advanced to-do list with priorities!",
+    "• `/todo` - View your tasks",
+    "• `/todo add task` - Quick add",
+    "• Categories, due dates, streaks",
   ].join("\n");
   
   const kb = new InlineKeyboard()
+    .text("📋 Tasks", "todo_list")
     .text("🎨 Image Settings", "menu_imgset")
-    .text("💳 Plans & Benefits", "menu_plans")
     .row()
+    .text("💳 Plans & Benefits", "menu_plans")
     .text("« Back to Menu", "menu_back");
   
   try {
@@ -10367,6 +13829,77 @@ bot.on("message:text", async (ctx) => {
   const isCharacterMessage = replyTo?.text?.startsWith("🎭");
   // (Replies are handled as normal messages below)
 
+  // Check if user has pending todo input
+  const pendingTodo = pendingTodoInput.get(String(u.id));
+  if (pendingTodo && chat.type === "private") {
+    pendingTodoInput.delete(String(u.id));
+    
+    // Check if not expired (5 min timeout)
+    if (Date.now() - pendingTodo.timestamp < 5 * 60 * 1000) {
+      if (pendingTodo.action === "add" && text.trim()) {
+        const parsed = parseTaskText(text.trim());
+        if (parsed.text) {
+          const task = createTask(u.id, parsed);
+          const userTodos = getUserTodos(u.id);
+          
+          await ctx.reply(
+            `✅ *Task added!*\n\n${formatTaskDisplay(task, userTodos, false)}`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard().text("📋 View Tasks", "todo_list")
+            }
+          );
+          return;
+        }
+      }
+      
+      // Handle collab list creation
+      if (pendingTodo.action === "collab_create" && text.trim()) {
+        const listName = text.trim().slice(0, 50);
+        const newList = createCollabList(u.id, listName);
+        
+        await ctx.reply(
+          `✅ *List Created!*\n\n👥 *${listName}*\n\n🔑 Share this code with others:\n\`${newList.joinCode}\`\n\nThey can join with:\n\`/collab join ${newList.joinCode}\``,
+          {
+            parse_mode: "Markdown",
+            reply_markup: new InlineKeyboard()
+              .text("📋 View List", `collab_open:${newList.id}`)
+              .text("👥 All Lists", "collab_list")
+          }
+        );
+        return;
+      }
+      
+      // Handle collab list join
+      if (pendingTodo.action === "collab_join" && text.trim()) {
+        const joinCode = text.trim().toUpperCase();
+        const result = joinCollabList(u.id, joinCode, ctx.from?.username);
+        
+        if (result.success) {
+          const list = result.list;
+          await ctx.reply(
+            `✅ *Joined Successfully!*\n\n👥 *${list.name}*\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard()
+                .text("📋 View List", `collab_open:${list.id}`)
+                .text("👥 All Lists", "collab_list")
+            }
+          );
+        } else {
+          await ctx.reply(
+            `⚠️ *${result.error || "Could not join list"}*\n\nCheck the code and try again.`,
+            {
+              parse_mode: "Markdown",
+              reply_markup: new InlineKeyboard().text("🔗 Try Again", "collab_join")
+            }
+          );
+        }
+        return;
+      }
+    }
+  }
+  
   // Check if user has pending partner field input
   const pendingPartner = pendingPartnerInput.get(String(u.id));
   if (pendingPartner && chat.type === "private") {
@@ -11599,10 +15132,16 @@ bot.on("inline_query", async (ctx) => {
   const model = session.model || ensureChosenModelValid(userId);
   const sessionKey = makeId(6);
 
-  // Empty query - show main menu with Ask AI card and Settings/Help
+  // Empty query - show main menu with Ask AI, Starz Check, Settings, Help cards
   if (!q || q.length === 0) {
     console.log("Showing main menu (empty query)");
     const shortModel = model.split("/").pop();
+    
+    // Get user's task counts for Starz Check card
+    const userTodos = getUserTodos(userId);
+    const personalPending = (userTodos.tasks || []).filter(t => !t.completed).length;
+    const userCollabLists = getCollabListsForUser(userId);
+    const collabCount = userCollabLists.length;
     
     // Original Ask AI card with mode buttons
     const askAiText = [
@@ -11620,6 +15159,12 @@ bot.on("inline_query", async (ctx) => {
       "_Tap a button or type directly!_",
     ].join("\n");
     
+    // Starz Check card - show tasks directly!
+    const userTasks = userTodos.tasks || [];
+    const streak = getCompletionStreak(userId);
+    let starzCheckText = `✅ *Starz Check*`;
+    if (streak > 0) starzCheckText += ` 🔥${streak}`;
+    
     const results = [
       {
         type: "article",
@@ -11633,7 +15178,7 @@ bot.on("inline_query", async (ctx) => {
         },
         reply_markup: new InlineKeyboard()
           .switchInlineCurrent("⭐ Quark", "q: ")
-          .switchInlineCurrent("🗿 Blackhole", "b: ")
+          .switchInlineCurrent("🗿🔬 Blackhole", "b: ")
           .row()
           .switchInlineCurrent("💻 Code", "code: ")
           .switchInlineCurrent("🧠 Explain", "e: ")
@@ -11643,6 +15188,40 @@ bot.on("inline_query", async (ctx) => {
           .row()
           .switchInlineCurrent("🎭 Character", "as ")
           .switchInlineCurrent("🤝🏻 Partner", "p: "),
+      },
+      {
+        type: "article",
+        id: `starz_check_${sessionKey}`,
+        title: "✅ Starz Check",
+        description: `${personalPending} pending • ${collabCount} collab lists${streak > 0 ? ` • 🔥${streak}` : ""}`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+        input_message_content: { 
+          message_text: starzCheckText,
+          parse_mode: "Markdown"
+        },
+        reply_markup: (() => {
+          const kb = new InlineKeyboard();
+          // Show tasks directly as buttons!
+          userTasks.slice(0, 6).forEach((task) => {
+            const icon = task.completed ? "✅" : "⬜";
+            const text = task.text.slice(0, 25) + (task.text.length > 25 ? ".." : "");
+            const catEmoji = getCategoryEmoji(task.category);
+            const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+            kb.text(`${icon} ${text} ${catEmoji}${priInd}`, `itodo_tap:${task.id}`);
+            kb.row();
+          });
+          if (userTasks.length === 0) {
+            kb.text("📋 No tasks yet", "itodo_add").row();
+          }
+          // Action row
+          kb.text("➕", "itodo_add")
+            .text("🔍", "itodo_filter")
+            .text("📊", "itodo_stats")
+            .text("👥", "itodo_collab")
+            .row()
+            .switchInlineCurrent("← Back", "");
+          return kb;
+        })(),
       },
       {
         type: "article",
@@ -12165,6 +15744,977 @@ bot.on("inline_query", async (ctx) => {
         },
         // IMPORTANT: Must include reply_markup to receive inline_message_id
         reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "t:" or "t " - Tasks/Todo mode (manage your tasks inline)
+  // Uses double-tap pattern: first tap toggles, second tap within 3s opens action menu
+  if (qLower.startsWith("t:") || qLower.startsWith("t ")) {
+    const subCommand = q.slice(2).trim();
+    const todos = getUserTodos(userId);
+    const filters = getTodoFilters(userId);
+    
+    // t: or t (empty) - show task list
+    if (!subCommand) {
+      const taskCount = todos.length;
+      const doneCount = todos.filter(t => t.completed).length;
+      const pendingCount = taskCount - doneCount;
+      
+      if (taskCount === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_empty_${sessionKey}`,
+            title: "📋 No Tasks Yet",
+            description: "Type t:add <task> to create your first task",
+            thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+            input_message_content: {
+              message_text: "📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\nAdd your first task:\n<code>t:add Buy groceries</code>\n\n<i>via StarzAI • Tasks</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Add Task", "t:add ")
+              .row()
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Build task list with toggle buttons
+      const filteredTodos = filterTodos(todos, filters);
+      const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+      const displayTodos = sortedTodos.slice(0, 8); // Show max 8 tasks inline
+      
+      // Compact title only - tasks are buttons
+      const streak = getCompletionStreak(userId);
+      let taskListText = `✅ <b>Starz Check</b>`;
+      if (streak > 0) taskListText += ` 🔥${streak}`;
+      
+      // Build keyboard with task toggle buttons
+      const keyboard = new InlineKeyboard();
+      
+      // Each task is its own button row - like tic-tac-toe!
+      displayTodos.forEach((task) => {
+        const icon = task.completed ? "✅" : "⬜";
+        const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+        const catEmoji = getCategoryEmoji(task.category);
+        const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+        const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+        keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+        keyboard.row();
+      });
+      
+      // Action buttons
+      keyboard
+        .text("➕ Add", "itodo_add")
+        .text("🔍 Filter", "itodo_filter")
+        .text("📊 Stats", "itodo_stats")
+        .row()
+        .switchInlineCurrent("🔄 Refresh", "t: ")
+        .switchInlineCurrent("← Back", "");
+      
+      // Store session for double-tap detection
+      const tKey = makeId(6);
+      inlineCache.set(`t_session_${tKey}`, {
+        userId: String(userId),
+        lastTap: null,
+        lastTaskId: null,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`t_session_${tKey}`), 30 * 60 * 1000);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_list_${tKey}`,
+          title: `📋 Tasks (${pendingCount} pending)`,
+          description: displayTodos.slice(0, 3).map(t => (t.completed ? "✓ " : "○ ") + t.text.slice(0, 20)).join(" • "),
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: taskListText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:add <task> - quick add task (deferred - adds on send and updates original message)
+    if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
+      const taskText = subCommand.slice(4).trim();
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_add_hint_${sessionKey}`,
+            title: "➕ Type your task...",
+            description: "Example: Buy groceries #shopping !high @tomorrow",
+            thumbnail_url: "https://img.icons8.com/fluency/96/plus.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "t: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Store pending task - will be added when chosen_inline_result fires
+      const addKey = makeId(8);
+      inlineCache.set(`tadd_pending_${addKey}`, {
+        userId: String(userId),
+        taskText,
+        timestamp: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
+      
+      const parsed = parseTaskText(taskText);
+      const categoryEmoji = getCategoryEmoji(parsed.category || 'personal');
+      const priorityText = parsed.priority === "high" ? "🔴" : parsed.priority === "medium" ? "🟡" : "🟢";
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `tadd_${addKey}`,
+          title: `➕ Add: ${parsed.text.slice(0, 35)}`,
+          description: `${categoryEmoji} ${priorityText} Tap to add`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ Added: ${escapeHTML(parsed.text)}`,
+            parse_mode: "HTML",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:stats - show statistics
+    if (subCommand.toLowerCase() === "stats") {
+      const stats = getTodoStats(userId);
+      
+      const statsText = [
+        `📊 <b>Task Statistics</b>`,
+        ``,
+        `📋 Total tasks: ${stats.total}`,
+        `✅ Completed: ${stats.completed}`,
+        `⬜ Pending: ${stats.pending}`,
+        `📈 Completion rate: ${stats.completionRate}%`,
+        ``,
+        `🔥 Current streak: ${stats.streak} days`,
+        `🏆 Best streak: ${stats.bestStreak} days`,
+        ``,
+        `<i>via StarzAI • Tasks</i>`,
+      ].join("\n");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_stats_${sessionKey}`,
+          title: `📊 Stats: ${stats.completed}/${stats.total} done`,
+          description: `${stats.completionRate}% complete • ${stats.streak} day streak`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/statistics.png",
+          input_message_content: {
+            message_text: statsText,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "t: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:done or t:clear - clear completed tasks
+    if (subCommand.toLowerCase() === "done" || subCommand.toLowerCase() === "clear") {
+      const cleared = clearCompletedTasks(userId);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_cleared_${sessionKey}`,
+          title: `🗑️ Cleared ${cleared} completed tasks`,
+          description: "Completed tasks removed",
+          thumbnail_url: "https://img.icons8.com/fluency/96/trash.png",
+          input_message_content: {
+            message_text: `🗑️ <b>Cleared ${cleared} completed task${cleared !== 1 ? "s" : ""}!</b>\n\n<i>via StarzAI • Tasks</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "t: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:<number> - toggle specific task by number
+    const taskNum = parseInt(subCommand);
+    if (!isNaN(taskNum) && taskNum > 0) {
+      const sortedTodos = sortTodos(todos, filters.sortBy || "created");
+      const task = sortedTodos[taskNum - 1];
+      
+      if (!task) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_notfound_${sessionKey}`,
+            title: `⚠️ Task #${taskNum} not found`,
+            description: "Invalid task number",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("📋 View Tasks", "t: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Show task action menu
+      const checkbox = task.completed ? "✅" : "⬜";
+      const categoryEmoji = getCategoryEmoji(task.category);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_task_${makeId(6)}`,
+          title: `${checkbox} ${task.text.slice(0, 35)}`,
+          description: "Tap to send task with action buttons",
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: `${checkbox} <b>Task #${taskNum}</b>\n\n${escapeHTML(task.text)}\n\n${categoryEmoji} ${escapeHTML(task.category || "personal")}\n\n<i>via StarzAI • Tasks</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${task.id}`)
+            .text("🗑️ Delete", `itodo_delete:${task.id}`)
+            .row()
+            .text("✏️ Edit", `itodo_edit:${task.id}`)
+            .row()
+            .switchInlineCurrent("📋 Back to Tasks", "t: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown subcommand - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `t_help_${sessionKey}`,
+        title: "📋 Tasks Help",
+        description: "t: list • t:add <task> • t:stats • t:<#>",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `📋 <b>Tasks Help</b>\n\n<code>t:</code> - View task list\n<code>t:add Buy milk</code> - Add task\n<code>t:add Task #work !high @tomorrow</code> - Quick add with options\n<code>t:1</code> - View/edit task #1\n<code>t:stats</code> - View statistics\n<code>t:clear</code> - Clear completed\n\n<i>via StarzAI • Tasks</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("📋 View Tasks", "t: ")
+          .switchInlineCurrent("← Back", ""),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "sc:" or "sc " - Starz Check Personal mode (alias for t:)
+  if (qLower.startsWith("sc:") || qLower.startsWith("sc ")) {
+    const subCommand = q.slice(3).trim();
+    const todos = getUserTodos(userId);
+    const filters = getTodoFilters(userId);
+    
+    // sc: or sc (empty) - show personal task list
+    if (!subCommand) {
+      const taskCount = todos.tasks?.length || 0;
+      const doneCount = (todos.tasks || []).filter(t => t.completed).length;
+      const pendingCount = taskCount - doneCount;
+      
+      if (taskCount === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_empty_${sessionKey}`,
+            title: "📋 No Personal Tasks Yet",
+            description: "Type sc:add <task> to create your first task",
+            thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+            input_message_content: {
+              message_text: "📋 <b>Starz Check - Personal</b>\n\n<i>No tasks yet!</i>\n\nAdd your first task:\n<code>sc:add Buy groceries</code>\n\n<i>via StarzAI • Starz Check</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Add Task", "sc:add ")
+              .row()
+              .switchInlineCurrent("👥 Collab Lists", "ct: ")
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Build task list with each task as a clickable button row (like tic-tac-toe)
+      const filteredTodos = filterTodos(todos.tasks || [], filters);
+      const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+      const displayTodos = sortedTodos.slice(0, 6); // Limit to 6 for button space
+      
+      // Minimal text - just a compact title
+      const streak = getCompletionStreak(userId);
+      let taskListText = `✅ <b>Starz Check</b>`;
+      if (streak > 0) taskListText += ` 🔥${streak}`;
+      
+      const keyboard = new InlineKeyboard();
+      
+      // Each task is its own button row - like tic-tac-toe!
+      displayTodos.forEach((task) => {
+        const icon = task.completed ? "✅" : "⬜";
+        const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+        const categoryEmoji = getCategoryEmoji(task.category);
+        const priorityIndicator = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+        
+        keyboard.text(`${icon} ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}`, `itodo_tap:${task.id}`);
+        keyboard.row();
+      });
+      
+      keyboard
+        .text("➕ Add", "itodo_add")
+        .text("🔍 Filter", "itodo_filter")
+        .text("📊 Stats", "itodo_stats")
+        .row()
+        .switchInlineCurrent("👥 Collab", "ct: ")
+        .switchInlineCurrent("🔄 Refresh", "sc: ")
+        .switchInlineCurrent("← Back", "");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_list_${makeId(6)}`,
+          title: `📋 Personal Tasks (${pendingCount} pending)`,
+          description: displayTodos.slice(0, 3).map(t => (t.completed ? "✓ " : "○ ") + t.text.slice(0, 20)).join(" • "),
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: taskListText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:add <task> - quick add task (deferred - adds on send and updates original message)
+    if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
+      const taskText = subCommand.slice(4).trim();
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_add_help_${sessionKey}`,
+            title: "➕ Type your task...",
+            description: "Example: Buy groceries #shopping !high @tomorrow",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Store pending task - will be added when chosen_inline_result fires
+      const addKey = makeId(8);
+      inlineCache.set(`tadd_pending_${addKey}`, {
+        userId: String(userId),
+        taskText,
+        timestamp: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
+      
+      const parsed = parseTaskText(taskText);
+      const categoryEmoji = getCategoryEmoji(parsed.category || 'personal');
+      const priorityText = parsed.priority === "high" ? "🔴" : parsed.priority === "medium" ? "🟡" : "🟢";
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `tadd_${addKey}`,
+          title: `➕ Add: ${parsed.text.slice(0, 35)}`,
+          description: `${categoryEmoji} ${priorityText} Tap to add`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ Added: ${escapeHTML(parsed.text)}`,
+            parse_mode: "HTML",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:edit <taskId> <newText> - edit a task
+    if (subCommand.toLowerCase().startsWith("edit ")) {
+      const editParts = subCommand.slice(5).trim().split(" ");
+      const taskId = editParts[0];
+      const newText = editParts.slice(1).join(" ").trim();
+      
+      if (!taskId) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_help_${sessionKey}`,
+            title: "✏️ Edit Task",
+            description: "sc:edit <taskId> New task text",
+            thumbnail_url: "https://img.icons8.com/fluency/96/edit.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const task = getTaskById(userId, taskId);
+      if (!task) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_notfound_${sessionKey}`,
+            title: "⚠️ Task Not Found",
+            description: "The task you're trying to edit doesn't exist",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: {
+              message_text: `⚠️ <b>Task Not Found</b>\n\nThe task with ID <code>${escapeHTML(taskId)}</code> doesn't exist.\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("📋 View Tasks", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      if (!newText) {
+        // Show current task and prompt for new text
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_prompt_${sessionKey}`,
+            title: `✏️ Edit: ${task.text.slice(0, 30)}`,
+            description: "Type the new text after the task ID",
+            thumbnail_url: "https://img.icons8.com/fluency/96/edit.png",
+            input_message_content: {
+              message_text: `✏️ <b>Editing Task</b>\n\nCurrent: ${escapeHTML(task.text)}\n\nType your new text after the task ID\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Update the task
+      const userTodos = getUserTodos(userId);
+      const taskIndex = userTodos.tasks.findIndex(t => t.id === taskId);
+      if (taskIndex !== -1) {
+        userTodos.tasks[taskIndex].text = newText;
+        userTodos.tasks[taskIndex].updatedAt = new Date().toISOString();
+        saveTodos();
+      }
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_edited_${makeId(6)}`,
+          title: `✅ Task Updated`,
+          description: newText.slice(0, 50),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Updated!</b>\n\n${task.completed ? "✅" : "⬜"} ${escapeHTML(newText)}\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "sc: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:stats - show statistics
+    if (subCommand.toLowerCase() === "stats") {
+      const userTodos = getUserTodos(userId);
+      const stats = userTodos.stats || { totalCreated: 0, totalCompleted: 0, currentStreak: 0, longestStreak: 0 };
+      const tasks = userTodos.tasks || [];
+      
+      const totalTasks = tasks.length;
+      const completedTasks = tasks.filter(t => t.completed).length;
+      const pendingTasks = totalTasks - completedTasks;
+      const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      
+      const statsText = [
+        "📊 <b>Starz Check - Personal Stats</b>",
+        "",
+        `📋 Total Tasks: ${totalTasks}`,
+        `✅ Completed: ${completedTasks}`,
+        `⏳ Pending: ${pendingTasks}`,
+        `📈 Completion Rate: ${completionRate}%`,
+        "",
+        `🔥 Current Streak: ${stats.currentStreak} day${stats.currentStreak !== 1 ? "s" : ""}`,
+        `🏆 Longest Streak: ${stats.longestStreak} day${stats.longestStreak !== 1 ? "s" : ""}`,
+        `📅 All-time Completed: ${stats.totalCompleted}`,
+        "",
+        "<i>via StarzAI • Starz Check</i>",
+      ].join("\n");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_stats_${sessionKey}`,
+          title: "📊 Personal Task Statistics",
+          description: `${completedTasks}/${totalTasks} done • 🔥 ${stats.currentStreak} day streak`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/statistics.png",
+          input_message_content: {
+            message_text: statsText,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "sc: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `sc_help_${sessionKey}`,
+        title: "📋 Starz Check - Personal Help",
+        description: "sc: list • sc:add <task> • sc:stats",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `📋 <b>Starz Check - Personal Help</b>\n\n<code>sc:</code> - View task list\n<code>sc:add Buy milk</code> - Add task\n<code>sc:add Task #work !high @tomorrow</code> - Quick add with options\n<code>sc:stats</code> - View statistics\n\n<i>via StarzAI • Starz Check</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("📋 View Tasks", "sc: ")
+          .switchInlineCurrent("← Back", ""),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "ct:" or "ct " - Collaborative Todo mode
+  if (qLower.startsWith("ct:") || qLower.startsWith("ct ")) {
+    const subCommand = q.slice(3).trim();
+    const userLists = getCollabListsForUser(userId);
+    
+    // ct: or ct (empty) - show user's collaborative lists
+    if (!subCommand) {
+      if (userLists.length === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_empty_${sessionKey}`,
+            title: "👥 No Collaborative Lists Yet",
+            description: "Create a new list or join one with a code",
+            thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+            input_message_content: {
+              message_text: "👥 <b>Starz Check - Collaborative</b>\n\n<i>No shared lists yet!</i>\n\nCreate a new list:\n<code>ct:new Party Planning</code>\n\nOr join with a code:\n<code>ct:join ABC123</code>\n\n<i>via StarzAI • Starz Check</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Create List", "ct:new ")
+              .switchInlineCurrent("🔗 Join List", "ct:join ")
+              .row()
+              .switchInlineCurrent("📋 Personal", "sc: ")
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Show list of collaborative lists
+      const results = userLists.slice(0, 10).map((list, idx) => {
+        const pendingCount = list.tasks.filter(t => !t.completed).length;
+        const doneCount = list.tasks.filter(t => t.completed).length;
+        const memberCount = list.members.length;
+        const isOwner = list.ownerId === String(userId);
+        
+        let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+        listText += `📊 ${pendingCount} pending • ${doneCount} done • ${memberCount} members\n`;
+        listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+        
+        if (list.tasks.length === 0) {
+          listText += `<i>No tasks yet!</i>\n`;
+        } else {
+          const displayTasks = list.tasks.slice(0, 5);
+          displayTasks.forEach((task, i) => {
+            const checkbox = task.completed ? "✅" : "⬜";
+            const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+            listText += `${checkbox} ${i + 1}. ${text}\n`;
+          });
+          if (list.tasks.length > 5) {
+            listText += `<i>+${list.tasks.length - 5} more...</i>\n`;
+          }
+        }
+        
+        listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+        
+        const keyboard = new InlineKeyboard();
+        
+        const displayTasks = list.tasks.slice(0, 6);
+        for (let i = 0; i < displayTasks.length; i += 2) {
+          const task1 = displayTasks[i];
+          const icon1 = task1.completed ? "✅" : "⬜";
+          keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+          
+          if (displayTasks[i + 1]) {
+            const task2 = displayTasks[i + 1];
+            const icon2 = task2.completed ? "✅" : "⬜";
+            keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+          }
+          keyboard.row();
+        }
+        
+        keyboard
+          .text("➕ Add", `ct_add:${list.id}`)
+          .text("🗑️ Clear", `ct_clear:${list.id}`)
+          .row()
+          .text("👥 Members", `ct_members:${list.id}`)
+          .text("🔗 Share", `ct_share:${list.id}`)
+          .row()
+          .switchInlineCurrent("← My Lists", "ct: ");
+        
+        return {
+          type: "article",
+          id: `ct_list_${list.id}_${makeId(4)}`,
+          title: `👥 ${list.name}${isOwner ? " 👑" : ""}`,
+          description: `${pendingCount} pending • ${memberCount} members • Code: ${list.joinCode}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+          input_message_content: {
+            message_text: listText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        };
+      });
+      
+      // Add create/join options at the end
+      results.push({
+        type: "article",
+        id: `ct_create_${sessionKey}`,
+        title: "➕ Create New List",
+        description: "Start a new collaborative checklist",
+        thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("➕ Create", "ct:new "),
+      });
+      
+      results.push({
+        type: "article",
+        id: `ct_join_${sessionKey}`,
+        title: "🔗 Join Existing List",
+        description: "Enter a join code to join a shared list",
+        thumbnail_url: "https://img.icons8.com/fluency/96/link.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🔗 Join", "ct:join "),
+      });
+      
+      return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:new <name> - create new collaborative list
+    if (subCommand.toLowerCase().startsWith("new ") || subCommand.toLowerCase() === "new") {
+      const listName = subCommand.slice(4).trim();
+      
+      if (!listName) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_new_help_${sessionKey}`,
+            title: "➕ Create Collaborative List",
+            description: "ct:new Party Planning",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const newList = createCollabList(userId, listName);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_created_${newList.id}`,
+          title: `✅ Created: ${listName}`,
+          description: `Share code: ${newList.joinCode}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>List Created!</b>\n\n👥 <b>${escapeHTML(listName)}</b>\n\n🔑 Share this code with others:\n<code>${newList.joinCode}</code>\n\nThey can join with:\n<code>ct:join ${newList.joinCode}</code>\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${newList.id}`)
+            .text("🔗 Share", `ct_share:${newList.id}`)
+            .row()
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:join <code> - join a collaborative list
+    if (subCommand.toLowerCase().startsWith("join ") || subCommand.toLowerCase() === "join") {
+      const joinCode = subCommand.slice(5).trim().toUpperCase();
+      
+      if (!joinCode) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_join_help_${sessionKey}`,
+            title: "🔗 Join Collaborative List",
+            description: "ct:join ABC123",
+            thumbnail_url: "https://img.icons8.com/fluency/96/link.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const result = joinCollabList(userId, joinCode, ctx.from?.username);
+      
+      if (!result.success) {
+        if (result.error === "Already a member") {
+          return safeAnswerInline(ctx, [
+            {
+              type: "article",
+              id: `ct_already_${sessionKey}`,
+              title: `📋 Already a member of ${result.list?.name || "this list"}`,
+              description: "You're already in this list!",
+              thumbnail_url: "https://img.icons8.com/fluency/96/info.png",
+              input_message_content: {
+                message_text: `ℹ️ <b>Already a Member!</b>\n\nYou're already in <b>${escapeHTML(result.list?.name || "this list")}</b>\n\n<i>via StarzAI • Starz Check</i>`,
+                parse_mode: "HTML",
+              },
+              reply_markup: new InlineKeyboard()
+                .switchInlineCurrent("📋 View List", `ct:open ${result.list?.id}`)
+                .switchInlineCurrent("← My Lists", "ct: "),
+            },
+          ], { cache_time: 0, is_personal: true });
+        }
+        
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "Check the code and try again",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: {
+              message_text: `⚠️ <b>List Not Found</b>\n\nNo list found with code: <code>${escapeHTML(joinCode)}</code>\n\nCheck the code and try again.\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("🔗 Try Again", "ct:join ")
+              .switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const list = result.list;
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_joined_${list.id}`,
+          title: `✅ Joined: ${list.name}`,
+          description: `${list.members.length} members • ${list.tasks.length} tasks`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Joined Successfully!</b>\n\n👥 <b>${escapeHTML(list.name)}</b>\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${list.id}`)
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:open <listId> - open a specific list
+    if (subCommand.toLowerCase().startsWith("open ")) {
+      const listId = subCommand.slice(5).trim();
+      const list = getCollabList(listId);
+      
+      if (!list) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "This list may have been deleted",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Check if user is a member
+      if (!list.members.some(m => m.userId === String(userId))) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notmember_${sessionKey}`,
+            title: "⚠️ Not a Member",
+            description: "You're not a member of this list",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("🔗 Join", `ct:join ${list.joinCode}`)
+              .switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const pendingCount = list.tasks.filter(t => !t.completed).length;
+      const doneCount = list.tasks.filter(t => t.completed).length;
+      const isOwner = list.ownerId === String(userId);
+      
+      let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+      listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+      listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+      
+      if (list.tasks.length === 0) {
+        listText += `<i>No tasks yet! Add one below.</i>\n`;
+      } else {
+        const displayTasks = list.tasks.slice(0, 8);
+        displayTasks.forEach((task, i) => {
+          const checkbox = task.completed ? "✅" : "⬜";
+          const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+          const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+          
+          let completedByText = "";
+          if (task.completed && task.completedBy && list.settings.showCompletedBy) {
+            const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+            completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+          }
+          
+          listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+        });
+        
+        if (list.tasks.length > 8) {
+          listText += `\n<i>+${list.tasks.length - 8} more tasks...</i>\n`;
+        }
+      }
+      
+      listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+      
+      const keyboard = new InlineKeyboard();
+      
+      const displayTasks = list.tasks.slice(0, 6);
+      for (let i = 0; i < displayTasks.length; i += 2) {
+        const task1 = displayTasks[i];
+        const icon1 = task1.completed ? "✅" : "⬜";
+        keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+        
+        if (displayTasks[i + 1]) {
+          const task2 = displayTasks[i + 1];
+          const icon2 = task2.completed ? "✅" : "⬜";
+          keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+        }
+        keyboard.row();
+      }
+      
+      keyboard
+        .text("➕ Add", `ct_add:${list.id}`)
+        .text("🗑️ Clear", `ct_clear:${list.id}`)
+        .row()
+        .text("👥 Members", `ct_members:${list.id}`)
+        .text("🔗 Share", `ct_share:${list.id}`)
+        .row()
+        .switchInlineCurrent("🔄 Refresh", `ct:open ${list.id}`)
+        .switchInlineCurrent("← My Lists", "ct: ");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_view_${list.id}_${makeId(4)}`,
+          title: `👥 ${list.name}${isOwner ? " 👑" : ""}`,
+          description: `${pendingCount} pending • ${list.members.length} members`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+          input_message_content: {
+            message_text: listText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:add <listId> <task> - add task to collaborative list
+    if (subCommand.toLowerCase().startsWith("add:")) {
+      const parts = subCommand.slice(4).split(" ");
+      const listId = parts[0];
+      const taskText = parts.slice(1).join(" ").trim();
+      
+      const list = getCollabList(listId);
+      if (!list) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "This list may have been deleted",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_addhelp_${sessionKey}`,
+            title: `➕ Add Task to ${list.name}`,
+            description: "Type your task after the list ID",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", `ct:open ${listId}`),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const parsed = parseTaskText(taskText);
+      const newTask = addCollabTask(userId, listId, parsed, ctx.from?.username);
+      
+      if (!newTask) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_addfail_${sessionKey}`,
+            title: "⚠️ Could not add task",
+            description: "You may not be a member of this list",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_added_${newTask.id}`,
+          title: `✅ Task Added to ${list.name}`,
+          description: parsed.text.slice(0, 40),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Added!</b>\n\n👥 <b>${escapeHTML(list.name)}</b>\n\n⬜ ${escapeHTML(parsed.text)}\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${listId}`)
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `ct_help_${sessionKey}`,
+        title: "👥 Starz Check - Collab Help",
+        description: "ct: lists • ct:new <name> • ct:join <code>",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `👥 <b>Starz Check - Collab Help</b>\n\n<code>ct:</code> - View your shared lists\n<code>ct:new Party Planning</code> - Create new list\n<code>ct:join ABC123</code> - Join with code\n<code>ct:open [id]</code> - Open specific list\n\n<i>via StarzAI • Starz Check</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: ")
+          .switchInlineCurrent("← Back", ""),
       },
     ], { cache_time: 0, is_personal: true });
   }
@@ -14908,6 +19458,120 @@ bot.on("chosen_inline_result", async (ctx) => {
     }
     
     inlineCache.delete(`p_pending_${pKey}`);
+    return;
+  }
+  
+  // Handle Starz Check - store the inline_message_id for later updates
+  if (resultId.startsWith("starz_check_")) {
+    const checkKey = resultId.replace("starz_check_", "");
+    const userId = String(ctx.from?.id || "");
+    
+    if (inlineMessageId && userId) {
+      // Store the inline message ID so we can update it when tasks change
+      inlineCache.set(`sc_msg_${userId}`, {
+        inlineMessageId,
+        timestamp: Date.now(),
+      });
+      console.log(`Stored Starz Check inlineMessageId for user ${userId}`);
+    }
+    return;
+  }
+  
+  // Handle t:add - add task, delete new message, update original
+  if (resultId.startsWith("tadd_")) {
+    const addKey = resultId.replace("tadd_", "");
+    const pending = inlineCache.get(`tadd_pending_${addKey}`);
+    
+    if (!pending) {
+      console.log(`Task add pending not found: addKey=${addKey}`);
+      return;
+    }
+    
+    const { userId, taskText, chatId } = pending;
+    console.log(`Processing task add: ${taskText} for user ${userId}`);
+    
+    // Parse and add the task
+    const parsed = parseTaskText(taskText);
+    const userTodos = getUserTodos(userId);
+    const newTask = {
+      id: makeId(8),
+      text: parsed.text || taskText,
+      completed: false,
+      priority: parsed.priority || 'low',
+      category: parsed.category || 'personal',
+      dueDate: parsed.dueDate || null,
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+    };
+    userTodos.tasks.push(newTask);
+    saveTodos();
+    
+    // Try to delete the "Task Added" message we just sent
+    if (inlineMessageId) {
+      try {
+        // We can't delete inline messages, but we can edit them to be minimal
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `✅ Added: ${parsed.text || taskText}`,
+          { parse_mode: "HTML" }
+        );
+      } catch (e) {
+        console.log("Could not edit task added message:", e.message);
+      }
+    }
+    
+    // Try to update the original Starz Check message
+    const scMsg = inlineCache.get(`sc_msg_${userId}`);
+    if (scMsg && scMsg.inlineMessageId) {
+      try {
+        const tasks = userTodos.tasks || [];
+        const streak = getCompletionStreak(userId);
+        
+        // Build compact task list
+        let text = `✅ Starz Check`;
+        if (streak > 0) text += ` 🔥${streak}`;
+        
+        const keyboard = new InlineKeyboard();
+        
+        // Add task buttons (max 8 to fit)
+        const displayTasks = tasks.slice(0, 8);
+        displayTasks.forEach((task, idx) => {
+          const check = task.completed ? '✅' : '⬜';
+          const cat = getCategoryEmoji(task.category);
+          const pri = task.priority === 'high' ? '🔴' : task.priority === 'med' ? '🟡' : '';
+          const overdue = !task.completed && isOverdue(task.dueDate) ? '⚠️' : '';
+          const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
+          keyboard.text(label, `itodo_tap:${task.id}`).row();
+        });
+        
+        if (tasks.length > 8) {
+          keyboard.text(`... +${tasks.length - 8} more`, "itodo_back").row();
+        }
+        
+        // Action buttons
+        keyboard
+          .switchInlineCurrent("➕", "t:add ")
+          .text("🔍", "itodo_filter")
+          .text("📊", "itodo_stats")
+          .text("👥", "itodo_collab")
+          .row()
+          .text("← Back", "inline_main_menu");
+        
+        await bot.api.editMessageTextInline(
+          scMsg.inlineMessageId,
+          text,
+          {
+            parse_mode: "HTML",
+            reply_markup: keyboard,
+          }
+        );
+        console.log(`Updated original Starz Check message for user ${userId}`);
+      } catch (e) {
+        console.log("Could not update original Starz Check message:", e.message);
+      }
+    }
+    
+    inlineCache.delete(`tadd_pending_${addKey}`);
     return;
   }
   
