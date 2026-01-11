@@ -1,3 +1,97 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║                              STARZAI BOT v2.0                                  ║
+ * ║                         Telegram AI Assistant Bot                              ║
+ * ╠═══════════════════════════════════════════════════════════════════════════════╣
+ * ║  Author: Lemonsupqt                                                           ║
+ * ║  Lines: 20,461 | Sections: 47 | Last Updated: Jan 2026                        ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────────┐
+ * │                            TABLE OF CONTENTS                                    │
+ * │                     (Use Ctrl+G in VS Code to jump to line)                     │
+ * ├─────────┬───────────────────────────────────────────────────────────────────────┤
+ * │  LINE   │  SECTION                                                              │
+ * ├─────────┼───────────────────────────────────────────────────────────────────────┤
+ * │         │  ═══ CONFIGURATION ═══                                                │
+ * │    62   │  ENV - Environment variables, API keys, model configs                 │
+ * │         │                                                                       │
+ * │         │  ═══ CORE SYSTEMS ═══                                                 │
+ * │   367   │  BOT + LLM - Bot initialization                                       │
+ * │   380   │  MULTI-PROVIDER LLM SYSTEM - GitHub Models + MegaLLM fallback         │
+ * │   770   │  TELEGRAM CHANNEL STORAGE - Persistent data in Telegram channel       │
+ * │   807   │  SUPABASE STORAGE - Primary database persistence                      │
+ * │  1118   │  IN-MEMORY STATE - Runtime caches and session data                    │
+ * │         │                                                                       │
+ * │         │  ═══ MIDDLEWARE ═══                                                   │
+ * │  1211   │  RATE LIMIT - Per-user rate limiting                                  │
+ * │  1333   │  ANTI-SPAM SYSTEM - Spam detection and prevention                     │
+ * │  1599   │  GROUP ACTIVATION SYSTEM - Dormant mode for groups                    │
+ * │  1783   │  CONCURRENT PROCESSING - Parallel request handling                    │
+ * │         │                                                                       │
+ * │         │  ═══ USER MANAGEMENT ═══                                              │
+ * │  1632   │  USER + ACCESS CONTROL - User tiers, bans, permissions                │
+ * │         │                                                                       │
+ * │         │  ═══ FEATURES ═══                                                     │
+ * │  2063   │  PARTNER MANAGEMENT - AI companion system                             │
+ * │  2145   │  CHARACTER MODE - Quick character roleplay                            │
+ * │  2290   │  INLINE SESSION MANAGEMENT - Inline mode sessions                     │
+ * │  2338   │  HISTORY (DM/Group) - Chat history management                         │
+ * │  2351   │  LLM HELPERS - Text generation, vision, streaming                     │
+ * │  2701   │  VIDEO PROCESSING - Frame extraction, transcription                   │
+ * │  2819   │  WEB SEARCH - Multi-engine search (SearXNG, DDG, Parallel)            │
+ * │  5007   │  IMAGE GENERATION - DeAPI integration                                 │
+ * │  6799   │  TODO SYSTEM - Personal task management                               │
+ * │  7534   │  COLLAB TODO - Collaborative task system                              │
+ * │  14940  │  VIDEO SUMMARIZATION - AI video analysis                              │
+ * │         │                                                                       │
+ * │         │  ═══ UTILITIES ═══                                                    │
+ * │  3515   │  MARKDOWN CONVERTER - AI output to Telegram HTML                      │
+ * │  3719   │  PARALLEL EXTRACT API - URL content extraction                        │
+ * │  3802   │  UI HELPERS - Menus, keyboards, messages                              │
+ * │  4133   │  INLINE CHAT UI - Inline chat interface                               │
+ * │  4207   │  SETTINGS KEYBOARDS - Model selection menus                           │
+ * │ 11143   │  MODEL CATEGORY HELPERS - Tier-based model access                     │
+ * │         │                                                                       │
+ * │         │  ═══ COMMANDS ═══                                                     │
+ * │  4341   │  COMMANDS - All bot commands (/start, /help, /model, etc.)            │
+ * │ 11285   │  OWNER COMMANDS - Admin commands (/grant, /ban, /status, etc.)        │
+ * │         │                                                                       │
+ * │         │  ═══ CALLBACK HANDLERS ═══                                            │
+ * │  8957   │  TODO CALLBACKS - Task management buttons                             │
+ * │  9885   │  COLLAB TODO CALLBACKS - Collaborative task buttons                   │
+ * │ 12648   │  MENU CALLBACKS - Main menu navigation                                │
+ * │ 13174   │  LEGACY CALLBACKS - Backwards compatibility                           │
+ * │ 13383   │  INLINE CHAT CALLBACKS - Inline chat buttons                          │
+ * │ 13563   │  SETTINGS CALLBACKS - Model selection buttons                         │
+ * │ 13704   │  SHARED CHAT CALLBACKS - Multi-user inline chat                       │
+ * │ 13746   │  INLINE SETTINGS CALLBACKS - Inline model selection                   │
+ * │         │                                                                       │
+ * │         │  ═══ MESSAGE HANDLERS ═══                                             │
+ * │ 13893   │  WEBAPP DATA HANDLER - Mini app data processing                       │
+ * │ 14021   │  DM / GROUP TEXT - Main message handler                               │
+ * │ 14784   │  PHOTO HANDLER - Image processing                                     │
+ * │         │                                                                       │
+ * │         │  ═══ INLINE MODE ═══                                                  │
+ * │ 15361   │  INLINE MODE - Interactive inline queries                             │
+ * │ 18245   │  CHOSEN INLINE RESULT - Post-selection handling                       │
+ * │ 19917   │  INLINE BUTTON ACTIONS - Inline keyboard callbacks                    │
+ * │ 20360   │  INLINE CACHE CLEANUP - TTL management                                │
+ * │         │                                                                       │
+ * │         │  ═══ SERVER ═══                                                       │
+ * │ 20383   │  WEBHOOK SERVER - Railway deployment                                  │
+ * └─────────┴───────────────────────────────────────────────────────────────────────┘
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────────┐
+ * │                              ARCHITECTURE NOTES                                 │
+ * ├─────────────────────────────────────────────────────────────────────────────────┤
+ * │  • Reference modules are in src/ folder (for code navigation)                  │
+ * │  • See ARCHITECTURE.md for detailed documentation                              │
+ * │  • New features should be added as modules in src/ then imported here          │
+ * │  • Use // @SECTION: NAME comments for IDE navigation                           │
+ * └─────────────────────────────────────────────────────────────────────────────────┘
+ */
+
 import { Bot, InlineKeyboard, InputFile, webhookCallback } from "grammy";
 import http from "http";
 import OpenAI from "openai";
