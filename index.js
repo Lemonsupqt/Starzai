@@ -8799,7 +8799,7 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
   
   displayTodos.forEach((t, idx) => {
     const checkbox = t.completed ? "✅" : "⬜";
@@ -8823,18 +8823,16 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -8879,7 +8877,7 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
   
   displayTodos.forEach((t, idx) => {
     const checkbox = t.completed ? "✅" : "⬜";
@@ -8903,18 +8901,16 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -8972,7 +8968,7 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
   
   displayTodos.forEach((t, idx) => {
     const checkbox = t.completed ? "✅" : "⬜";
@@ -8987,18 +8983,16 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -9162,27 +9156,24 @@ bot.callbackQuery(/^itodo_edit:(.+)$/, async (ctx) => {
     return;
   }
   
-  await ctx.answerCallbackQuery({ text: "✏️ Use inline to edit" });
+  await ctx.answerCallbackQuery({ text: "✏️ Tap button to edit" });
   
-  // Show edit instructions
+  // Show edit with switchInlineCurrent to pre-fill
   const editText = [
     `✏️ <b>Edit Task</b>`,
     ``,
     `Current: ${escapeHTML(task.text)}`,
     ``,
-    `To edit, type in inline mode:`,
-    `<code>t:edit ${taskId} New task text</code>`,
-    ``,
-    `Or use the DM command:`,
-    `<code>/todo edit ${taskId} New text</code>`,
+    `Tap the button below to edit:`,
   ].join("\n");
   
   try {
     await ctx.editMessageText(editText, {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("← Back to Task", `itodo_view:${taskId}`)
+        .switchInlineCurrent("✏️ Edit Now", `sc:edit ${taskId} `)
         .row()
+        .text("← Back to Task", `itodo_view:${taskId}`)
         .text("← Back to List", "itodo_back"),
     });
   } catch (e) {}
@@ -9251,13 +9242,14 @@ bot.callbackQuery("itodo_back", async (ctx) => {
   
   const todos = getUserTodos(userId);
   const filters = getTodoFilters(userId);
-  const taskCount = todos.length;
-  const doneCount = todos.filter(t => t.completed).length;
+  const tasks = todos.tasks || [];
+  const taskCount = tasks.length;
+  const doneCount = tasks.filter(t => t.completed).length;
   const pendingCount = taskCount - doneCount;
   
   if (taskCount === 0) {
     try {
-      await ctx.editMessageText("📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Tasks</i>", {
+      await ctx.editMessageText("📋 <b>Starz Check - Personal</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Starz Check</i>", {
         parse_mode: "HTML",
         reply_markup: new InlineKeyboard()
           .text("➕ Add Task", "itodo_add")
@@ -9268,11 +9260,11 @@ bot.callbackQuery("itodo_back", async (ctx) => {
     return;
   }
   
-  const filteredTodos = filterTodos(todos, filters);
+  const filteredTodos = filterTodos(tasks, filters);
   const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
   
   displayTodos.forEach((t, idx) => {
     const checkbox = t.completed ? "✅" : "⬜";
@@ -9296,18 +9288,16 @@ bot.callbackQuery("itodo_back", async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -9434,18 +9424,16 @@ bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -9502,18 +9490,16 @@ bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -9595,7 +9581,7 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
   const sortedTodos = sortTodos(todos, "created");
   const displayTodos = sortedTodos.slice(0, 8);
   
-  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
   
   displayTodos.forEach((t, idx) => {
     const checkbox = t.completed ? "✅" : "⬜";
@@ -9615,18 +9601,16 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
   
   const keyboard = new InlineKeyboard();
   
-  for (let i = 0; i < displayTodos.length; i += 2) {
-    const task1 = displayTodos[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-    
-    if (displayTodos[i + 1]) {
-      const task2 = displayTodos[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-    }
+  // Each task is its own button row - like tic-tac-toe!
+  displayTodos.forEach((task) => {
+    const icon = task.completed ? "✅" : "⬜";
+    const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
     keyboard.row();
-  }
+  });
   
   keyboard
     .text("➕ Add", "itodo_add")
@@ -15875,7 +15859,7 @@ bot.on("inline_query", async (ctx) => {
       const displayTodos = sortedTodos.slice(0, 8); // Show max 8 tasks inline
       
       // Build task list text
-      let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+      let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
       
       displayTodos.forEach((task, idx) => {
         const checkbox = task.completed ? "✅" : "⬜";
@@ -15901,19 +15885,16 @@ bot.on("inline_query", async (ctx) => {
       // Build keyboard with task toggle buttons
       const keyboard = new InlineKeyboard();
       
-      // Add task buttons in rows of 2
-      for (let i = 0; i < displayTodos.length; i += 2) {
-        const task1 = displayTodos[i];
-        const icon1 = task1.completed ? "✅" : "⬜";
-        keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
-        
-        if (displayTodos[i + 1]) {
-          const task2 = displayTodos[i + 1];
-          const icon2 = task2.completed ? "✅" : "⬜";
-          keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-        }
+      // Each task is its own button row - like tic-tac-toe!
+      displayTodos.forEach((task) => {
+        const icon = task.completed ? "✅" : "⬜";
+        const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+        const catEmoji = getCategoryEmoji(task.category);
+        const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+        const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+        keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
         keyboard.row();
-      }
+      });
       
       // Action buttons
       keyboard
@@ -16168,47 +16149,38 @@ bot.on("inline_query", async (ctx) => {
         ], { cache_time: 0, is_personal: true });
       }
       
-      // Build task list with toggle buttons
+      // Build task list with each task as a clickable button row (like tic-tac-toe)
       const filteredTodos = filterTodos(todos.tasks || [], filters);
       const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
-      const displayTodos = sortedTodos.slice(0, 8);
+      const displayTodos = sortedTodos.slice(0, 6); // Limit to 6 for button space
       
-      let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
-      
-      displayTodos.forEach((task, idx) => {
-        const checkbox = task.completed ? "✅" : "⬜";
-        const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
-        const categoryEmoji = getCategoryEmoji(task.category);
-        const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
-        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? " ⚠️" : "";
-        taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
-      });
-      
-      if (sortedTodos.length > 8) {
-        taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
-      }
+      let taskListText = `📋 <b>Starz Check - Personal</b>\n\n`;
+      taskListText += `📊 ${pendingCount} pending • ${doneCount} done`;
       
       const streak = getCompletionStreak(userId);
       if (streak > 0) {
-        taskListText += `\n🔥 ${streak} day streak!`;
+        taskListText += ` • 🔥 ${streak} day streak`;
       }
       
-      taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+      if (sortedTodos.length > 6) {
+        taskListText += `\n<i>+${sortedTodos.length - 6} more tasks...</i>`;
+      }
+      
+      taskListText += `\n\n<i>Tap task to toggle • Double-tap for options</i>`;
       
       const keyboard = new InlineKeyboard();
       
-      for (let i = 0; i < displayTodos.length; i += 2) {
-        const task1 = displayTodos[i];
-        const icon1 = task1.completed ? "✅" : "⬜";
-        keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+      // Each task is its own button row - like tic-tac-toe!
+      displayTodos.forEach((task) => {
+        const icon = task.completed ? "✅" : "⬜";
+        const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
+        const categoryEmoji = getCategoryEmoji(task.category);
+        const priorityIndicator = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
         
-        if (displayTodos[i + 1]) {
-          const task2 = displayTodos[i + 1];
-          const icon2 = task2.completed ? "✅" : "⬜";
-          keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
-        }
+        keyboard.text(`${icon} ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}`, `itodo_tap:${task.id}`);
         keyboard.row();
-      }
+      });
       
       keyboard
         .text("➕ Add", "itodo_add")
@@ -16274,6 +16246,89 @@ bot.on("inline_query", async (ctx) => {
           reply_markup: new InlineKeyboard()
             .switchInlineCurrent("📋 View Tasks", "sc: ")
             .switchInlineCurrent("➕ Add Another", "sc:add "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:edit <taskId> <newText> - edit a task
+    if (subCommand.toLowerCase().startsWith("edit ")) {
+      const editParts = subCommand.slice(5).trim().split(" ");
+      const taskId = editParts[0];
+      const newText = editParts.slice(1).join(" ").trim();
+      
+      if (!taskId) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_help_${sessionKey}`,
+            title: "✏️ Edit Task",
+            description: "sc:edit <taskId> New task text",
+            thumbnail_url: "https://img.icons8.com/fluency/96/edit.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const task = getTaskById(userId, taskId);
+      if (!task) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_notfound_${sessionKey}`,
+            title: "⚠️ Task Not Found",
+            description: "The task you're trying to edit doesn't exist",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: {
+              message_text: `⚠️ <b>Task Not Found</b>\n\nThe task with ID <code>${escapeHTML(taskId)}</code> doesn't exist.\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("📋 View Tasks", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      if (!newText) {
+        // Show current task and prompt for new text
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_edit_prompt_${sessionKey}`,
+            title: `✏️ Edit: ${task.text.slice(0, 30)}`,
+            description: "Type the new text after the task ID",
+            thumbnail_url: "https://img.icons8.com/fluency/96/edit.png",
+            input_message_content: {
+              message_text: `✏️ <b>Editing Task</b>\n\nCurrent: ${escapeHTML(task.text)}\n\nType your new text after the task ID\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Update the task
+      const userTodos = getUserTodos(userId);
+      const taskIndex = userTodos.tasks.findIndex(t => t.id === taskId);
+      if (taskIndex !== -1) {
+        userTodos.tasks[taskIndex].text = newText;
+        userTodos.tasks[taskIndex].updatedAt = new Date().toISOString();
+        saveTodos();
+      }
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_edited_${makeId(6)}`,
+          title: `✅ Task Updated`,
+          description: newText.slice(0, 50),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Updated!</b>\n\n${task.completed ? "✅" : "⬜"} ${escapeHTML(newText)}\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "sc: ")
+            .switchInlineCurrent("← Back", ""),
         },
       ], { cache_time: 0, is_personal: true });
     }
