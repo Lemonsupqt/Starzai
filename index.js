@@ -6765,6 +6765,32 @@ const PRIORITY_LABELS = {
 };
 
 // Category emoji mapping
+const CATEGORY_EMOJI = {
+  work: "💼",
+  personal: "👤",
+  shopping: "🛒",
+  health: "💪",
+  learning: "📚",
+  finance: "💰",
+  home: "🏠",
+  social: "👥",
+  travel: "✈️",
+  other: "📌"
+};
+
+// Get category emoji
+function getCategoryEmoji(category) {
+  if (!category) return "📌";
+  return CATEGORY_EMOJI[category.toLowerCase()] || "📌";
+}
+
+// Get task by ID
+function getTaskById(userId, taskId) {
+  const userTodos = getUserTodos(userId);
+  return userTodos.tasks.find(t => t.id === taskId) || null;
+}
+
+// Category emoji mapping
 const DEFAULT_CATEGORIES = {
   personal: "👤",
   work: "💼",
