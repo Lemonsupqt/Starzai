@@ -1,14 +1,14 @@
 # ⚡ StarzAI - Telegram AI Bot
 
-A powerful AI assistant bot for Telegram with multiple modes, persistent AI partners, and inline capabilities.
+A powerful 20K+ line AI assistant bot for Telegram with multi-provider LLM support, persistent AI partners, image generation, task management, and inline capabilities.
 
 ## 🌟 Features
 
 ### 💬 Chat Modes
 - **DM Chat** - Direct conversation with AI
-- **Group Chat** - Say "Starz" / "StarzAI" or reply to the bot to get responses
+- **Group Chat** - Say "Starz" / "StarzAI" or reply to the bot
 - **Inline Mode** - Type `@starztechbot` anywhere for instant AI
-- **Time & Date** - Ask things like “what's the time in Tokyo?” or “today's date in London”.
+- **Time & Date** - Ask "what's the time in Tokyo?" or "today's date in London"
 
 ### ⚡ AI Modes (Inline)
 | Mode | Prefix | Description |
@@ -21,64 +21,93 @@ A powerful AI assistant bot for Telegram with multiple modes, persistent AI part
 | 📝 Summarize | `sum:` | Condense long text |
 | 🤝🏻 Partner | `p:` | Chat with your AI companion |
 
+### 🤖 Multi-Provider LLM System
+- **GitHub Models** - Primary provider (GPT-4.1, GPT-5 series)
+- **MegaLLM** - Fallback provider with automatic failover
+- **Smart Routing** - Automatic provider selection based on availability
+- **Thinking Models** - Support for reasoning models with extended tokens
+
 ### 🤝🏻 AI Partner
 Create your personalized AI companion with:
 - Custom name, personality, background, and speaking style
 - Persistent chat memory (20 messages)
 - Works in both DM and inline mode
-- Commands: `/partner name`, `/partner personality`, `/partner background`, `/partner style`
 
-### 🎭 Persona Mode
-Set a custom personality for all DM responses:
-- `/persona friendly teacher` - Sets AI personality
-- `/persona reset` - Back to default
+### 🎨 Image Generation
+- **DeAPI Integration** - ZImageTurbo model
+- **Multi-key Support** - Load balancing across multiple API keys
+- **Auto-failover** - Switches keys on errors
+- **Customizable** - Aspect ratios, styles, and more
 
-### 📊 Stats
-- `/stats` - View your usage statistics
-- `/history` - (Disabled) Previously showed recent prompts; now returns a notice to avoid database bloat
+### 📋 Task Management
+- **Personal Todos** - Create, edit, complete tasks
+- **Collaborative Todos** - Share task lists with others
+- **Inline Integration** - Manage tasks from anywhere
+
+### 🔍 Web Search
+- **Multi-engine** - SearXNG, DuckDuckGo, Parallel API
+- **AI Summaries** - Get synthesized answers with sources
+- **Auto-fallback** - Tries multiple engines if one fails
+
+### 🎬 Media Processing
+- **Image Analysis** - Vision models for image understanding
+- **Video Summarization** - Extract frames and transcribe audio
+- **Photo Support** - Process images in DM and groups
 
 ## 📋 Commands
 
 ### Basic Commands
 | Command | Description |
 |---------|-------------|
-| `/start` | Welcome message |
+| `/start` | Welcome message & main menu |
 | `/help` | Help menu |
 | `/model` | Choose AI model |
 | `/reset` | Clear chat memory |
+| `/stats` | Usage statistics |
 
 ### Feature Commands
 | Command | Description |
 |---------|-------------|
 | `/partner` | Manage your AI partner |
+| `/char` | Quick character roleplay |
 | `/persona` | Set AI personality |
-| `/stats` | Usage statistics |
-| `/history` | (Disabled) Previously showed recent prompts |
-| `/search` | Web search with raw results |
-| `/websearch` | Web search with AI-generated summary |
+| `/search` | Web search (raw results) |
+| `/websearch` | Web search with AI summary |
+| `/feedback` | Send feedback to the team |
 
 ### Owner Commands
 | Command | Description |
 |---------|-------------|
-| `/status` | Bot status & stats (includes rate limit and cooldown info) |
+| `/status` | Bot status & provider health |
 | `/info <userId>` | User details |
 | `/grant <userId> <tier>` | Grant tier (free/premium/ultra) |
 | `/revoke <userId>` | Revoke to free tier |
-| `/ban <userId> [reason]` | Ban user from using the bot |
-| `/unban <userId> [reason]` | Remove ban from user |
-| `/softban <userId> [reason]` | Temporary soft ban (24h total mute) |
-| `/warn <userId> [reason]` | Add a warning; auto softban on repeated warnings |
-| `/clearwarns <userId> [reason]` | Clear a user's warnings (optionally with a note) |
-| `/banlist` | List all banned users |
-| `/mute <userId> <duration> [scope] [reason]` | Temporarily mute a user (`scope`: all/dm/group/inline/tier) |
-| `/unmute <userId> [reason]` | Remove active mute from user |
-| `/mutelist` | List all muted users |
-| `/allow <userId> <model>` | Allow specific model |
-| `/deny <userId> <model>` | Deny specific model |
-| `/allowgroup <chatId> [note]` | Authorize a group to use the bot |
-| `/denygroup <chatId> [reason]` | Block a group from using the bot |
-| `/grouplist` | List known groups and their authorization status |
-| `/ownerhelp` | Show a quick owner-only moderation guide in chat |
+| `/ban` / `/unban` | Ban management |
+| `/mute` / `/unmute` | Mute management |
+| `/allowgroup` / `/denygroup` | Group authorization |
+| `/ownerhelp` | Full owner command guide |
+
+## 🏗️ Architecture
+
+```
+Starzai/
+├── index.js           # Main bot code (20K+ lines)
+├── ARCHITECTURE.md    # Detailed documentation
+├── CONTRIBUTING.md    # Guidelines for developers/AI agents
+├── .manus             # Instructions for Manus AI
+├── src/               # Reference modules (for navigation)
+│   ├── config/        # Environment & configuration
+│   ├── llm/           # LLM providers & helpers
+│   ├── database/      # Storage backends
+│   ├── middleware/    # Rate limiting, anti-spam
+│   ├── features/      # Core features
+│   ├── commands/      # Bot commands
+│   ├── handlers/      # Message & callback handlers
+│   └── server/        # Webhook server
+└── scripts/           # Development utilities
+```
+
+> **Note:** The `src/` folder contains reference modules for code navigation. The bot runs from `index.js`.
 
 ## 🚀 Deployment
 
@@ -97,40 +126,31 @@ OWNER_IDS=comma_separated_user_ids
 FREE_MODELS=model1,model2
 PREMIUM_MODELS=model3,model4
 ULTRA_MODELS=model5,model6
-DEFAULT_FREE_MODEL=model1
-DEFAULT_PREMIUM_MODEL=model3
-DEFAULT_ULTRA_MODEL=model5
+GITHUB_PAT=your_github_pat  # For GitHub Models
 ```
 
-**Storage (Optional but recommended):**
+**Storage:**
 ```
-STORAGE_CHANNEL_ID=your_storage_channel_id
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
+STORAGE_CHANNEL_ID=your_storage_channel_id
 ```
 
-**Image Generation (DeAPI):**
+**Optional:**
 ```
-DEAPI_KEY=key1,key2,key3  # Comma-separated API keys for load balancing
-```
-
-The bot supports multiple DeAPI keys for image generation with:
-- **Round-robin rotation** - Distributes load across all keys
-- **Automatic failover** - Switches to next key on errors (credit exhausted, rate limits)
-- **Health monitoring** - Keys are temporarily disabled after 3 consecutive failures
-- **Owner stats** - View key health via `/status` command
-
-**Other:**
-```
-RATE_LIMIT_PER_MINUTE=12  # Global safety limit (all users, including inline)
-MODEL_VISION=vision_model_id
+DEAPI_KEYS=key1,key2,key3  # Image generation
+PARALLEL_API_KEY=key       # Enhanced web search
+FEEDBACK_CHAT_ID=chat_id   # Feedback forwarding
 ```
 
-**Per-tier slash command cooldowns (built-in):**
-- Free: 1 command every 60 seconds
-- Premium: 1 command every 30 seconds
-- Ultra: 1 command every 10 seconds
-- Owners: no command cooldown or global rate limit
+## 👥 User Tiers
+
+| Tier | Rate Limit | Cooldown | Features |
+|------|------------|----------|----------|
+| Free | 30/min | 60s | Basic models, 2 web sources |
+| Premium | 30/min | 30s | Premium models, 5 web sources |
+| Ultra | 30/min | 10s | All models, 7 web sources, Ultra Summary |
+| Owner | Unlimited | None | Full access, admin commands |
 
 ## 💾 Data Persistence
 
@@ -139,16 +159,10 @@ StarzAI stores data in multiple layers:
 2. **Telegram Channel** - Backup storage via document uploads
 3. **Local Files** - Fallback for development
 
-Data stored:
-- User profiles and tiers
-- Model preferences
-- Inline sessions
-- Partner data and chat history
-
 ## 📝 License
 
 MIT License - Feel free to use and modify!
 
 ---
 
-Made with ⚡ by StarzAI Team
+Made with ⚡ by Lemonsupqt
