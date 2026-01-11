@@ -87,7 +87,153 @@ const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
 const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 
 // DeAPI for image generation (ZImageTurbo)
-const DEAPI_KEY = process.env.DEAPI_KEY || "";
+// Supports multiple API keys separated by commas for load balancing and failover
+const DEAPI_KEYS_RAW = process.env.DEAPI_KEY || "";
+const DEAPI_KEYS = DEAPI_KEYS_RAW
+  .split(",")
+  .map(k => k.trim())
+  .filter(Boolean);
+
+// DeAPI Multi-Key Manager
+const deapiKeyManager = {
+  currentIndex: 0,
+  keyStats: new Map(), // key -> { calls, successes, failures, lastUsed, lastError, disabled, credits }
+  
+  // Initialize stats for all keys
+  init() {
+    for (const key of DEAPI_KEYS) {
+      const keyId = this.getKeyId(key);
+      this.keyStats.set(keyId, {
+        calls: 0,
+        successes: 0,
+        failures: 0,
+        lastUsed: null,
+        lastError: null,
+        disabled: false,
+        disabledUntil: null,
+        consecutiveFailures: 0
+      });
+    }
+    console.log(`[DeAPI] Initialized ${DEAPI_KEYS.length} API key(s)`);
+  },
+  
+  // Get a short identifier for a key (first 8 chars)
+  getKeyId(key) {
+    return key.slice(0, 8) + '...';
+  },
+  
+  // Get the next available key (round-robin with failover)
+  getNextKey() {
+    if (DEAPI_KEYS.length === 0) return null;
+    
+    const now = Date.now();
+    let attempts = 0;
+    
+    while (attempts < DEAPI_KEYS.length) {
+      const key = DEAPI_KEYS[this.currentIndex];
+      const keyId = this.getKeyId(key);
+      const stats = this.keyStats.get(keyId);
+      
+      // Move to next key for next call (round-robin)
+      this.currentIndex = (this.currentIndex + 1) % DEAPI_KEYS.length;
+      
+      // Check if key is temporarily disabled
+      if (stats?.disabled) {
+        if (stats.disabledUntil && now > stats.disabledUntil) {
+          // Re-enable the key after cooldown
+          stats.disabled = false;
+          stats.disabledUntil = null;
+          stats.consecutiveFailures = 0;
+          console.log(`[DeAPI] Re-enabled key ${keyId} after cooldown`);
+        } else {
+          attempts++;
+          continue;
+        }
+      }
+      
+      return key;
+    }
+    
+    // All keys are disabled, return the first one anyway (will likely fail but gives user feedback)
+    console.warn('[DeAPI] All keys disabled, using first key as fallback');
+    return DEAPI_KEYS[0];
+  },
+  
+  // Record a successful API call
+  recordSuccess(key) {
+    const keyId = this.getKeyId(key);
+    const stats = this.keyStats.get(keyId);
+    if (stats) {
+      stats.calls++;
+      stats.successes++;
+      stats.lastUsed = Date.now();
+      stats.consecutiveFailures = 0;
+    }
+  },
+  
+  // Record a failed API call
+  recordFailure(key, error) {
+    const keyId = this.getKeyId(key);
+    const stats = this.keyStats.get(keyId);
+    if (stats) {
+      stats.calls++;
+      stats.failures++;
+      stats.lastUsed = Date.now();
+      stats.lastError = error?.message || String(error);
+      stats.consecutiveFailures++;
+      
+      // Disable key temporarily after 3 consecutive failures
+      if (stats.consecutiveFailures >= 3) {
+        stats.disabled = true;
+        stats.disabledUntil = Date.now() + (5 * 60 * 1000); // 5 minute cooldown
+        console.warn(`[DeAPI] Disabled key ${keyId} for 5 minutes after ${stats.consecutiveFailures} consecutive failures`);
+      }
+    }
+  },
+  
+  // Get stats for owner status command
+  getStats() {
+    const result = {
+      totalKeys: DEAPI_KEYS.length,
+      activeKeys: 0,
+      disabledKeys: 0,
+      totalCalls: 0,
+      totalSuccesses: 0,
+      totalFailures: 0,
+      keys: []
+    };
+    
+    for (const [keyId, stats] of this.keyStats.entries()) {
+      if (stats.disabled) {
+        result.disabledKeys++;
+      } else {
+        result.activeKeys++;
+      }
+      result.totalCalls += stats.calls;
+      result.totalSuccesses += stats.successes;
+      result.totalFailures += stats.failures;
+      
+      result.keys.push({
+        id: keyId,
+        ...stats,
+        successRate: stats.calls > 0 ? Math.round((stats.successes / stats.calls) * 100) : 100
+      });
+    }
+    
+    return result;
+  },
+  
+  // Check if any keys are available
+  hasKeys() {
+    return DEAPI_KEYS.length > 0;
+  }
+};
+
+// Initialize the key manager
+deapiKeyManager.init();
+
+// Legacy compatibility - returns first key or empty string
+const DEAPI_KEY = DEAPI_KEYS[0] || "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
@@ -4615,104 +4761,156 @@ const IMG_ASPECT_RATIOS = {
 // Store pending image prompts (userId -> { prompt, messageId, chatId })
 const pendingImagePrompts = new Map();
 
-// Helper function to generate image with DeAPI
-async function generateDeAPIImage(prompt, aspectRatio, userId) {
+// Helper function to generate image with DeAPI (with multi-key support)
+async function generateDeAPIImage(prompt, aspectRatio, userId, retryCount = 0) {
   const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
   
-  // Step 1: Submit image generation request
-  const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${DEAPI_KEY}`,
-      "Content-Type": "application/json",
-      "Accept": "application/json"
-    },
-    body: JSON.stringify({
-      prompt: prompt,
-      model: "ZImageTurbo_INT8",
-      width: config.width,
-      height: config.height,
-      steps: 8,
-      seed: Math.floor(Math.random() * 4294967295),
-      negative_prompt: "blur, low quality, distorted, ugly, deformed"
-    })
-  });
-  
-  if (!submitResponse.ok) {
-    const errorText = await submitResponse.text();
-    throw new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
+  // Get the next available API key
+  const apiKey = deapiKeyManager.getNextKey();
+  if (!apiKey) {
+    throw new Error("No DeAPI keys configured");
   }
   
-  const submitData = await submitResponse.json();
-  const requestId = submitData?.data?.request_id;
+  const keyId = deapiKeyManager.getKeyId(apiKey);
+  console.log(`[IMG] Using DeAPI key ${keyId} for user ${userId}`);
   
-  if (!requestId) {
-    throw new Error("No request_id returned from DeAPI");
-  }
-  
-  console.log(`[IMG] Submitted request ${requestId} for user ${userId} (${aspectRatio})`);
-  
-  // Step 2: Poll for result
-  let imageUrl = null;
-  let attempts = 0;
-  const maxAttempts = 30;
-  
-  while (attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  try {
+    // Step 1: Submit image generation request
+    const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: prompt,
+        model: "ZImageTurbo_INT8",
+        width: config.width,
+        height: config.height,
+        steps: 8,
+        seed: Math.floor(Math.random() * 4294967295),
+        negative_prompt: "blur, low quality, distorted, ugly, deformed"
+      })
+    });
     
-    const statusResponse = await fetch(
-      `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
-      {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${DEAPI_KEY}`,
-          "Accept": "application/json"
-        }
+    if (!submitResponse.ok) {
+      const errorText = await submitResponse.text();
+      const error = new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
+      
+      // Check if it's a credit/quota error that should trigger failover
+      const isQuotaError = submitResponse.status === 402 || 
+                          submitResponse.status === 429 || 
+                          errorText.toLowerCase().includes('credit') ||
+                          errorText.toLowerCase().includes('quota') ||
+                          errorText.toLowerCase().includes('limit');
+      
+      deapiKeyManager.recordFailure(apiKey, error);
+      
+      // Try next key if we have more keys and haven't exceeded retry limit
+      if (isQuotaError && retryCount < DEAPI_KEYS.length - 1) {
+        console.log(`[IMG] Key ${keyId} quota/credit error, trying next key...`);
+        return generateDeAPIImage(prompt, aspectRatio, userId, retryCount + 1);
       }
-    );
+      
+      throw error;
+    }
     
-    if (!statusResponse.ok) {
+    const submitData = await submitResponse.json();
+    const requestId = submitData?.data?.request_id;
+    
+    if (!requestId) {
+      const error = new Error("No request_id returned from DeAPI");
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
+    }
+    
+    console.log(`[IMG] Submitted request ${requestId} for user ${userId} (${aspectRatio}) using key ${keyId}`);
+    
+    // Step 2: Poll for result
+    let imageUrl = null;
+    let attempts = 0;
+    const maxAttempts = 30;
+    
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const statusResponse = await fetch(
+        `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
+        {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Accept": "application/json"
+          }
+        }
+      );
+      
+      if (!statusResponse.ok) {
+        attempts++;
+        continue;
+      }
+      
+      const statusData = await statusResponse.json();
+      const status = statusData?.data?.status || statusData?.status;
+      
+      // Debug log to see actual response format
+      if (attempts === 0 || status === "done" || status === "completed" || status === "error" || status === "failed") {
+        console.log(`[IMG] Status check #${attempts + 1}: status=${status}, data=${JSON.stringify(statusData).slice(0, 500)}`);
+      }
+      
+      if (status === "done" || status === "completed" || status === "success") {
+        imageUrl = statusData?.data?.result_url ||
+                   statusData?.data?.result?.url ||
+                   statusData?.data?.result?.image_url ||
+                   statusData?.data?.url ||
+                   statusData?.data?.image_url ||
+                   statusData?.result?.url ||
+                   (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
+                   (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
+        console.log(`[IMG] Found image URL: ${imageUrl ? imageUrl.slice(0, 100) + '...' : 'null'}`);
+        break;
+      } else if (status === "error" || status === "failed") {
+        const error = new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
+        deapiKeyManager.recordFailure(apiKey, error);
+        throw error;
+      }
+      
       attempts++;
-      continue;
     }
     
-    const statusData = await statusResponse.json();
-    const status = statusData?.data?.status || statusData?.status;
-    
-    // Debug log to see actual response format
-    if (attempts === 0 || status === "done" || status === "completed" || status === "error" || status === "failed") {
-      console.log(`[IMG] Status check #${attempts + 1}: status=${status}, data=${JSON.stringify(statusData).slice(0, 500)}`);
+    if (!imageUrl) {
+      const error = new Error("Timeout waiting for image generation");
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
     }
     
-    if (status === "done" || status === "completed" || status === "success") {
-      imageUrl = statusData?.data?.result_url ||
-                 statusData?.data?.result?.url ||
-                 statusData?.data?.result?.image_url ||
-                 statusData?.data?.url ||
-                 statusData?.data?.image_url ||
-                 statusData?.result?.url ||
-                 (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
-                 (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
-      console.log(`[IMG] Found image URL: ${imageUrl ? imageUrl.slice(0, 100) + '...' : 'null'}`);
-      break;
-    } else if (status === "error" || status === "failed") {
-      throw new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
+    // Step 3: Download the image
+    const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      const error = new Error(`Failed to download image: ${imageResponse.status}`);
+      deapiKeyManager.recordFailure(apiKey, error);
+      throw error;
     }
     
-    attempts++;
+    // Success! Record it
+    deapiKeyManager.recordSuccess(apiKey);
+    console.log(`[IMG] Successfully generated image using key ${keyId}`);
+    
+    return Buffer.from(await imageResponse.arrayBuffer());
+    
+  } catch (error) {
+    // If this was a network/server error and we have more keys, try the next one
+    if (retryCount < DEAPI_KEYS.length - 1 && 
+        (error.message.includes('fetch') || 
+         error.message.includes('network') ||
+         error.message.includes('ECONNREFUSED') ||
+         error.message.includes('timeout'))) {
+      console.log(`[IMG] Key ${keyId} network error, trying next key...`);
+      return generateDeAPIImage(prompt, aspectRatio, userId, retryCount + 1);
+    }
+    throw error;
   }
-  
-  if (!imageUrl) {
-    throw new Error("Timeout waiting for image generation");
-  }
-  
-  // Step 3: Download the image
-  const imageResponse = await fetch(imageUrl);
-  if (!imageResponse.ok) {
-    throw new Error(`Failed to download image: ${imageResponse.status}`);
-  }
-  
-  return Buffer.from(await imageResponse.arrayBuffer());
 }
 
 // /img - AI image generation with aspect ratio selection
@@ -4728,7 +4926,7 @@ bot.command("img", async (ctx) => {
     activateGroup(ctx.chat.id);
   }
   
-  if (!DEAPI_KEY) {
+  if (!deapiKeyManager.hasKeys()) {
     await ctx.reply(
       "⚠️ DeAPI is not configured. Use /imagine instead for free image generation.",
       { parse_mode: "Markdown" }
@@ -6142,6 +6340,9 @@ async function sendOwnerStatus(ctx) {
   const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
   const ownerCooldown = getCommandCooldownSecondsForTier("owner");
 
+  // Get DeAPI stats
+  const deapiStats = deapiKeyManager.getStats();
+
   const lines = [
     `📊 *Bot Status*`,
     ``,
@@ -6171,6 +6372,25 @@ async function sendOwnerStatus(ctx) {
     `  - Ultra: ${ultraCooldown}s`,
     `  - Owners: ${ownerCooldown > 0 ? ownerCooldown + "s" : "none"}`,
   ];
+
+  // Add DeAPI stats if keys are configured
+  if (deapiStats.totalKeys > 0) {
+    lines.push(``);
+    lines.push(`🎨 *DeAPI Image Generation*`);
+    lines.push(`• Keys: ${deapiStats.activeKeys}/${deapiStats.totalKeys} active`);
+    lines.push(`• Total calls: ${deapiStats.totalCalls}`);
+    lines.push(`• Success rate: ${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}%`);
+    
+    // Show individual key stats
+    if (deapiStats.keys.length > 0) {
+      lines.push(`• Key status:`);
+      for (const key of deapiStats.keys) {
+        const status = key.disabled ? '🔴' : '🟢';
+        const lastUsed = key.lastUsed ? new Date(key.lastUsed).toLocaleTimeString() : 'never';
+        lines.push(`  ${status} \`${key.id}\` - ${key.successRate}% (${key.calls} calls, last: ${lastUsed})`);
+      }
+    }
+  }
   
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 }

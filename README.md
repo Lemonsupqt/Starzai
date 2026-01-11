@@ -109,6 +109,17 @@ SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 ```
 
+**Image Generation (DeAPI):**
+```
+DEAPI_KEY=key1,key2,key3  # Comma-separated API keys for load balancing
+```
+
+The bot supports multiple DeAPI keys for image generation with:
+- **Round-robin rotation** - Distributes load across all keys
+- **Automatic failover** - Switches to next key on errors (credit exhausted, rate limits)
+- **Health monitoring** - Keys are temporarily disabled after 3 consecutive failures
+- **Owner stats** - View key health via `/status` command
+
 **Other:**
 ```
 RATE_LIMIT_PER_MINUTE=12  # Global safety limit (all users, including inline)
