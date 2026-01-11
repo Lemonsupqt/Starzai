@@ -8820,12 +8820,11 @@ bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
   });
   
   keyboard
-    .text("➕ Add", "itodo_add")
-    .text("🔍 Filter", "itodo_filter")
-    .text("📊 Stats", "itodo_stats")
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
     .row()
-    .switchInlineCurrent("🔄 Refresh", "t: ")
-    .switchInlineCurrent("← Back", "");
+    .text("← Back", "inline_main_menu");
   
   try {
     await ctx.editMessageText(taskListText, {
@@ -8883,12 +8882,11 @@ bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
   });
   
   keyboard
-    .text("➕ Add", "itodo_add")
-    .text("🔍 Filter", "itodo_filter")
-    .text("📊 Stats", "itodo_stats")
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
     .row()
-    .switchInlineCurrent("🔄 Refresh", "t: ")
-    .switchInlineCurrent("← Back", "");
+    .text("← Back", "inline_main_menu");
   
   try {
     await ctx.editMessageText(taskListText, {
@@ -8959,12 +8957,11 @@ bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
   });
   
   keyboard
-    .text("➕ Add", "itodo_add")
-    .text("🔍 Filter", "itodo_filter")
-    .text("📊 Stats", "itodo_stats")
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
     .row()
-    .switchInlineCurrent("🔄 Refresh", "t: ")
-    .switchInlineCurrent("← Back", "");
+    .text("← Back", "inline_main_menu");
   
   try {
     await ctx.editMessageText(taskListText, {
@@ -9248,12 +9245,11 @@ bot.callbackQuery("itodo_back", async (ctx) => {
   });
   
   keyboard
-    .text("➕ Add", "itodo_add")
-    .text("🔍 Filter", "itodo_filter")
-    .text("📊 Stats", "itodo_stats")
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
     .row()
-    .switchInlineCurrent("🔄 Refresh", "t: ")
-    .switchInlineCurrent("← Back", "");
+    .text("← Back", "inline_main_menu");
   
   try {
     await ctx.editMessageText(taskListText, {
@@ -9514,12 +9510,11 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
   });
   
   keyboard
-    .text("➕ Add", "itodo_add")
-    .text("🔍 Filter", "itodo_filter")
-    .text("📊 Stats", "itodo_stats")
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
     .row()
-    .switchInlineCurrent("🔄 Refresh", "t: ")
-    .switchInlineCurrent("← Back", "");
+    .text("← Back", "inline_main_menu");
   
   try {
     await ctx.editMessageText(taskListText, {
@@ -15227,12 +15222,11 @@ bot.on("inline_query", async (ctx) => {
             kb.text("📋 No tasks yet", "itodo_add").row();
           }
           // Action row
-          kb.text("➕", "itodo_add")
+          kb.switchInlineCurrent("➕", "t:add ")
             .text("🔍", "itodo_filter")
-            .text("📊", "itodo_stats")
             .text("👥", "itodo_collab")
             .row()
-            .switchInlineCurrent("← Back", "");
+            .text("← Back", "inline_main_menu");
           return kb;
         })(),
       },
@@ -15822,12 +15816,11 @@ bot.on("inline_query", async (ctx) => {
       
       // Action buttons
       keyboard
-        .text("➕ Add", "itodo_add")
-        .text("🔍 Filter", "itodo_filter")
-        .text("📊 Stats", "itodo_stats")
+        .switchInlineCurrent("➕", "t:add ")
+        .text("🔍", "itodo_filter")
+        .text("👥", "itodo_collab")
         .row()
-        .switchInlineCurrent("🔄 Refresh", "t: ")
-        .switchInlineCurrent("← Back", "");
+        .text("← Back", "inline_main_menu");
       
       // Store session for double-tap detection
       const tKey = makeId(6);
@@ -16083,13 +16076,11 @@ bot.on("inline_query", async (ctx) => {
       });
       
       keyboard
-        .text("➕ Add", "itodo_add")
-        .text("🔍 Filter", "itodo_filter")
-        .text("📊 Stats", "itodo_stats")
+        .switchInlineCurrent("➕", "sc:add ")
+        .text("🔍", "itodo_filter")
+        .text("👥", "itodo_collab")
         .row()
-        .switchInlineCurrent("👥 Collab", "ct: ")
-        .switchInlineCurrent("🔄 Refresh", "sc: ")
-        .switchInlineCurrent("← Back", "");
+        .text("← Back", "inline_main_menu");
       
       return safeAnswerInline(ctx, [
         {
@@ -19567,7 +19558,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         keyboard
           .switchInlineCurrent("➕", "t:add ")
           .text("🔍", "itodo_filter")
-          .text("📊", "itodo_stats")
           .text("👥", "itodo_collab")
           .row()
           .text("← Back", "inline_main_menu");
@@ -19645,7 +19635,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         keyboard
           .switchInlineCurrent("\u2795", "t:add ")
           .text("\ud83d\udd0d", "itodo_filter")
-          .text("\ud83d\udcca", "itodo_stats")
           .text("\ud83d\udc65", "itodo_collab")
           .row()
           .text("\u2190 Back", "inline_main_menu");
