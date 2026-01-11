@@ -5895,6 +5895,9 @@ bot.callbackQuery(/^imgset_ratio:(.+):(.+)$/, async (ctx) => {
   // Update the message with new selection
   const isOwnerUser = OWNER_IDS.has(String(u.id));
   
+  const currentSafeMode = shouldEnforceSafeMode(u.id);
+  const canToggle = canToggleSafeMode(u.id);
+  
   const buttons = [
     [
       { text: `${newRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
@@ -5908,15 +5911,41 @@ bot.callbackQuery(/^imgset_ratio:(.+):(.+)$/, async (ctx) => {
     ]
   ];
   
-  let settingsText = `⚙️ *Image Settings*\n\n` +
+  // Add safe mode toggle button for premium/ultra users
+  if (canToggle) {
+    buttons.push([
+      { 
+        text: currentSafeMode ? "🔒 Safe Mode: ON (tap to disable)" : "🔓 Safe Mode: OFF (tap to enable)", 
+        callback_data: currentSafeMode ? "imgset_safe:off" : "imgset_safe:on" 
+      }
+    ]);
+  }
+  
+  // Add back to features button (if came from menu)
+  buttons.push([
+    { text: "« Back to Features", callback_data: "menu_features" }
+  ]);
+  
+  let settingsText = `🎨 *Image Settings*\n\n` +
     `📐 *Default Ratio:* ${newConfig.icon} ${newConfig.label} (${newRatio}) ✅\n\n` +
-    `Select a new default ratio:`;
+    `Select your default aspect ratio for /img:`;
+  
+  // Show safe mode status
+  if (isOwnerUser) {
+    settingsText += `\n\n🔓 *Safe Mode:* OFF _(owners unrestricted)_`;
+  } else if (user.tier === 'free') {
+    settingsText += `\n\n🔒 *Safe Mode:* ON _(always on for free users)_`;
+  } else {
+    settingsText += `\n\n${currentSafeMode ? '🔒' : '🔓'} *Safe Mode:* ${currentSafeMode ? 'ON' : 'OFF'}`;
+  }
   
   if (isOwnerUser) {
     const currentSteps = user.imagePrefs?.steps || 8;
     settingsText += `\n\n🔧 *Steps:* ${currentSteps} _(owner only)_\n` +
       `Use \`/imgset steps [1-50]\` to change`;
   }
+  
+  settingsText += `\n\n_Your default is saved! Use /img to generate images._`;
   
   try {
     await ctx.editMessageText(settingsText, {
@@ -5974,12 +6003,15 @@ bot.callbackQuery(/^imgset_safe:(on|off)$/, async (ctx) => {
         text: currentSafeMode ? "🔒 Safe Mode: ON (tap to disable)" : "🔓 Safe Mode: OFF (tap to enable)", 
         callback_data: currentSafeMode ? "imgset_safe:off" : "imgset_safe:on" 
       }
+    ],
+    [
+      { text: "« Back to Features", callback_data: "menu_features" }
     ]
   ];
   
-  let settingsText = `⚙️ *Image Settings*\n\n` +
+  let settingsText = `🎨 *Image Settings*\n\n` +
     `📐 *Default Ratio:* ${currentConfig?.icon || '⬜'} ${currentConfig?.label || 'Square'} (${currentRatio})\n\n` +
-    `Select a new default ratio:`;
+    `Select your default aspect ratio for /img:`;
   
   // Show safe mode status
   if (isOwnerUser) {
@@ -8448,6 +8480,7 @@ bot.callbackQuery("menu_features", async (ctx) => {
   ].join("\n");
   
   const kb = new InlineKeyboard()
+    .text("🎨 Image Settings", "menu_imgset")
     .text("💳 Plans & Benefits", "menu_plans")
     .row()
     .text("« Back to Menu", "menu_back");
@@ -8459,6 +8492,85 @@ bot.callbackQuery("menu_features", async (ctx) => {
     });
   } catch (e) {
     // If edit fails, ignore
+  }
+});
+
+// Image Settings menu (from Features)
+bot.callbackQuery("menu_imgset", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const isOwnerUser = OWNER_IDS.has(String(u.id));
+  
+  const currentRatio = user.imagePrefs?.defaultRatio || "1:1";
+  const currentConfig = IMG_ASPECT_RATIOS[currentRatio];
+  const currentSafeMode = shouldEnforceSafeMode(u.id);
+  const canToggle = canToggleSafeMode(u.id);
+  
+  const buttons = [
+    [
+      { text: `${currentRatio === "1:1" ? "✅ " : ""}⬜ Square`, callback_data: "imgset_ratio:1:1" },
+      { text: `${currentRatio === "4:3" ? "✅ " : ""}🖼️ Landscape`, callback_data: "imgset_ratio:4:3" },
+      { text: `${currentRatio === "3:4" ? "✅ " : ""}📱 Portrait`, callback_data: "imgset_ratio:3:4" }
+    ],
+    [
+      { text: `${currentRatio === "16:9" ? "✅ " : ""}🎬 Widescreen`, callback_data: "imgset_ratio:16:9" },
+      { text: `${currentRatio === "9:16" ? "✅ " : ""}📲 Story`, callback_data: "imgset_ratio:9:16" },
+      { text: `${currentRatio === "3:2" ? "✅ " : ""}📷 Photo`, callback_data: "imgset_ratio:3:2" }
+    ]
+  ];
+  
+  // Add safe mode toggle button for premium/ultra users
+  if (canToggle) {
+    buttons.push([
+      { 
+        text: currentSafeMode ? "🔒 Safe Mode: ON (tap to disable)" : "🔓 Safe Mode: OFF (tap to enable)", 
+        callback_data: currentSafeMode ? "imgset_safe:off" : "imgset_safe:on" 
+      }
+    ]);
+  }
+  
+  // Add back to features button
+  buttons.push([
+    { text: "« Back to Features", callback_data: "menu_features" }
+  ]);
+  
+  let settingsText = `🎨 *Image Settings*\n\n` +
+    `📐 *Default Ratio:* ${currentConfig?.icon || '⬜'} ${currentConfig?.label || 'Square'} (${currentRatio})\n\n` +
+    `Select your default aspect ratio for /img:`;
+  
+  // Show safe mode status
+  if (isOwnerUser) {
+    settingsText += `\n\n🔓 *Safe Mode:* OFF _(owners unrestricted)_`;
+  } else if (user.tier === 'free') {
+    settingsText += `\n\n🔒 *Safe Mode:* ON _(always on for free users)_`;
+  } else {
+    settingsText += `\n\n${currentSafeMode ? '🔒' : '🔓'} *Safe Mode:* ${currentSafeMode ? 'ON' : 'OFF'}`;
+  }
+  
+  // Show steps setting for owners
+  if (isOwnerUser) {
+    const currentSteps = user.imagePrefs?.steps || 8;
+    settingsText += `\n\n🔧 *Steps:* ${currentSteps} _(owner only)_\n` +
+      `Use \`/imgset steps [1-50]\` to change`;
+  }
+  
+  settingsText += `\n\n_Tap a ratio to set it as your default._`;
+  
+  try {
+    await ctx.editMessageText(settingsText, {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (e) {
+    await ctx.reply(settingsText, {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: buttons }
+    });
   }
 });
 
