@@ -726,6 +726,7 @@ const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
 const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
 const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
 const TODOS_FILE = path.join(DATA_DIR, "todos.json");
+const COLLAB_TODOS_FILE = path.join(DATA_DIR, "collab_todos.json");
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -750,6 +751,7 @@ let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
 let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
 let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
 let todosDb = readJson(TODOS_FILE, { todos: {} });
+let collabTodosDb = readJson(COLLAB_TODOS_FILE, { lists: {}, userLists: {} });
 
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
@@ -805,12 +807,13 @@ async function loadFromSupabase() {
   console.log("Loading data from Supabase...");
   
   try {
-    const [users, prefs, sessions, imageStats, todos] = await Promise.all([
+    const [users, prefs, sessions, imageStats, todos, collabTodos] = await Promise.all([
       supabaseGet("users"),
       supabaseGet("prefs"),
       supabaseGet("inlineSessions"),
       supabaseGet("imageStats"),
       supabaseGet("todos"),
+      supabaseGet("collabTodos"),
     ]);
     
     if (users) {
@@ -832,6 +835,10 @@ async function loadFromSupabase() {
       todosDb = todos;
       console.log(`Loaded todos from Supabase`);
     }
+    if (collabTodos) {
+      collabTodosDb = collabTodos;
+      console.log(`Loaded ${Object.keys(collabTodosDb.lists || {}).length} collab lists from Supabase`);
+    }
     
     return true;
   } catch (e) {
@@ -850,6 +857,7 @@ async function saveToSupabase(dataType) {
   else if (dataType === "partners") data = partnersDb;
   else if (dataType === "imageStats") data = deapiKeyManager.getPersistentStats();
   else if (dataType === "todos") data = todosDb;
+  else if (dataType === "collabTodos") data = collabTodosDb;
   else return false;
   
   const success = await supabaseSet(dataType, data);
@@ -925,6 +933,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
     return;
   }
   
@@ -945,6 +954,9 @@ async function saveToTelegram(dataType) {
     } else if (dataType === "todos") {
       data = todosDb;
       label = "📋 TODOS_DATA";
+    } else if (dataType === "collabTodos") {
+      data = collabTodosDb;
+      label = "👥 COLLAB_TODOS_DATA";
     } else {
       return;
     }
@@ -977,6 +989,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
     
   } catch (e) {
     console.error(`Failed to save ${dataType} to Telegram:`, e.message);
@@ -986,6 +999,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
   }
 }
 
@@ -1045,6 +1059,9 @@ function savePartners() {
 }
 function saveTodos() {
   scheduleSave("todos");
+}
+function saveCollabTodos() {
+  scheduleSave("collabTodos");
 }
 
 // =====================
@@ -7369,6 +7386,386 @@ function parseTaskText(text) {
   return result;
 }
 
+// =====================
+// COLLABORATIVE TODO SYSTEM (Starz Check - Collab)
+// =====================
+
+// Generate unique list ID
+function generateCollabListId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+// Generate join code (shorter, user-friendly)
+function generateJoinCode() {
+  return crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+// Get all collab lists for a user
+function getCollabListsForUser(userId) {
+  const id = String(userId);
+  if (!collabTodosDb.userLists) collabTodosDb.userLists = {};
+  if (!collabTodosDb.userLists[id]) collabTodosDb.userLists[id] = [];
+  
+  // Return actual list objects
+  return collabTodosDb.userLists[id]
+    .map(listId => collabTodosDb.lists[listId])
+    .filter(Boolean);
+}
+
+// Get a specific collab list by ID
+function getCollabList(listId) {
+  return collabTodosDb.lists?.[listId] || null;
+}
+
+// Get a collab list by join code
+function getCollabListByCode(code) {
+  const upperCode = code.toUpperCase();
+  return Object.values(collabTodosDb.lists || {}).find(l => l.joinCode === upperCode) || null;
+}
+
+// Create a new collaborative list
+function createCollabList(userId, name, description = "") {
+  const listId = generateCollabListId();
+  const joinCode = generateJoinCode();
+  
+  if (!collabTodosDb.lists) collabTodosDb.lists = {};
+  if (!collabTodosDb.userLists) collabTodosDb.userLists = {};
+  
+  const list = {
+    id: listId,
+    name: name,
+    description: description,
+    joinCode: joinCode,
+    ownerId: String(userId),
+    members: [{ userId: String(userId), username: null, joinedAt: new Date().toISOString(), role: "owner" }],
+    tasks: [],
+    createdAt: new Date().toISOString(),
+    settings: {
+      allowMemberAdd: true,
+      showCompletedBy: true,
+      notifyOnComplete: true
+    },
+    stats: {
+      totalCreated: 0,
+      totalCompleted: 0
+    }
+  };
+  
+  collabTodosDb.lists[listId] = list;
+  
+  // Add to user's list
+  if (!collabTodosDb.userLists[String(userId)]) {
+    collabTodosDb.userLists[String(userId)] = [];
+  }
+  collabTodosDb.userLists[String(userId)].push(listId);
+  
+  saveCollabTodos();
+  return list;
+}
+
+// Join a collaborative list
+function joinCollabList(userId, joinCode, username = null) {
+  const list = getCollabListByCode(joinCode);
+  if (!list) return { success: false, error: "List not found" };
+  
+  const id = String(userId);
+  
+  // Check if already a member
+  if (list.members.some(m => m.userId === id)) {
+    return { success: false, error: "Already a member", list };
+  }
+  
+  // Add member
+  list.members.push({
+    userId: id,
+    username: username,
+    joinedAt: new Date().toISOString(),
+    role: "member"
+  });
+  
+  // Add to user's lists
+  if (!collabTodosDb.userLists[id]) {
+    collabTodosDb.userLists[id] = [];
+  }
+  if (!collabTodosDb.userLists[id].includes(list.id)) {
+    collabTodosDb.userLists[id].push(list.id);
+  }
+  
+  saveCollabTodos();
+  return { success: true, list };
+}
+
+// Leave a collaborative list
+function leaveCollabList(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return false;
+  
+  const id = String(userId);
+  
+  // Can't leave if owner
+  if (list.ownerId === id) {
+    return { success: false, error: "Owner cannot leave. Delete the list instead." };
+  }
+  
+  // Remove from members
+  list.members = list.members.filter(m => m.userId !== id);
+  
+  // Remove from user's lists
+  if (collabTodosDb.userLists[id]) {
+    collabTodosDb.userLists[id] = collabTodosDb.userLists[id].filter(lid => lid !== listId);
+  }
+  
+  saveCollabTodos();
+  return { success: true };
+}
+
+// Delete a collaborative list (owner only)
+function deleteCollabList(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return { success: false, error: "List not found" };
+  
+  if (list.ownerId !== String(userId)) {
+    return { success: false, error: "Only the owner can delete this list" };
+  }
+  
+  // Remove from all members' lists
+  list.members.forEach(m => {
+    if (collabTodosDb.userLists[m.userId]) {
+      collabTodosDb.userLists[m.userId] = collabTodosDb.userLists[m.userId].filter(lid => lid !== listId);
+    }
+  });
+  
+  // Delete the list
+  delete collabTodosDb.lists[listId];
+  
+  saveCollabTodos();
+  return { success: true };
+}
+
+// Add task to collaborative list
+function addCollabTask(userId, listId, taskData, username = null) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = {
+    id: generateTaskId(),
+    text: taskData.text,
+    completed: false,
+    priority: taskData.priority || "none",
+    category: taskData.category || "other",
+    dueDate: taskData.dueDate || null,
+    createdAt: new Date().toISOString(),
+    createdBy: { userId: String(userId), username },
+    completedAt: null,
+    completedBy: null,
+    assignedTo: taskData.assignedTo || null
+  };
+  
+  list.tasks.push(task);
+  list.stats.totalCreated++;
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Toggle collab task completion
+function toggleCollabTask(userId, listId, taskId, username = null) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = list.tasks.find(t => t.id === taskId);
+  if (!task) return null;
+  
+  task.completed = !task.completed;
+  
+  if (task.completed) {
+    task.completedAt = new Date().toISOString();
+    task.completedBy = { userId: String(userId), username };
+    list.stats.totalCompleted++;
+  } else {
+    task.completedAt = null;
+    task.completedBy = null;
+  }
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Delete collab task
+function deleteCollabTask(userId, listId, taskId) {
+  const list = getCollabList(listId);
+  if (!list) return false;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return false;
+  }
+  
+  const index = list.tasks.findIndex(t => t.id === taskId);
+  if (index === -1) return false;
+  
+  list.tasks.splice(index, 1);
+  saveCollabTodos();
+  return true;
+}
+
+// Get collab task by ID
+function getCollabTaskById(listId, taskId) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  return list.tasks.find(t => t.id === taskId) || null;
+}
+
+// Update collab task
+function updateCollabTask(userId, listId, taskId, updates) {
+  const list = getCollabList(listId);
+  if (!list) return null;
+  
+  // Check if user is a member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return null;
+  }
+  
+  const task = list.tasks.find(t => t.id === taskId);
+  if (!task) return null;
+  
+  if (updates.text !== undefined) task.text = updates.text;
+  if (updates.priority !== undefined) task.priority = updates.priority;
+  if (updates.category !== undefined) task.category = updates.category;
+  if (updates.dueDate !== undefined) task.dueDate = updates.dueDate;
+  if (updates.assignedTo !== undefined) task.assignedTo = updates.assignedTo;
+  
+  saveCollabTodos();
+  return task;
+}
+
+// Clear completed tasks from collab list
+function clearCollabCompletedTasks(userId, listId) {
+  const list = getCollabList(listId);
+  if (!list) return 0;
+  
+  // Check if user is owner or member
+  if (!list.members.some(m => m.userId === String(userId))) {
+    return 0;
+  }
+  
+  const beforeCount = list.tasks.length;
+  list.tasks = list.tasks.filter(t => !t.completed);
+  const removed = beforeCount - list.tasks.length;
+  
+  if (removed > 0) saveCollabTodos();
+  return removed;
+}
+
+// Build collab list display message
+function buildCollabListMessage(list, page = 0) {
+  const pageSize = 8;
+  const tasks = list.tasks;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const completedCount = tasks.filter(t => t.completed).length;
+  const pendingCount = tasks.length - completedCount;
+  
+  let message = [
+    `👥 <b>${escapeHTML(list.name)}</b>`,
+    ``,
+    `📊 ${pendingCount} pending • ${completedCount} done • ${list.members.length} members`,
+    `🔑 Join code: <code>${list.joinCode}</code>`,
+    ``,
+  ];
+  
+  if (pageTasks.length === 0) {
+    message.push(`<i>No tasks yet! Add one with the button below.</i>`);
+  } else {
+    pageTasks.forEach((task, i) => {
+      const idx = startIndex + i + 1;
+      const checkbox = task.completed ? "✅" : "⬜";
+      const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+      const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+      
+      let completedByText = "";
+      if (task.completed && task.completedBy && list.settings.showCompletedBy) {
+        const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+        completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+      }
+      
+      message.push(`${checkbox} ${idx}. ${text}${priorityIndicator}${completedByText}`);
+    });
+  }
+  
+  if (totalPages > 1) {
+    message.push(``);
+    message.push(`<i>Page ${currentPage + 1}/${totalPages}</i>`);
+  }
+  
+  message.push(``);
+  message.push(`<i>Tap task to toggle • Tap again for options</i>`);
+  
+  return message.join("\n");
+}
+
+// Build collab list keyboard
+function buildCollabListKeyboard(list, page = 0) {
+  const pageSize = 8;
+  const tasks = list.tasks;
+  const totalPages = Math.ceil(tasks.length / pageSize) || 1;
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * pageSize;
+  const pageTasks = tasks.slice(startIndex, startIndex + pageSize);
+  
+  const kb = new InlineKeyboard();
+  
+  // Task toggle buttons (2 per row)
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    kb.text(`${icon1} ${startIndex + i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (pageTasks[i + 1]) {
+      const task2 = pageTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      kb.text(`${icon2} ${startIndex + i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    kb.row();
+  }
+  
+  // Pagination
+  if (totalPages > 1) {
+    if (currentPage > 0) {
+      kb.text("◀️", `ct_page:${list.id}:${currentPage - 1}`);
+    }
+    kb.text(`${currentPage + 1}/${totalPages}`, "ct_noop");
+    if (currentPage < totalPages - 1) {
+      kb.text("▶️", `ct_page:${list.id}:${currentPage + 1}`);
+    }
+    kb.row();
+  }
+  
+  // Action buttons
+  kb.text("➕ Add Task", `ct_add:${list.id}`)
+    .text("🗑️ Clear Done", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .switchInlineCurrent("← My Lists", "ct: ");
+  
+  return kb;
+}
+
 // /todo - Advanced todo/checklist command
 bot.command("todo", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -8892,6 +9289,550 @@ bot.callbackQuery("itodo_clear_done", async (ctx) => {
         .text("← Back to List", "itodo_back"),
     });
   } catch (e) {}
+});
+
+// =====================
+// COLLABORATIVE TODO CALLBACK HANDLERS
+// =====================
+
+// Track last tap for collab double-tap detection
+const collabTodoLastTap = new Map();
+
+bot.callbackQuery(/^ct_tap:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  const now = Date.now();
+  const lastTap = collabTodoLastTap.get(userId);
+  
+  // Check for double-tap (same task within 3 seconds)
+  if (lastTap && lastTap.taskId === taskId && lastTap.listId === listId && (now - lastTap.timestamp) < 3000) {
+    // Double-tap detected - show action menu
+    collabTodoLastTap.delete(userId);
+    await ctx.answerCallbackQuery({ text: "⚙️ Opening options..." });
+    
+    const list = getCollabList(listId);
+    const task = list?.tasks.find(t => t.id === taskId);
+    if (!task || !list) {
+      return ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    }
+    
+    const checkbox = task.completed ? "✅" : "⬜";
+    const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+    
+    let completedByText = "";
+    if (task.completed && task.completedBy) {
+      const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+      completedByText = `\n✅ Completed by: ${escapeHTML(completer)}`;
+    }
+    
+    const menuText = [
+      `⚙️ <b>Task Options</b>`,
+      ``,
+      `${checkbox} ${escapeHTML(task.text)}`,
+      ``,
+      `👥 List: <b>${escapeHTML(list.name)}</b>`,
+      `🎯 Priority: ${priorityText}${completedByText}`,
+      ``,
+      `<i>Choose an action:</i>`,
+    ].join("\n");
+    
+    const keyboard = new InlineKeyboard()
+      .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `ct_toggle:${listId}:${taskId}`)
+      .text("🗑️ Delete", `ct_delete:${listId}:${taskId}`)
+      .row()
+      .text("🔴 High", `ct_pri:${listId}:${taskId}:high`)
+      .text("🟡 Med", `ct_pri:${listId}:${taskId}:medium`)
+      .text("🟢 Low", `ct_pri:${listId}:${taskId}:low`)
+      .row()
+      .text("← Back to List", `ct_back:${listId}`);
+    
+    try {
+      await ctx.editMessageText(menuText, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  // First tap - toggle task
+  collabTodoLastTap.set(userId, { listId, taskId, timestamp: now });
+  setTimeout(() => {
+    const tap = collabTodoLastTap.get(userId);
+    if (tap && tap.taskId === taskId && tap.listId === listId) {
+      collabTodoLastTap.delete(userId);
+    }
+  }, 3000);
+  
+  const task = toggleCollabTask(userId, listId, taskId, ctx.from?.username);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not toggle task", show_alert: true });
+    return;
+  }
+  
+  // Refresh the list view
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const pendingCount = list.tasks.filter(t => !t.completed).length;
+  const doneCount = list.tasks.filter(t => t.completed).length;
+  const isOwner = list.ownerId === String(userId);
+  
+  let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+  listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+  listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+  
+  if (list.tasks.length === 0) {
+    listText += `<i>No tasks yet!</i>\n`;
+  } else {
+    const displayTasks = list.tasks.slice(0, 8);
+    displayTasks.forEach((t, i) => {
+      const checkbox = t.completed ? "✅" : "⬜";
+      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+      const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+      
+      let completedByText = "";
+      if (t.completed && t.completedBy && list.settings.showCompletedBy) {
+        const completer = t.completedBy.username || `User ${t.completedBy.userId.slice(-4)}`;
+        completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+      }
+      
+      listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+    });
+    
+    if (list.tasks.length > 8) {
+      listText += `\n<i>+${list.tasks.length - 8} more tasks...</i>\n`;
+    }
+  }
+  
+  listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  const displayTasks = list.tasks.slice(0, 6);
+  for (let i = 0; i < displayTasks.length; i += 2) {
+    const task1 = displayTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (displayTasks[i + 1]) {
+      const task2 = displayTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", `ct_add:${list.id}`)
+    .text("🗑️ Clear", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .switchInlineCurrent("← My Lists", "ct: ");
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_toggle:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  
+  const task = toggleCollabTask(userId, listId, taskId, ctx.from?.username);
+  
+  if (task) {
+    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not toggle task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const pendingCount = list.tasks.filter(t => !t.completed).length;
+  const doneCount = list.tasks.filter(t => t.completed).length;
+  const isOwner = list.ownerId === String(userId);
+  
+  let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+  listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+  listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+  
+  const displayTasks = list.tasks.slice(0, 8);
+  displayTasks.forEach((t, i) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    
+    let completedByText = "";
+    if (t.completed && t.completedBy && list.settings.showCompletedBy) {
+      const completer = t.completedBy.username || `User ${t.completedBy.userId.slice(-4)}`;
+      completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+    }
+    
+    listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+  });
+  
+  listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_delete:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  
+  const deleted = deleteCollabTask(userId, listId, taskId);
+  
+  if (deleted) {
+    await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not delete task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_pri:(.+):(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const taskId = ctx.match[2];
+  const priority = ctx.match[3];
+  
+  const task = updateCollabTask(userId, listId, taskId, { priority });
+  
+  if (task) {
+    const emoji = priority === "high" ? "🔴" : priority === "medium" ? "🟡" : "🟢";
+    await ctx.answerCallbackQuery({ text: `${emoji} Priority set to ${priority}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Could not update task", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_back:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_add:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery({ text: "➕ Use inline to add task" });
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const addText = [
+    `➕ <b>Add Task to ${escapeHTML(list.name)}</b>`,
+    ``,
+    `Type in inline mode:`,
+    `<code>ct:add:${listId} Your task here</code>`,
+    ``,
+    `<i>Quick options:</i>`,
+    `• <code>#work</code> - Set category`,
+    `• <code>!high</code> - Set priority`,
+    `• <code>@today</code> - Set due date`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(addText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .switchInlineCurrent("➕ Add Task", `ct:add:${listId} `)
+        .row()
+        .text("← Back to List", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_clear:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const cleared = clearCollabCompletedTasks(userId, listId);
+  
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
+  
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_members:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const isOwner = list.ownerId === String(userId);
+  
+  let membersText = [
+    `👥 <b>Members of ${escapeHTML(list.name)}</b>`,
+    ``,
+  ];
+  
+  list.members.forEach((m, i) => {
+    const roleEmoji = m.role === "owner" ? " 👑" : "";
+    const name = m.username ? `@${m.username}` : `User ${m.userId.slice(-4)}`;
+    membersText.push(`${i + 1}. ${escapeHTML(name)}${roleEmoji}`);
+  });
+  
+  membersText.push(``);
+  membersText.push(`🔑 Share code: <code>${list.joinCode}</code>`);
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔗 Share Code", `ct_share:${listId}`)
+    .row();
+  
+  if (isOwner) {
+    keyboard.text("🗑️ Delete List", `ct_delete_list:${listId}`).row();
+  } else {
+    keyboard.text("🚪 Leave List", `ct_leave:${listId}`).row();
+  }
+  
+  keyboard.text("← Back to List", `ct_back:${listId}`);
+  
+  try {
+    await ctx.editMessageText(membersText.join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_share:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const shareText = [
+    `🔗 <b>Share ${escapeHTML(list.name)}</b>`,
+    ``,
+    `Share this code with others:`,
+    `<code>${list.joinCode}</code>`,
+    ``,
+    `They can join by typing:`,
+    `<code>ct:join ${list.joinCode}</code>`,
+    ``,
+    `Or share this message directly!`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(shareText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("← Back to List", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_leave:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const result = leaveCollabList(userId, listId);
+  
+  if (result.success) {
+    await ctx.answerCallbackQuery({ text: "🚪 Left the list!" });
+    
+    try {
+      await ctx.editMessageText("🚪 <b>You left the list.</b>\n\n<i>via StarzAI • Starz Check</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: "),
+      });
+    } catch (e) {}
+  } else {
+    await ctx.answerCallbackQuery({ text: result.error || "Could not leave list", show_alert: true });
+  }
+});
+
+bot.callbackQuery(/^ct_delete_list:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  // Show confirmation
+  const confirmText = [
+    `⚠️ <b>Delete ${escapeHTML(list.name)}?</b>`,
+    ``,
+    `This will permanently delete the list and all ${list.tasks.length} tasks.`,
+    ``,
+    `All ${list.members.length} members will lose access.`,
+    ``,
+    `<b>This cannot be undone!</b>`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(confirmText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Yes, Delete", `ct_confirm_delete:${listId}`)
+        .text("❌ Cancel", `ct_back:${listId}`),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^ct_confirm_delete:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const result = deleteCollabList(userId, listId);
+  
+  if (result.success) {
+    await ctx.answerCallbackQuery({ text: "🗑️ List deleted!" });
+    
+    try {
+      await ctx.editMessageText("🗑️ <b>List deleted.</b>\n\n<i>via StarzAI • Starz Check</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: "),
+      });
+    } catch (e) {}
+  } else {
+    await ctx.answerCallbackQuery({ text: result.error || "Could not delete list", show_alert: true });
+  }
+});
+
+bot.callbackQuery(/^ct_page:(.+):(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const page = parseInt(ctx.match[2]);
+  const list = getCollabList(listId);
+  if (!list) return;
+  
+  const listText = buildCollabListMessage(list, page);
+  const keyboard = buildCollabListKeyboard(list, page);
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("ct_noop", async (ctx) => {
+  await ctx.answerCallbackQuery();
 });
 
 // /persona - Set custom AI personality
@@ -13817,10 +14758,16 @@ bot.on("inline_query", async (ctx) => {
   const model = session.model || ensureChosenModelValid(userId);
   const sessionKey = makeId(6);
 
-  // Empty query - show main menu with Ask AI card and Settings/Help
+  // Empty query - show main menu with Ask AI, Starz Check, Settings, Help cards
   if (!q || q.length === 0) {
     console.log("Showing main menu (empty query)");
     const shortModel = model.split("/").pop();
+    
+    // Get user's task counts for Starz Check card
+    const userTodos = getUserTodos(userId);
+    const personalPending = userTodos.filter(t => !t.completed).length;
+    const userCollabLists = getCollabListsForUser(userId);
+    const collabCount = userCollabLists.length;
     
     // Original Ask AI card with mode buttons
     const askAiText = [
@@ -13836,6 +14783,24 @@ bot.on("inline_query", async (ctx) => {
       "🌐 Websearch - Search the web with AI summary (`w:`)",
       "",
       "_Tap a button or type directly!_",
+    ].join("\n");
+    
+    // Starz Check card text
+    const starzCheckText = [
+      "✅ *Starz Check - Task Manager*",
+      "",
+      "📋 *Personal* - Your private tasks",
+      "   Track your daily todos, set priorities,",
+      "   due dates, and build streaks!",
+      "",
+      "👥 *Collaborative* - Shared lists",
+      "   Create shared checklists for groups,",
+      "   see who completed what in real-time!",
+      "",
+      "➕ *Quick Add* - Add tasks instantly",
+      "   `sc:add Buy groceries #shopping`",
+      "",
+      "_Tap a button to get started!_",
     ].join("\n");
     
     const results = [
@@ -13860,9 +14825,26 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("📝 Summarize", "sum: ")
           .row()
           .switchInlineCurrent("🎭 Character", "as ")
-          .switchInlineCurrent("🤝🏻 Partner", "p: ")
+          .switchInlineCurrent("🤝🏻 Partner", "p: "),
+      },
+      {
+        type: "article",
+        id: `starz_check_${sessionKey}`,
+        title: "✅ Starz Check",
+        description: `Personal: ${personalPending} pending • Collab: ${collabCount} lists`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+        input_message_content: { 
+          message_text: starzCheckText,
+          parse_mode: "Markdown"
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("📋 Personal", "sc: ")
+          .switchInlineCurrent("👥 Collaborative", "ct: ")
           .row()
-          .switchInlineCurrent("📋 Tasks", "t: "),
+          .switchInlineCurrent("➕ Quick Add", "sc:add ")
+          .switchInlineCurrent("📊 Stats", "sc:stats")
+          .row()
+          .switchInlineCurrent("← Back", ""),
       },
       {
         type: "article",
@@ -14683,6 +15665,648 @@ bot.on("inline_query", async (ctx) => {
         },
         reply_markup: new InlineKeyboard()
           .switchInlineCurrent("📋 View Tasks", "t: ")
+          .switchInlineCurrent("← Back", ""),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "sc:" or "sc " - Starz Check Personal mode (alias for t:)
+  if (qLower.startsWith("sc:") || qLower.startsWith("sc ")) {
+    const subCommand = q.slice(3).trim();
+    const todos = getUserTodos(userId);
+    const filters = getTodoFilters(userId);
+    
+    // sc: or sc (empty) - show personal task list
+    if (!subCommand) {
+      const taskCount = todos.tasks?.length || 0;
+      const doneCount = (todos.tasks || []).filter(t => t.completed).length;
+      const pendingCount = taskCount - doneCount;
+      
+      if (taskCount === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_empty_${sessionKey}`,
+            title: "📋 No Personal Tasks Yet",
+            description: "Type sc:add <task> to create your first task",
+            thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+            input_message_content: {
+              message_text: "📋 <b>Starz Check - Personal</b>\n\n<i>No tasks yet!</i>\n\nAdd your first task:\n<code>sc:add Buy groceries</code>\n\n<i>via StarzAI • Starz Check</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Add Task", "sc:add ")
+              .row()
+              .switchInlineCurrent("👥 Collab Lists", "ct: ")
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Build task list with toggle buttons
+      const filteredTodos = filterTodos(todos.tasks || [], filters);
+      const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+      const displayTodos = sortedTodos.slice(0, 8);
+      
+      let taskListText = `📋 <b>Starz Check - Personal</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+      
+      displayTodos.forEach((task, idx) => {
+        const checkbox = task.completed ? "✅" : "⬜";
+        const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+        const categoryEmoji = getCategoryEmoji(task.category);
+        const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? " ⚠️" : "";
+        taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+      });
+      
+      if (sortedTodos.length > 8) {
+        taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
+      }
+      
+      const streak = getCompletionStreak(userId);
+      if (streak > 0) {
+        taskListText += `\n🔥 ${streak} day streak!`;
+      }
+      
+      taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+      
+      const keyboard = new InlineKeyboard();
+      
+      for (let i = 0; i < displayTodos.length; i += 2) {
+        const task1 = displayTodos[i];
+        const icon1 = task1.completed ? "✅" : "⬜";
+        keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+        
+        if (displayTodos[i + 1]) {
+          const task2 = displayTodos[i + 1];
+          const icon2 = task2.completed ? "✅" : "⬜";
+          keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+        }
+        keyboard.row();
+      }
+      
+      keyboard
+        .text("➕ Add", "itodo_add")
+        .text("🔍 Filter", "itodo_filter")
+        .text("📊 Stats", "itodo_stats")
+        .row()
+        .switchInlineCurrent("👥 Collab", "ct: ")
+        .switchInlineCurrent("🔄 Refresh", "sc: ")
+        .switchInlineCurrent("← Back", "");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_list_${makeId(6)}`,
+          title: `📋 Personal Tasks (${pendingCount} pending)`,
+          description: displayTodos.slice(0, 3).map(t => (t.completed ? "✓ " : "○ ") + t.text.slice(0, 20)).join(" • "),
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: taskListText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:add <task> - quick add task
+    if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
+      const taskText = subCommand.slice(4).trim();
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `sc_add_help_${sessionKey}`,
+            title: "➕ Add Personal Task",
+            description: "sc:add Buy groceries #shopping !high @tomorrow",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "sc: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const parsed = parseTaskText(taskText);
+      const newTask = createTask(userId, parsed);
+      
+      const categoryEmoji = getCategoryEmoji(newTask.category);
+      const priorityText = newTask.priority === "high" ? "🔴 High" : newTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+      const dueText = newTask.dueDate ? `📅 ${newTask.dueDate}` : "";
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_added_${makeId(6)}`,
+          title: `✅ Task Added: ${parsed.text.slice(0, 30)}`,
+          description: `${categoryEmoji} ${priorityText} ${dueText}`.trim(),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Added!</b>\n\n⬜ ${escapeHTML(parsed.text)}\n\n${categoryEmoji} ${escapeHTML(newTask.category || "personal")} • ${priorityText}${dueText ? "\n" + dueText : ""}\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "sc: ")
+            .switchInlineCurrent("➕ Add Another", "sc:add "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // sc:stats - show statistics
+    if (subCommand.toLowerCase() === "stats") {
+      const userTodos = getUserTodos(userId);
+      const stats = userTodos.stats || { totalCreated: 0, totalCompleted: 0, currentStreak: 0, longestStreak: 0 };
+      const tasks = userTodos.tasks || [];
+      
+      const totalTasks = tasks.length;
+      const completedTasks = tasks.filter(t => t.completed).length;
+      const pendingTasks = totalTasks - completedTasks;
+      const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      
+      const statsText = [
+        "📊 <b>Starz Check - Personal Stats</b>",
+        "",
+        `📋 Total Tasks: ${totalTasks}`,
+        `✅ Completed: ${completedTasks}`,
+        `⏳ Pending: ${pendingTasks}`,
+        `📈 Completion Rate: ${completionRate}%`,
+        "",
+        `🔥 Current Streak: ${stats.currentStreak} day${stats.currentStreak !== 1 ? "s" : ""}`,
+        `🏆 Longest Streak: ${stats.longestStreak} day${stats.longestStreak !== 1 ? "s" : ""}`,
+        `📅 All-time Completed: ${stats.totalCompleted}`,
+        "",
+        "<i>via StarzAI • Starz Check</i>",
+      ].join("\n");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `sc_stats_${sessionKey}`,
+          title: "📊 Personal Task Statistics",
+          description: `${completedTasks}/${totalTasks} done • 🔥 ${stats.currentStreak} day streak`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/statistics.png",
+          input_message_content: {
+            message_text: statsText,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "sc: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `sc_help_${sessionKey}`,
+        title: "📋 Starz Check - Personal Help",
+        description: "sc: list • sc:add <task> • sc:stats",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `📋 <b>Starz Check - Personal Help</b>\n\n<code>sc:</code> - View task list\n<code>sc:add Buy milk</code> - Add task\n<code>sc:add Task #work !high @tomorrow</code> - Quick add with options\n<code>sc:stats</code> - View statistics\n\n<i>via StarzAI • Starz Check</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("📋 View Tasks", "sc: ")
+          .switchInlineCurrent("← Back", ""),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "ct:" or "ct " - Collaborative Todo mode
+  if (qLower.startsWith("ct:") || qLower.startsWith("ct ")) {
+    const subCommand = q.slice(3).trim();
+    const userLists = getCollabListsForUser(userId);
+    
+    // ct: or ct (empty) - show user's collaborative lists
+    if (!subCommand) {
+      if (userLists.length === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_empty_${sessionKey}`,
+            title: "👥 No Collaborative Lists Yet",
+            description: "Create a new list or join one with a code",
+            thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+            input_message_content: {
+              message_text: "👥 <b>Starz Check - Collaborative</b>\n\n<i>No shared lists yet!</i>\n\nCreate a new list:\n<code>ct:new Party Planning</code>\n\nOr join with a code:\n<code>ct:join ABC123</code>\n\n<i>via StarzAI • Starz Check</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Create List", "ct:new ")
+              .switchInlineCurrent("🔗 Join List", "ct:join ")
+              .row()
+              .switchInlineCurrent("📋 Personal", "sc: ")
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Show list of collaborative lists
+      const results = userLists.slice(0, 10).map((list, idx) => {
+        const pendingCount = list.tasks.filter(t => !t.completed).length;
+        const doneCount = list.tasks.filter(t => t.completed).length;
+        const memberCount = list.members.length;
+        const isOwner = list.ownerId === String(userId);
+        
+        let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+        listText += `📊 ${pendingCount} pending • ${doneCount} done • ${memberCount} members\n`;
+        listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+        
+        if (list.tasks.length === 0) {
+          listText += `<i>No tasks yet!</i>\n`;
+        } else {
+          const displayTasks = list.tasks.slice(0, 5);
+          displayTasks.forEach((task, i) => {
+            const checkbox = task.completed ? "✅" : "⬜";
+            const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+            listText += `${checkbox} ${i + 1}. ${text}\n`;
+          });
+          if (list.tasks.length > 5) {
+            listText += `<i>+${list.tasks.length - 5} more...</i>\n`;
+          }
+        }
+        
+        listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+        
+        const keyboard = new InlineKeyboard();
+        
+        const displayTasks = list.tasks.slice(0, 6);
+        for (let i = 0; i < displayTasks.length; i += 2) {
+          const task1 = displayTasks[i];
+          const icon1 = task1.completed ? "✅" : "⬜";
+          keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+          
+          if (displayTasks[i + 1]) {
+            const task2 = displayTasks[i + 1];
+            const icon2 = task2.completed ? "✅" : "⬜";
+            keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+          }
+          keyboard.row();
+        }
+        
+        keyboard
+          .text("➕ Add", `ct_add:${list.id}`)
+          .text("🗑️ Clear", `ct_clear:${list.id}`)
+          .row()
+          .text("👥 Members", `ct_members:${list.id}`)
+          .text("🔗 Share", `ct_share:${list.id}`)
+          .row()
+          .switchInlineCurrent("← My Lists", "ct: ");
+        
+        return {
+          type: "article",
+          id: `ct_list_${list.id}_${makeId(4)}`,
+          title: `👥 ${list.name}${isOwner ? " 👑" : ""}`,
+          description: `${pendingCount} pending • ${memberCount} members • Code: ${list.joinCode}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+          input_message_content: {
+            message_text: listText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        };
+      });
+      
+      // Add create/join options at the end
+      results.push({
+        type: "article",
+        id: `ct_create_${sessionKey}`,
+        title: "➕ Create New List",
+        description: "Start a new collaborative checklist",
+        thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("➕ Create", "ct:new "),
+      });
+      
+      results.push({
+        type: "article",
+        id: `ct_join_${sessionKey}`,
+        title: "🔗 Join Existing List",
+        description: "Enter a join code to join a shared list",
+        thumbnail_url: "https://img.icons8.com/fluency/96/link.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🔗 Join", "ct:join "),
+      });
+      
+      return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:new <name> - create new collaborative list
+    if (subCommand.toLowerCase().startsWith("new ") || subCommand.toLowerCase() === "new") {
+      const listName = subCommand.slice(4).trim();
+      
+      if (!listName) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_new_help_${sessionKey}`,
+            title: "➕ Create Collaborative List",
+            description: "ct:new Party Planning",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const newList = createCollabList(userId, listName);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_created_${newList.id}`,
+          title: `✅ Created: ${listName}`,
+          description: `Share code: ${newList.joinCode}`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>List Created!</b>\n\n👥 <b>${escapeHTML(listName)}</b>\n\n🔑 Share this code with others:\n<code>${newList.joinCode}</code>\n\nThey can join with:\n<code>ct:join ${newList.joinCode}</code>\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${newList.id}`)
+            .text("🔗 Share", `ct_share:${newList.id}`)
+            .row()
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:join <code> - join a collaborative list
+    if (subCommand.toLowerCase().startsWith("join ") || subCommand.toLowerCase() === "join") {
+      const joinCode = subCommand.slice(5).trim().toUpperCase();
+      
+      if (!joinCode) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_join_help_${sessionKey}`,
+            title: "🔗 Join Collaborative List",
+            description: "ct:join ABC123",
+            thumbnail_url: "https://img.icons8.com/fluency/96/link.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const result = joinCollabList(userId, joinCode, ctx.from?.username);
+      
+      if (!result.success) {
+        if (result.error === "Already a member") {
+          return safeAnswerInline(ctx, [
+            {
+              type: "article",
+              id: `ct_already_${sessionKey}`,
+              title: `📋 Already a member of ${result.list?.name || "this list"}`,
+              description: "You're already in this list!",
+              thumbnail_url: "https://img.icons8.com/fluency/96/info.png",
+              input_message_content: {
+                message_text: `ℹ️ <b>Already a Member!</b>\n\nYou're already in <b>${escapeHTML(result.list?.name || "this list")}</b>\n\n<i>via StarzAI • Starz Check</i>`,
+                parse_mode: "HTML",
+              },
+              reply_markup: new InlineKeyboard()
+                .switchInlineCurrent("📋 View List", `ct:open ${result.list?.id}`)
+                .switchInlineCurrent("← My Lists", "ct: "),
+            },
+          ], { cache_time: 0, is_personal: true });
+        }
+        
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "Check the code and try again",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: {
+              message_text: `⚠️ <b>List Not Found</b>\n\nNo list found with code: <code>${escapeHTML(joinCode)}</code>\n\nCheck the code and try again.\n\n<i>via StarzAI • Starz Check</i>`,
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("🔗 Try Again", "ct:join ")
+              .switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const list = result.list;
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_joined_${list.id}`,
+          title: `✅ Joined: ${list.name}`,
+          description: `${list.members.length} members • ${list.tasks.length} tasks`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Joined Successfully!</b>\n\n👥 <b>${escapeHTML(list.name)}</b>\n\n👤 ${list.members.length} members\n📋 ${list.tasks.length} tasks\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${list.id}`)
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:open <listId> - open a specific list
+    if (subCommand.toLowerCase().startsWith("open ")) {
+      const listId = subCommand.slice(5).trim();
+      const list = getCollabList(listId);
+      
+      if (!list) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "This list may have been deleted",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Check if user is a member
+      if (!list.members.some(m => m.userId === String(userId))) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notmember_${sessionKey}`,
+            title: "⚠️ Not a Member",
+            description: "You're not a member of this list",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("🔗 Join", `ct:join ${list.joinCode}`)
+              .switchInlineCurrent("← Back", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const pendingCount = list.tasks.filter(t => !t.completed).length;
+      const doneCount = list.tasks.filter(t => t.completed).length;
+      const isOwner = list.ownerId === String(userId);
+      
+      let listText = `👥 <b>${escapeHTML(list.name)}</b>${isOwner ? " 👑" : ""}\n\n`;
+      listText += `📊 ${pendingCount} pending • ${doneCount} done • ${list.members.length} members\n`;
+      listText += `🔑 Join code: <code>${list.joinCode}</code>\n\n`;
+      
+      if (list.tasks.length === 0) {
+        listText += `<i>No tasks yet! Add one below.</i>\n`;
+      } else {
+        const displayTasks = list.tasks.slice(0, 8);
+        displayTasks.forEach((task, i) => {
+          const checkbox = task.completed ? "✅" : "⬜";
+          const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+          const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+          
+          let completedByText = "";
+          if (task.completed && task.completedBy && list.settings.showCompletedBy) {
+            const completer = task.completedBy.username || `User ${task.completedBy.userId.slice(-4)}`;
+            completedByText = ` <i>by ${escapeHTML(completer)}</i>`;
+          }
+          
+          listText += `${checkbox} ${i + 1}. ${text}${priorityIndicator}${completedByText}\n`;
+        });
+        
+        if (list.tasks.length > 8) {
+          listText += `\n<i>+${list.tasks.length - 8} more tasks...</i>\n`;
+        }
+      }
+      
+      listText += `\n<i>Tap task to toggle • Tap again for options</i>`;
+      
+      const keyboard = new InlineKeyboard();
+      
+      const displayTasks = list.tasks.slice(0, 6);
+      for (let i = 0; i < displayTasks.length; i += 2) {
+        const task1 = displayTasks[i];
+        const icon1 = task1.completed ? "✅" : "⬜";
+        keyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+        
+        if (displayTasks[i + 1]) {
+          const task2 = displayTasks[i + 1];
+          const icon2 = task2.completed ? "✅" : "⬜";
+          keyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+        }
+        keyboard.row();
+      }
+      
+      keyboard
+        .text("➕ Add", `ct_add:${list.id}`)
+        .text("🗑️ Clear", `ct_clear:${list.id}`)
+        .row()
+        .text("👥 Members", `ct_members:${list.id}`)
+        .text("🔗 Share", `ct_share:${list.id}`)
+        .row()
+        .switchInlineCurrent("🔄 Refresh", `ct:open ${list.id}`)
+        .switchInlineCurrent("← My Lists", "ct: ");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_view_${list.id}_${makeId(4)}`,
+          title: `👥 ${list.name}${isOwner ? " 👑" : ""}`,
+          description: `${pendingCount} pending • ${list.members.length} members`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+          input_message_content: {
+            message_text: listText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // ct:add <listId> <task> - add task to collaborative list
+    if (subCommand.toLowerCase().startsWith("add:")) {
+      const parts = subCommand.slice(4).split(" ");
+      const listId = parts[0];
+      const taskText = parts.slice(1).join(" ").trim();
+      
+      const list = getCollabList(listId);
+      if (!list) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_notfound_${sessionKey}`,
+            title: "⚠️ List Not Found",
+            description: "This list may have been deleted",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_addhelp_${sessionKey}`,
+            title: `➕ Add Task to ${list.name}`,
+            description: "Type your task after the list ID",
+            thumbnail_url: "https://img.icons8.com/fluency/96/add.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", `ct:open ${listId}`),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const parsed = parseTaskText(taskText);
+      const newTask = addCollabTask(userId, listId, parsed, ctx.from?.username);
+      
+      if (!newTask) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `ct_addfail_${sessionKey}`,
+            title: "⚠️ Could not add task",
+            description: "You may not be a member of this list",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← My Lists", "ct: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ct_added_${newTask.id}`,
+          title: `✅ Task Added to ${list.name}`,
+          description: parsed.text.slice(0, 40),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Added!</b>\n\n👥 <b>${escapeHTML(list.name)}</b>\n\n⬜ ${escapeHTML(parsed.text)}\n\n<i>via StarzAI • Starz Check</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View List", `ct:open ${listId}`)
+            .switchInlineCurrent("← My Lists", "ct: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `ct_help_${sessionKey}`,
+        title: "👥 Starz Check - Collab Help",
+        description: "ct: lists • ct:new <name> • ct:join <code>",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `👥 <b>Starz Check - Collab Help</b>\n\n<code>ct:</code> - View your shared lists\n<code>ct:new Party Planning</code> - Create new list\n<code>ct:join ABC123</code> - Join with code\n<code>ct:open [id]</code> - Open specific list\n\n<i>via StarzAI • Starz Check</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: ")
           .switchInlineCurrent("← Back", ""),
       },
     ], { cache_time: 0, is_personal: true });
