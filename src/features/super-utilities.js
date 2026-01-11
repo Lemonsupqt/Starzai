@@ -82,68 +82,128 @@ const URL_PATTERNS = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIDEO/SOCIAL MEDIA DOWNLOADS (yt-dlp based)
+// VIDEO/SOCIAL MEDIA DOWNLOADS (Cobalt API based)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download video/audio from various platforms using yt-dlp
- * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, Spotify, etc.
+ * Download video/audio from various platforms using a Cobalt-compatible API.
+ * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, etc.
+ *
+ * NOTE: The default public api.cobalt.tools instance has bot protection and is
+ * not intended for heavy use in third-party projects. For production, you
+ * should host your own instance and point CONFIG.cobalt.api to it.
  */
 async function downloadMedia(url, audioOnly = false) {
-  const tmpDir = os.tmpdir();
-  const outputId = `starz_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const outputTemplate = path.join(tmpDir, `${outputId}.%(ext)s`);
-  
   try {
-    // Build yt-dlp command
-    let cmd = `yt-dlp --no-playlist --no-warnings -q`;
-    
-    if (audioOnly) {
-      cmd += ` -x --audio-format mp3 --audio-quality 0`;
-    } else {
-      cmd += ` -f "best[filesize<50M]/best" --merge-output-format mp4`;
+    if (!CONFIG.cobalt?.api) {
+      return { success: false, error: 'Download server not configured' };
     }
-    
-    cmd += ` -o "${outputTemplate}" "${url}"`;
-    
-    // Execute download
-    await execAsync(cmd, { timeout: 120000 });
-    
-    // Find the downloaded file
-    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
-    if (files.length === 0) {
-      return { success: false, error: 'Download completed but file not found' };
-    }
-    
-    const filePath = path.join(tmpDir, files[0]);
-    const stats = fs.statSync(filePath);
-    
-    // Check file size (Telegram limit is 50MB for bots)
-    if (stats.size > 50 * 1024 * 1024) {
-      fs.unlinkSync(filePath);
-      return { success: false, error: 'File too large (>50MB). Try audio only.' };
-    }
-    
-    return {
-      success: true,
-      filePath: filePath,
-      filename: files[0],
-      size: stats.size
+
+    const endpoint = `${CONFIG.cobalt.api.replace(/\/$/, '')}/`;
+    const timeout = CONFIG.cobalt.timeout || 60000;
+
+    const body = {
+      url,
+      downloadMode: audioOnly ? 'audio' : 'auto',
+      audioFormat: audioOnly ? 'mp3' : 'best',
+      audioBitrate: '320',
+      videoQuality: '1080',
+      filenameStyle: 'basic',
+      disableMetadata: false,
+      // We do not support client-side remuxing/transcoding, so ask the server
+      // to handle everything it can.
+      localProcessing: 'disabled'
     };
-    
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body),
+      timeout
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return {
+        success: false,
+        error: `Download server error (${response.status}): ${text.slice(0, 200) || response.statusText}`
+      };
+    }
+
+    const data = await response.json();
+    const status = data.status;
+
+    if (!status) {
+      return { success: false, error: 'Invalid response from download server' };
+    }
+
+    if (status === 'error') {
+      const code = data.error?.code || 'unknown_error';
+
+      // Map a few common cases to more user-friendly messages
+      if (code.includes('unsupported') || code.includes('service')) {
+        return { success: false, error: 'This link is not supported by the download server.' };
+      }
+      if (code.includes('length') || code.includes('duration')) {
+        return { success: false, error: 'Video is too long for the download server.' };
+      }
+
+      return { success: false, error: `Download failed (${code})` };
+    }
+
+    if (status === 'picker') {
+      const options = (data.picker || [])
+        .map(item => ({
+          type: item.type || 'video',
+          url: item.url,
+          thumb: item.thumb || null
+        }))
+        .filter(o => !!o.url);
+
+      if (!options.length) {
+        return { success: false, error: 'No downloadable items found for this link.' };
+      }
+
+      return {
+        success: true,
+        picker: true,
+        options
+      };
+    }
+
+    if (status === 'tunnel' || status === 'redirect') {
+      if (!data.url) {
+        return { success: false, error: 'Download server did not provide a file URL.' };
+      }
+
+      return {
+        success: true,
+        url: data.url,
+        filename: data.filename || null
+      };
+    }
+
+    if (status === 'local-processing') {
+      // Instance expects the client to handle remuxing/transcoding locally.
+      // We don't support this in the bot environment.
+      return {
+        success: false,
+        error: 'Download server requested local processing, which is not supported.'
+      };
+    }
+
+    return { success: false, error: `Unsupported response from download server (${status})` };
   } catch (error) {
-    // Clean up any partial files
-    try {
-      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
-      files.forEach(f => fs.unlinkSync(path.join(tmpDir, f)));
-    } catch (e) {}
-    
     return { success: false, error: error.message || 'Download failed' };
   }
 }
 
 /**
  * Clean up downloaded file after sending
+ * (kept for backwards compatibility; now typically a no-op)
  */
 function cleanupDownload(filePath) {
   try {
