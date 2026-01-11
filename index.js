@@ -2091,17 +2091,22 @@ async function llmTextStream({ model, messages, temperature = 0.7, max_tokens = 
 }
 
 // Detect if a model is a "thinking" model that needs more tokens
+// Note: GPT-5-nano/mini are NOT thinking models - they're fast models
+// Only include models that actually do chain-of-thought reasoning
 function isThinkingModel(model) {
   if (!model) return false;
   const m = model.toLowerCase();
-  return m.includes('gemini-2.5') || 
+  
+  // Explicitly exclude fast/nano/mini models even if they have "gpt-5" in name
+  if (m.includes('nano') || m.includes('mini')) return false;
+  
+  return m.includes('gemini-2.5-pro') ||   // Gemini Pro does thinking, Flash doesn't
          m.includes('deepseek-r1') || 
          m.includes('thinking') || 
          m.includes('reasoning') ||
          m.includes('kimi-k2-thinking') ||
          m.includes('o1-') ||           // OpenAI o1 models
          m.includes('o3-') ||           // OpenAI o3 models
-         m.includes('gpt-5') ||         // GPT-5 models
          m.includes('grok-4.1-fast-reasoning') ||  // Grok reasoning
          m.includes('claude-opus-4-1'); // Claude Opus 4.1
 }
@@ -2123,9 +2128,18 @@ function responseNeedsContinuation(text, maxTokensUsed = 400) {
   const trimmed = text.trim();
   const len = trimmed.length;
   
-  // Very short responses (under 200 chars) are almost always complete
+  // Very short responses (under 300 chars) are almost always complete
   // e.g., "I'm doing great, thanks for asking! How can I help you?"
-  if (len < 200) return false;
+  // Increased from 200 to 300 to catch more casual responses
+  if (len < 300) return false;
+  
+  // Medium responses (300-600 chars) need clear incompleteness signals
+  // Don't show Continue just because it's medium length
+  if (len < 600) {
+    // Only show Continue if there's a clear incomplete signal
+    const clearIncomplete = /[,:]\.\.\.?\s*$|\band\s*$|\bor\s*$|\bthe\s*$|```[a-z]*\s*$/i.test(trimmed);
+    if (!clearIncomplete) return false;
+  }
   
   // Check for explicit completion signals (model said it's done)
   const completionSignals = [
@@ -3811,9 +3825,9 @@ function settingsCategoryKeyboard(category, userId, currentModel) {
   const tier = user?.tier || "free";
   
   let models = [];
-  if (category === "free") models = FREE_MODELS;
-  else if (category === "premium" && (tier === "premium" || tier === "ultra")) models = PREMIUM_MODELS;
-  else if (category === "ultra" && tier === "ultra") models = ULTRA_MODELS;
+  if (category === "free") models = [...FREE_MODELS, ...GITHUB_FREE_MODELS];
+  else if (category === "premium" && (tier === "premium" || tier === "ultra")) models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
+  else if (category === "ultra" && tier === "ultra") models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   
   // Show models (max 8 per page for now)
   models.slice(0, 8).forEach((m, i) => {
@@ -3860,9 +3874,9 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
   const currentModel = user?.model || "";
   
   let models = [];
-  if (category === "free") models = FREE_MODELS;
-  else if (category === "premium") models = PREMIUM_MODELS;
-  else if (category === "ultra") models = ULTRA_MODELS;
+  if (category === "free") models = [...FREE_MODELS, ...GITHUB_FREE_MODELS];
+  else if (category === "premium") models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
+  else if (category === "ultra") models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   
   // Add model buttons (2 per row)
   for (let i = 0; i < models.length; i += 2) {
