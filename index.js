@@ -3823,8 +3823,8 @@ function settingsMainKeyboard(userId) {
   return kb;
 }
 
-// Category submenu - shows models in a category
-function settingsCategoryKeyboard(category, userId, currentModel) {
+// Category submenu - shows models in a category with pagination (4 per page)
+function settingsCategoryKeyboard(category, userId, currentModel, page = 0) {
   const kb = new InlineKeyboard();
   const user = getUserRecord(userId);
   const tier = user?.tier || "free";
@@ -3834,13 +3834,31 @@ function settingsCategoryKeyboard(category, userId, currentModel) {
   else if (category === "premium" && (tier === "premium" || tier === "ultra")) models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
   else if (category === "ultra" && tier === "ultra") models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   
-  // Show models (max 8 per page for now)
-  models.slice(0, 8).forEach((m, i) => {
+  const MODELS_PER_PAGE = 4;
+  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE);
+  const startIdx = page * MODELS_PER_PAGE;
+  const pageModels = models.slice(startIdx, startIdx + MODELS_PER_PAGE);
+  
+  // Show models (4 per page, 1 per row for clean mobile display)
+  pageModels.forEach((m) => {
     const mShort = m.split("/").pop();
     const isSelected = m === currentModel;
     const label = isSelected ? `✅ ${mShort}` : mShort;
     kb.text(label, `setmodel:${m}`).row();
   });
+  
+  // Pagination row
+  if (totalPages > 1) {
+    const navRow = [];
+    if (page > 0) {
+      kb.text("◀️", `setpage:${category}:${page - 1}`);
+    }
+    kb.text(`${page + 1}/${totalPages}`, "noop");
+    if (page < totalPages - 1) {
+      kb.text("▶️", `setpage:${category}:${page + 1}`);
+    }
+    kb.row();
+  }
   
   kb.text("⬅️ Back", "setmenu:back");
   
@@ -3872,8 +3890,8 @@ function inlineSettingsCategoryKeyboard(sessionKey, userId) {
   return kb;
 }
 
-// Inline settings - model list for a category
-function inlineSettingsModelKeyboard(category, sessionKey, userId) {
+// Inline settings - model list for a category with pagination (4 per page)
+function inlineSettingsModelKeyboard(category, sessionKey, userId, page = 0) {
   const kb = new InlineKeyboard();
   const user = getUserRecord(userId);
   const currentModel = user?.model || "";
@@ -3883,19 +3901,27 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId) {
   else if (category === "premium") models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
   else if (category === "ultra") models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
   
-  // Add model buttons (2 per row)
-  for (let i = 0; i < models.length; i += 2) {
-    const m1 = models[i];
-    const m2 = models[i + 1];
-    const shortName1 = m1.split("/").pop();
-    const label1 = m1 === currentModel ? `✅ ${shortName1}` : shortName1;
-    
-    if (m2) {
-      const shortName2 = m2.split("/").pop();
-      const label2 = m2 === currentModel ? `✅ ${shortName2}` : shortName2;
-      kb.text(label1, `iset_model:${m1}:${sessionKey}`).text(label2, `iset_model:${m2}:${sessionKey}`);
-    } else {
-      kb.text(label1, `iset_model:${m1}:${sessionKey}`);
+  const MODELS_PER_PAGE = 4;
+  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE);
+  const startIdx = page * MODELS_PER_PAGE;
+  const pageModels = models.slice(startIdx, startIdx + MODELS_PER_PAGE);
+  
+  // Show models (4 per page, 1 per row for clean mobile display)
+  pageModels.forEach((m) => {
+    const mShort = m.split("/").pop();
+    const isSelected = m === currentModel;
+    const label = isSelected ? `✅ ${mShort}` : mShort;
+    kb.text(label, `iset_model:${m}:${sessionKey}`).row();
+  });
+  
+  // Pagination row
+  if (totalPages > 1) {
+    if (page > 0) {
+      kb.text("◀️", `iset_page:${category}:${page - 1}:${sessionKey}`);
+    }
+    kb.text(`${page + 1}/${totalPages}`, "noop");
+    if (page < totalPages - 1) {
+      kb.text("▶️", `iset_page:${category}:${page + 1}:${sessionKey}`);
     }
     kb.row();
   }
@@ -8077,6 +8103,38 @@ bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
   }
 });
 
+// Handle pagination for model selection
+bot.callbackQuery(/^setpage:(.+):(\d+)$/, async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const [, category, pageStr] = ctx.callbackQuery.data.match(/^setpage:(.+):(\d+)$/);
+  const page = parseInt(pageStr, 10);
+  const currentModel = ensureChosenModelValid(userId);
+  const shortModel = currentModel.split("/").pop();
+  
+  await ctx.answerCallbackQuery();
+  
+  const categoryNames = { free: "🆓 Free", premium: "⭐ Premium", ultra: "💎 Ultra" };
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *${categoryNames[category]} Models*\n\nCurrent: \`${shortModel}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: settingsCategoryKeyboard(category, userId, currentModel, page)
+      }
+    );
+  } catch (e) {
+    console.error("Edit settings error:", e.message);
+  }
+});
+
+// Noop handler for page indicator button
+bot.callbackQuery(/^noop$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
 // =====================
 // SHARED CHAT CALLBACKS (Multi-user inline chat)
 // Now uses switch_inline_query_current_chat - no DM needed!
@@ -8230,6 +8288,35 @@ bot.callbackQuery(/^iset_back:(.+)$/, async (ctx) => {
       { 
         parse_mode: "Markdown",
         reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Handle pagination for inline model selection
+bot.callbackQuery(/^iset_page:(.+):(\d+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const [, category, pageStr, sessionKey] = ctx.callbackQuery.data.match(/^iset_page:(.+):(\d+):(.+)$/);
+  const page = parseInt(pageStr, 10);
+  const user = getUserRecord(userId);
+  
+  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
+  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId, page)
       }
     );
   } catch (e) {
