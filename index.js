@@ -106,6 +106,7 @@ import { exec } from "child_process";
 // Super Utilities Module (27 features)
 import {
   downloadMedia,
+  cleanupDownload,
   detectPlatform,
   URL_PATTERNS,
   getLyrics,
@@ -13837,18 +13838,28 @@ bot.callbackQuery(/^adl:/, async (ctx) => {
       { parse_mode: 'HTML' }
     );
     
+    // Import fs for file reading
+    const fs = await import('fs');
+    const { InputFile } = await import('grammy');
+    
+    const fileBuffer = fs.default.readFileSync(result.filePath);
+    const inputFile = new InputFile(fileBuffer, result.filename);
+    
     if (audioOnly) {
-      await ctx.replyWithAudio(result.url, {
+      await ctx.replyWithAudio(inputFile, {
         caption: `${emoji} Downloaded via StarzAI`
       });
     } else {
-      await ctx.replyWithVideo(result.url, {
+      await ctx.replyWithVideo(inputFile, {
         caption: `${emoji} Downloaded via StarzAI`
       });
     }
     
     await ctx.deleteMessage();
-    pendingDownloadUrls.delete(urlId); // Clean up
+    pendingDownloadUrls.delete(urlId);
+    
+    // Clean up the temp file
+    cleanupDownload(result.filePath);
     
   } catch (error) {
     await ctx.editMessageText(

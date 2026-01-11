@@ -18,6 +18,13 @@
 import fetch from 'node-fetch';
 import QRCode from 'qrcode';
 import { createCanvas, loadImage } from 'canvas';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+
+const execAsync = promisify(exec);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -75,58 +82,75 @@ const URL_PATTERNS = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIDEO/SOCIAL MEDIA DOWNLOADS (Cobalt API)
+// VIDEO/SOCIAL MEDIA DOWNLOADS (yt-dlp based)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download video/audio from various platforms using Cobalt
- * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, etc.
+ * Download video/audio from various platforms using yt-dlp
+ * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, Spotify, etc.
  */
 async function downloadMedia(url, audioOnly = false) {
+  const tmpDir = os.tmpdir();
+  const outputId = `starz_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const outputTemplate = path.join(tmpDir, `${outputId}.%(ext)s`);
+  
   try {
-    const response = await fetch(`${CONFIG.cobalt.api}/`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        url: url,
-        downloadMode: audioOnly ? 'audio' : 'auto',
-        filenameStyle: 'basic',
-        youtubeVideoCodec: 'h264',
-        videoQuality: '720'
-      }),
-      timeout: CONFIG.cobalt.timeout
-    });
-
-    const data = await response.json();
+    // Build yt-dlp command
+    let cmd = `yt-dlp --no-playlist --no-warnings -q`;
     
-    if (data.status === 'error') {
-      return { success: false, error: data.error?.code || 'Download failed' };
+    if (audioOnly) {
+      cmd += ` -x --audio-format mp3 --audio-quality 0`;
+    } else {
+      cmd += ` -f "best[filesize<50M]/best" --merge-output-format mp4`;
     }
-
-    if (data.status === 'tunnel' || data.status === 'redirect') {
-      return { 
-        success: true, 
-        url: data.url,
-        filename: data.filename || 'download'
-      };
+    
+    cmd += ` -o "${outputTemplate}" "${url}"`;
+    
+    // Execute download
+    await execAsync(cmd, { timeout: 120000 });
+    
+    // Find the downloaded file
+    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
+    if (files.length === 0) {
+      return { success: false, error: 'Download completed but file not found' };
     }
-
-    if (data.status === 'picker') {
-      // Multiple options available (e.g., video + audio separate)
-      return {
-        success: true,
-        picker: true,
-        options: data.picker
-      };
+    
+    const filePath = path.join(tmpDir, files[0]);
+    const stats = fs.statSync(filePath);
+    
+    // Check file size (Telegram limit is 50MB for bots)
+    if (stats.size > 50 * 1024 * 1024) {
+      fs.unlinkSync(filePath);
+      return { success: false, error: 'File too large (>50MB). Try audio only.' };
     }
-
-    return { success: false, error: 'Unknown response format' };
+    
+    return {
+      success: true,
+      filePath: filePath,
+      filename: files[0],
+      size: stats.size
+    };
+    
   } catch (error) {
-    return { success: false, error: error.message };
+    // Clean up any partial files
+    try {
+      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
+      files.forEach(f => fs.unlinkSync(path.join(tmpDir, f)));
+    } catch (e) {}
+    
+    return { success: false, error: error.message || 'Download failed' };
   }
+}
+
+/**
+ * Clean up downloaded file after sending
+ */
+function cleanupDownload(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (e) {}
 }
 
 /**
@@ -771,8 +795,9 @@ async function searchWallpapers(query, options = {}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export {
-  // Video Downloads
+  // Downloads
   downloadMedia,
+  cleanupDownload,
   detectPlatform,
   URL_PATTERNS,
   
