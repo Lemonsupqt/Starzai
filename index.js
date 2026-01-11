@@ -309,11 +309,87 @@ const openai = new OpenAI({
 // MULTI-PROVIDER LLM SYSTEM
 // =====================
 
-// Provider statistics
+// Provider statistics with enhanced tracking
 const providerStats = {
-  github: { calls: 0, successes: 0, failures: 0, totalTokens: 0 },
-  megallm: { calls: 0, successes: 0, failures: 0, totalTokens: 0 }
+  github: { 
+    calls: 0, 
+    successes: 0, 
+    failures: 0, 
+    totalTokens: 0,
+    lastUsed: null,
+    lastError: null,
+    lastErrorTime: null,
+    avgResponseTime: 0,
+    responseTimeCount: 0
+  },
+  megallm: { 
+    calls: 0, 
+    successes: 0, 
+    failures: 0, 
+    totalTokens: 0,
+    lastUsed: null,
+    lastError: null,
+    lastErrorTime: null,
+    avgResponseTime: 0,
+    responseTimeCount: 0
+  }
 };
+
+// Helper functions for provider stats
+function recordProviderCall(provider, success, tokens = 0, responseTime = 0, error = null) {
+  const stats = providerStats[provider];
+  if (!stats) return;
+  
+  stats.calls++;
+  stats.lastUsed = Date.now();
+  
+  if (success) {
+    stats.successes++;
+    stats.totalTokens += tokens;
+    // Update rolling average response time
+    if (responseTime > 0) {
+      stats.avgResponseTime = ((stats.avgResponseTime * stats.responseTimeCount) + responseTime) / (stats.responseTimeCount + 1);
+      stats.responseTimeCount++;
+    }
+  } else {
+    stats.failures++;
+    stats.lastError = error?.message || String(error);
+    stats.lastErrorTime = Date.now();
+  }
+}
+
+function getProviderStats() {
+  const result = {};
+  for (const [key, stats] of Object.entries(providerStats)) {
+    const provider = LLM_PROVIDERS[key];
+    result[key] = {
+      name: provider?.name || key,
+      enabled: provider?.enabled || false,
+      calls: stats.calls,
+      successes: stats.successes,
+      failures: stats.failures,
+      successRate: stats.calls > 0 ? Math.round((stats.successes / stats.calls) * 100) : 100,
+      totalTokens: stats.totalTokens,
+      avgResponseTime: Math.round(stats.avgResponseTime),
+      lastUsed: stats.lastUsed,
+      lastError: stats.lastError,
+      lastErrorTime: stats.lastErrorTime,
+      health: getProviderHealth(stats)
+    };
+  }
+  return result;
+}
+
+function getProviderHealth(stats) {
+  if (stats.calls === 0) return 'unknown';
+  const successRate = (stats.successes / stats.calls) * 100;
+  const recentError = stats.lastErrorTime && (Date.now() - stats.lastErrorTime) < 5 * 60 * 1000;
+  
+  if (successRate >= 95 && !recentError) return 'excellent';
+  if (successRate >= 80) return 'good';
+  if (successRate >= 50) return 'degraded';
+  return 'critical';
+}
 
 // Provider registry - easy to add more providers!
 const LLM_PROVIDERS = {
@@ -6393,10 +6469,237 @@ async function sendOwnerStatus(ctx) {
   const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
   const ownerCooldown = getCommandCooldownSecondsForTier("owner");
 
-  // Get DeAPI stats with balances (async)
+  const lines = [
+    `📊 *Bot Status*`,
+    ``,
+    `⏱ *Uptime:* ${uptimeStr}`,
+    `🖥 *Memory:* ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
+    ``,
+    `👥 *Users*`,
+    `• Total: ${totalUsers}`,
+    `• Free: ${usersByTier.free}`,
+    `• Premium: ${usersByTier.premium}`,
+    `• Ultra: ${usersByTier.ultra}`,
+    `• Banned: ${bannedCount}`,
+    ``,
+    `💬 *Messages*`,
+    `• Total messages: ${totalMessages}`,
+    `• Inline queries: ${totalInline}`,
+    `• Active today: ${activeToday}`,
+    `• Active last 7 days: ${activeWeek}`,
+    ``,
+    `💾 *Inline Sessions:* ${inlineSessions}`,
+    ``,
+    `⚙️ *Rate limiting*`,
+    `• Global: ${RATE_LIMIT_PER_MINUTE}/min`,
+    `• Command cooldowns:`,
+    `  - Free: ${freeCooldown}s`,
+    `  - Premium: ${premiumCooldown}s`,
+    `  - Ultra: ${ultraCooldown}s`,
+    `  - Owners: ${ownerCooldown > 0 ? ownerCooldown + "s" : "none"}`,
+  ];
+  
+  // Add Dev Status button for detailed API diagnostics
+  const keyboard = new InlineKeyboard()
+    .text("🔧 Dev Status", "dev_status");
+  
+  await ctx.reply(lines.join("\n"), { 
+    parse_mode: "Markdown",
+    reply_markup: keyboard
+  });
+}
+
+bot.command("status", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
+});
+
+// Alias: /gstat (global stats)
+bot.command("gstat", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+  await sendOwnerStatus(ctx);
+});
+
+// Dev Status callback - detailed API diagnostics (owner only)
+bot.callbackQuery("dev_status", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!OWNER_IDS.includes(String(userId))) {
+    return ctx.answerCallbackQuery({ text: "🚫 Owner only", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  // Get LLM provider stats
+  const llmStats = getProviderStats();
+  
+  // Get DeAPI stats with balances
   const deapiStats = deapiKeyManager.hasKeys() 
     ? await deapiKeyManager.getStatsWithBalances() 
     : deapiKeyManager.getStats();
+  
+  const healthEmoji = {
+    'excellent': '🟢',
+    'good': '🟡',
+    'degraded': '🟠',
+    'critical': '🔴',
+    'unknown': '⚪'
+  };
+  
+  const lines = [
+    `🔧 *Dev Status - API Diagnostics*`,
+    ``,
+    `🤖 *LLM Providers*`,
+  ];
+  
+  // GitHub Models stats
+  const github = llmStats.github;
+  if (github) {
+    lines.push(``);
+    lines.push(`*GitHub Models* ${healthEmoji[github.health] || '⚪'}`);
+    lines.push(`• Status: ${github.enabled ? '✅ Enabled' : '❌ Disabled'}`);
+    lines.push(`• Calls: ${github.calls} (${github.successRate}% success)`);
+    lines.push(`• Tokens: ${github.totalTokens.toLocaleString()}`);
+    if (github.avgResponseTime > 0) {
+      lines.push(`• Avg response: ${github.avgResponseTime}ms`);
+    }
+    if (github.lastUsed) {
+      lines.push(`• Last used: ${new Date(github.lastUsed).toLocaleTimeString()}`);
+    }
+    if (github.lastError && github.health !== 'excellent') {
+      lines.push(`• Last error: \`${github.lastError.slice(0, 50)}\``);
+    }
+  }
+  
+  // MegaLLM stats
+  const megallm = llmStats.megallm;
+  if (megallm) {
+    lines.push(``);
+    lines.push(`*MegaLLM* ${healthEmoji[megallm.health] || '⚪'}`);
+    lines.push(`• Status: ${megallm.enabled ? '✅ Enabled' : '❌ Disabled'}`);
+    lines.push(`• Calls: ${megallm.calls} (${megallm.successRate}% success)`);
+    lines.push(`• Tokens: ${megallm.totalTokens.toLocaleString()}`);
+    if (megallm.avgResponseTime > 0) {
+      lines.push(`• Avg response: ${megallm.avgResponseTime}ms`);
+    }
+    if (megallm.lastUsed) {
+      lines.push(`• Last used: ${new Date(megallm.lastUsed).toLocaleTimeString()}`);
+    }
+    if (megallm.lastError && megallm.health !== 'excellent') {
+      lines.push(`• Last error: \`${megallm.lastError.slice(0, 50)}\``);
+    }
+  }
+  
+  // DeAPI Image Generation stats
+  if (deapiStats.totalKeys > 0) {
+    let totalBalance = 0;
+    let balanceCount = 0;
+    for (const key of deapiStats.keys) {
+      if (key.balance !== null && key.balance !== undefined) {
+        totalBalance += parseFloat(key.balance) || 0;
+        balanceCount++;
+      }
+    }
+    
+    const overallHealth = deapiStats.disabledKeys === 0 ? 'excellent' : 
+      (deapiStats.activeKeys > 0 ? 'degraded' : 'critical');
+    
+    lines.push(``);
+    lines.push(`🎨 *DeAPI Image Generation* ${healthEmoji[overallHealth]}`);
+    lines.push(`• Keys: ${deapiStats.activeKeys}/${deapiStats.totalKeys} active`);
+    if (balanceCount > 0) {
+      lines.push(`• Total credits: 💰${totalBalance.toFixed(2)}`);
+    }
+    lines.push(`• Calls: ${deapiStats.totalCalls} (${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}% success)`);
+    
+    // Individual key details
+    if (deapiStats.keys.length > 0) {
+      lines.push(``);
+      lines.push(`*Key Details:*`);
+      for (const key of deapiStats.keys) {
+        const status = key.disabled ? '🔴' : '🟢';
+        const balanceStr = key.balance !== null && key.balance !== undefined 
+          ? `💰${parseFloat(key.balance).toFixed(2)}` 
+          : '';
+        lines.push(`${status} \`${key.id}\` ${balanceStr}`);
+        lines.push(`   ${key.successRate}% • ${key.calls} calls`);
+        if (key.disabled && key.disabledUntil) {
+          const remaining = Math.ceil((key.disabledUntil - Date.now()) / 1000 / 60);
+          lines.push(`   ⏳ Re-enables in ${remaining}m`);
+        }
+      }
+    }
+  } else {
+    lines.push(``);
+    lines.push(`🎨 *DeAPI:* ❌ Not configured`);
+  }
+  
+  // System health summary
+  const totalProviders = Object.keys(llmStats).length + (deapiStats.totalKeys > 0 ? 1 : 0);
+  const healthyProviders = Object.values(llmStats).filter(s => s.enabled && (s.health === 'excellent' || s.health === 'good')).length
+    + (deapiStats.activeKeys > 0 ? 1 : 0);
+  
+  lines.push(``);
+  lines.push(`📊 *System Health:* ${healthyProviders}/${totalProviders} services healthy`);
+  
+  // Back button
+  const keyboard = new InlineKeyboard()
+    .text("⬅️ Back to Status", "back_to_status");
+  
+  try {
+    await ctx.editMessageText(lines.join("\n"), { 
+      parse_mode: "Markdown",
+      reply_markup: keyboard
+    });
+  } catch (e) {
+    // If edit fails, send new message
+    await ctx.reply(lines.join("\n"), { 
+      parse_mode: "Markdown",
+      reply_markup: keyboard
+    });
+  }
+});
+
+// Back to status callback
+bot.callbackQuery("back_to_status", async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!OWNER_IDS.includes(String(userId))) {
+    return ctx.answerCallbackQuery({ text: "🚫 Owner only", show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  // Rebuild status message
+  const totalUsers = Object.keys(usersDb.users).length;
+  const usersByTier = { free: 0, premium: 0, ultra: 0 };
+  let totalMessages = 0;
+  let totalInline = 0;
+  let activeToday = 0;
+  let activeWeek = 0;
+  let bannedCount = 0;
+  
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const weekMs = 7 * dayMs;
+  
+  for (const [, user] of Object.entries(usersDb.users)) {
+    usersByTier[user.tier] = (usersByTier[user.tier] || 0) + 1;
+    if (user.banned) bannedCount++;
+    if (user.stats) {
+      totalMessages += user.stats.totalMessages || 0;
+      totalInline += user.stats.totalInlineQueries || 0;
+      const lastActive = new Date(user.stats.lastActive).getTime();
+      if (now - lastActive < dayMs) activeToday++;
+      if (now - lastActive < weekMs) activeWeek++;
+    }
+  }
+  
+  const inlineSessions = Object.keys(inlineSessionsDb.sessions).length;
+  const uptime = process.uptime();
+  const uptimeStr = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
+  const freeCooldown = getCommandCooldownSecondsForTier("free");
+  const premiumCooldown = getCommandCooldownSecondsForTier("premium");
+  const ultraCooldown = getCommandCooldownSecondsForTier("ultra");
+  const ownerCooldown = getCommandCooldownSecondsForTier("owner");
 
   const lines = [
     `📊 *Bot Status*`,
@@ -6427,54 +6730,21 @@ async function sendOwnerStatus(ctx) {
     `  - Ultra: ${ultraCooldown}s`,
     `  - Owners: ${ownerCooldown > 0 ? ownerCooldown + "s" : "none"}`,
   ];
-
-  // Add DeAPI stats if keys are configured
-  if (deapiStats.totalKeys > 0) {
-    // Calculate total balance across all keys
-    let totalBalance = 0;
-    let balanceCount = 0;
-    for (const key of deapiStats.keys) {
-      if (key.balance !== null && key.balance !== undefined) {
-        totalBalance += parseFloat(key.balance) || 0;
-        balanceCount++;
-      }
-    }
-    
-    lines.push(``);
-    lines.push(`🎨 *DeAPI Image Generation*`);
-    lines.push(`• Keys: ${deapiStats.activeKeys}/${deapiStats.totalKeys} active`);
-    if (balanceCount > 0) {
-      lines.push(`• Total credits: ${totalBalance.toFixed(2)}`);
-    }
-    lines.push(`• Total calls: ${deapiStats.totalCalls}`);
-    lines.push(`• Success rate: ${deapiStats.totalCalls > 0 ? Math.round((deapiStats.totalSuccesses / deapiStats.totalCalls) * 100) : 100}%`);
-    
-    // Show individual key stats with balance
-    if (deapiStats.keys.length > 0) {
-      lines.push(`• Key status:`);
-      for (const key of deapiStats.keys) {
-        const status = key.disabled ? '🔴' : '🟢';
-        const balanceStr = key.balance !== null && key.balance !== undefined 
-          ? `💰${parseFloat(key.balance).toFixed(2)}` 
-          : '❓';
-        const lastUsed = key.lastUsed ? new Date(key.lastUsed).toLocaleTimeString() : 'never';
-        lines.push(`  ${status} \`${key.id}\` ${balanceStr} - ${key.successRate}% (${key.calls} calls)`);
-      }
-    }
-  }
   
-  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
-}
-
-bot.command("status", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-  await sendOwnerStatus(ctx);
-});
-
-// Alias: /gstat (global stats)
-bot.command("gstat", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-  await sendOwnerStatus(ctx);
+  const keyboard = new InlineKeyboard()
+    .text("🔧 Dev Status", "dev_status");
+  
+  try {
+    await ctx.editMessageText(lines.join("\n"), { 
+      parse_mode: "Markdown",
+      reply_markup: keyboard
+    });
+  } catch (e) {
+    await ctx.reply(lines.join("\n"), { 
+      parse_mode: "Markdown",
+      reply_markup: keyboard
+    });
+  }
 });
 
 // User info command
