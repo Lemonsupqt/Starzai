@@ -86,6 +86,9 @@ const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
 
 const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 
+// DeAPI for image generation (ZImageTurbo)
+const DEAPI_KEY = process.env.DEAPI_KEY || "";
+
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
 if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GitHub Models will be unavailable");
@@ -4544,6 +4547,198 @@ bot.command("imagine", async (ctx) => {
       await ctx.reply(
         "❌ *Image generation failed*\n\n" +
         "The service might be temporarily unavailable. Please try again in a moment.",
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+});
+
+// /img - AI image generation using DeAPI ZImageTurbo (fast, high quality)
+bot.command("img", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  
+  // Activate group if used in group chat
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
+  // Check if DeAPI is configured
+  if (!DEAPI_KEY) {
+    await ctx.reply(
+      "⚠️ DeAPI is not configured. Use /imagine instead for free image generation.",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  const text = ctx.message?.text || "";
+  const prompt = text.replace(/^\/img\s*/i, "").trim();
+  
+  if (!prompt) {
+    await ctx.reply(
+      "🎨 *AI Image Generator (Turbo)*\n\n" +
+      "Generate stunning images with ZImageTurbo!\n\n" +
+      "*Usage:*\n" +
+      "`/img a cute cat in space`\n" +
+      "`/img fantasy landscape with mountains`\n" +
+      "`/img cyberpunk city at night`\n\n" +
+      "_Powered by DeAPI ZImageTurbo - Fast & High Quality_",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Check if prompt is too long
+  if (prompt.length > 500) {
+    await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  // Send generating message
+  const statusMsg = await ctx.reply(
+    "🎨 *Generating image...*\n\n" +
+    `Prompt: _${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_\n\n` +
+    "⏳ This may take 5-15 seconds...",
+    { parse_mode: "Markdown" }
+  );
+  
+  try {
+    // Step 1: Submit image generation request
+    const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEAPI_KEY}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: prompt,
+        model: "ZImageTurbo_INT8",
+        width: 768,
+        height: 768,
+        steps: 8,
+        seed: Math.floor(Math.random() * 4294967295),
+        negative_prompt: "blur, low quality, distorted, ugly"
+      })
+    });
+    
+    if (!submitResponse.ok) {
+      const errorText = await submitResponse.text();
+      throw new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
+    }
+    
+    const submitData = await submitResponse.json();
+    const requestId = submitData?.data?.request_id;
+    
+    if (!requestId) {
+      throw new Error("No request_id returned from DeAPI");
+    }
+    
+    console.log(`[IMG] Submitted request ${requestId} for user ${u.id}`);
+    
+    // Step 2: Poll for result
+    let imageUrl = null;
+    let attempts = 0;
+    const maxAttempts = 30; // 30 seconds max
+    
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      
+      const statusResponse = await fetch(
+        `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
+        {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${DEAPI_KEY}`,
+            "Accept": "application/json"
+          }
+        }
+      );
+      
+      if (!statusResponse.ok) {
+        attempts++;
+        continue;
+      }
+      
+      const statusData = await statusResponse.json();
+      const status = statusData?.data?.status || statusData?.status;
+      
+      if (status === "done" || status === "completed") {
+        // Try to find the image URL in various possible locations
+        imageUrl = statusData?.data?.result?.url ||
+                   statusData?.data?.result?.image_url ||
+                   statusData?.data?.url ||
+                   statusData?.data?.image_url ||
+                   statusData?.result?.url ||
+                   (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
+                   (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
+        break;
+      } else if (status === "error" || status === "failed") {
+        throw new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
+      }
+      
+      attempts++;
+    }
+    
+    if (!imageUrl) {
+      throw new Error("Timeout waiting for image generation");
+    }
+    
+    // Step 3: Download and send the image
+    const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to download image: ${imageResponse.status}`);
+    }
+    
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    
+    // Send the image
+    await ctx.replyWithPhoto(
+      new InputFile(imageBuffer, "generated_image.jpg"),
+      {
+        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n⚡ _Powered by DeAPI ZImageTurbo_`,
+        parse_mode: "Markdown"
+      }
+    );
+    
+    // Delete the status message
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    } catch (e) {
+      // Ignore deletion errors
+    }
+    
+    // Track usage
+    const rec = getUserRecord(u.id);
+    if (rec) {
+      rec.messagesCount = (rec.messagesCount || 0) + 1;
+      saveUsers();
+    }
+    
+    console.log(`[IMG] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("DeAPI image generation error:", error);
+    
+    // Update status message with error
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "❌ *Image generation failed*\n\n" +
+        "The service might be temporarily unavailable. Please try again or use /imagine for free alternative.\n\n" +
+        "_If the problem persists, use /feedback to report it._",
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      await ctx.reply(
+        "❌ *Image generation failed*\n\n" +
+        "Please try /imagine for free alternative.",
         { parse_mode: "Markdown" }
       );
     }
