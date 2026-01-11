@@ -3,7 +3,8 @@
  * Handles roleplay characters and character-specific chat history
  */
 
-import { ensureUser, saveUsers } from "./users.js";
+import { ensureUser } from "./users.js";
+import { saveUsers } from "../database/manager.js";
 
 // In-memory character chat history
 const characterChatHistory = new Map(); // `${userId}_${chatId}` -> [{role, content}...]
