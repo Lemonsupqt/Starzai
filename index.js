@@ -5538,14 +5538,6 @@ bot.command("stats", async (ctx) => {
   
   const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
   
-  // Provider stats summary
-  const enabledProviders = getEnabledProviders();
-  const providerInfo = enabledProviders.map(p => {
-    const stats = providerStats[p.key];
-    const successRate = stats.calls > 0 ? ((stats.successes / stats.calls) * 100).toFixed(1) : 0;
-    return `${p.name}: ${stats.successes}/${stats.calls} (${successRate}%)`;
-  }).join('\n');
-  
   const statsMsg = `📊 *Your StarzAI Stats*
 
 👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})
@@ -5558,9 +5550,6 @@ ${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
 
 📅 *Member for:* ${daysSinceReg} days
 🕒 *Last Active:* ${lastActive}
-
-🔌 *API Providers:*
-${providerInfo}
 
 _Keep chatting to grow your stats!_`;
   
