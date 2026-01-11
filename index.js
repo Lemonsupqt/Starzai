@@ -4679,7 +4679,12 @@ async function generateDeAPIImage(prompt, aspectRatio, userId) {
     const statusData = await statusResponse.json();
     const status = statusData?.data?.status || statusData?.status;
     
-    if (status === "done" || status === "completed") {
+    // Debug log to see actual response format
+    if (attempts === 0 || status === "done" || status === "completed" || status === "error" || status === "failed") {
+      console.log(`[IMG] Status check #${attempts + 1}: status=${status}, data=${JSON.stringify(statusData).slice(0, 500)}`);
+    }
+    
+    if (status === "done" || status === "completed" || status === "success") {
       imageUrl = statusData?.data?.result?.url ||
                  statusData?.data?.result?.image_url ||
                  statusData?.data?.url ||
