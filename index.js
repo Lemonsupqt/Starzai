@@ -6790,6 +6790,13 @@ function getTaskById(userId, taskId) {
   return userTodos.tasks.find(t => t.id === taskId) || null;
 }
 
+// Check if a due date is overdue
+function isOverdue(dueDate) {
+  if (!dueDate) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return dueDate < today;
+}
+
 // Category emoji mapping
 const DEFAULT_CATEGORIES = {
   personal: "👤",
