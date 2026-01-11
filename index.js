@@ -9593,12 +9593,48 @@ bot.callbackQuery("itodo_clear_done", async (ctx) => {
         .text("🗑️ Clear Completed", "itodo_clear_done")
         .row()
         .text("← Back to List", "itodo_back"),
+    });  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_collab", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userLists = getCollabListsForUser(userId);
+  
+  let collabText = `👥 <b>Collab Lists</b>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  if (userLists.length === 0) {
+    keyboard.text("📋 No lists yet", "ct_create").row();
+  } else {
+    userLists.slice(0, 5).forEach((list) => {
+      const doneCount = list.tasks.filter(t => t.completed).length;
+      const totalCount = list.tasks.length;
+      keyboard.text(`📋 ${list.name} (${doneCount}/${totalCount})`, `ct_open:${list.id}`).row();
+    });
+  }
+  
+  keyboard
+    .text("➕ Create", "ct_create")
+    .text("🔗 Join", "ct_join")
+    .row()
+    .text("← Back", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(collabText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
     });
   } catch (e) {}
 });
 
 // =====================
-// COLLABORATIVE TODO CALLBACK HANDLERS
+// COLLABORATIVE TODO CALLBACKS HANDLERS
 // =====================
 
 // Track last tap for collab double-tap detection
@@ -15136,23 +15172,11 @@ bot.on("inline_query", async (ctx) => {
       "_Tap a button or type directly!_",
     ].join("\n");
     
-    // Starz Check card text
-    const starzCheckText = [
-      "✅ *Starz Check - Task Manager*",
-      "",
-      "📋 *Personal* - Your private tasks",
-      "   Track your daily todos, set priorities,",
-      "   due dates, and build streaks!",
-      "",
-      "👥 *Collaborative* - Shared lists",
-      "   Create shared checklists for groups,",
-      "   see who completed what in real-time!",
-      "",
-      "➕ *Quick Add* - Add tasks instantly",
-      "   `sc:add Buy groceries #shopping`",
-      "",
-      "_Tap a button to get started!_",
-    ].join("\n");
+    // Starz Check card - show tasks directly!
+    const userTasks = userTodos.tasks || [];
+    const streak = getCompletionStreak(userId);
+    let starzCheckText = `✅ *Starz Check*`;
+    if (streak > 0) starzCheckText += ` 🔥${streak}`;
     
     const results = [
       {
@@ -15182,20 +15206,35 @@ bot.on("inline_query", async (ctx) => {
         type: "article",
         id: `starz_check_${sessionKey}`,
         title: "✅ Starz Check",
-        description: `Personal: ${personalPending} pending • Collab: ${collabCount} lists`,
+        description: `${personalPending} pending • ${collabCount} collab lists${streak > 0 ? ` • 🔥${streak}` : ""}`,
         thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
         input_message_content: { 
           message_text: starzCheckText,
           parse_mode: "Markdown"
         },
-        reply_markup: new InlineKeyboard()
-          .switchInlineCurrent("📋 Personal", "sc: ")
-          .switchInlineCurrent("👥 Collaborative", "ct: ")
-          .row()
-          .switchInlineCurrent("➕ Quick Add", "sc:add ")
-          .switchInlineCurrent("📊 Stats", "sc:stats")
-          .row()
-          .switchInlineCurrent("← Back", ""),
+        reply_markup: (() => {
+          const kb = new InlineKeyboard();
+          // Show tasks directly as buttons!
+          userTasks.slice(0, 6).forEach((task) => {
+            const icon = task.completed ? "✅" : "⬜";
+            const text = task.text.slice(0, 25) + (task.text.length > 25 ? ".." : "");
+            const catEmoji = getCategoryEmoji(task.category);
+            const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+            kb.text(`${icon} ${text} ${catEmoji}${priInd}`, `itodo_tap:${task.id}`);
+            kb.row();
+          });
+          if (userTasks.length === 0) {
+            kb.text("📋 No tasks yet", "itodo_add").row();
+          }
+          // Action row
+          kb.text("➕", "itodo_add")
+            .text("🔍", "itodo_filter")
+            .text("📊", "itodo_stats")
+            .text("👥", "itodo_collab")
+            .row()
+            .switchInlineCurrent("← Back", "");
+          return kb;
+        })(),
       },
       {
         type: "article",
