@@ -5004,12 +5004,41 @@ const IMAGE_GEN_TAGLINES = {
     "It Watches™",
     "The Algorithm Decides™",
     "Fate.exe™"
+  ],
+  
+  // SPECIAL - Context-triggered taglines
+  nsfw: [
+    "Lewd Thoughts™",
+    "Bonk™",
+    "Down Bad™",
+    "Horny Jail™",
+    "Touch Grass™",
+    "Sir This Is A Wendy's™",
+    "FBI Open Up™",
+    "Cultured™",
+    "Man of Culture™",
+    "Research Purposes™"
   ]
 };
 
+// NSFW keyword detection patterns
+const NSFW_KEYWORDS = /\b(nsfw|nude|naked|sex|porn|hentai|lewd|erotic|xxx|boob|tit|ass|dick|cock|pussy|vagina|penis|breast|nipple|butt|thigh|bikini|lingerie|underwear|bra|panties|topless|bottomless|strip|seduc|horny|kinky|fetish|bondage|bdsm|dominat|submissive|spank|whip|latex|leather|corset|stockings|garter|cleavage|curvy|thicc|busty|milf|waifu|ahegao|ecchi)\b/i;
+
+// Check if prompt contains NSFW content
+function isNsfwPrompt(prompt) {
+  return NSFW_KEYWORDS.test(prompt);
+}
+
 // Get a random tagline with rarity weighting
 // Common: 70%, Rare: 25%, Legendary: 5%
-function getRandomTagline() {
+// Special: NSFW prompts get special taglines
+function getRandomTagline(prompt = '') {
+  // Check for NSFW content first
+  if (prompt && isNsfwPrompt(prompt)) {
+    const nsfwTaglines = IMAGE_GEN_TAGLINES.nsfw;
+    return nsfwTaglines[Math.floor(Math.random() * nsfwTaglines.length)];
+  }
+  
   const roll = Math.random() * 100;
   let tier;
   
@@ -5316,7 +5345,7 @@ bot.command("img", async (ctx) => {
           caption: `🎨 *Generated Image*\n\n` +
                    `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
                    `📐 ${config.icon} ${config.label}\n` +
-                   `⚡ _${getRandomTagline()}_`,
+                   `⚡ _${getRandomTagline(finalPrompt)}_`,
           parse_mode: "Markdown",
           reply_markup: { inline_keyboard: actionButtons }
         }
@@ -5454,7 +5483,7 @@ bot.callbackQuery(/^img_ar:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Generated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _${getRandomTagline()}_`,
+                 `⚡ _${getRandomTagline(pending.prompt)}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -5556,7 +5585,7 @@ bot.callbackQuery(/^img_regen:(.+):(.+)$/, async (ctx) => {
         caption: `🎨 *Regenerated Image*\n\n` +
                  `📝 _${pending.prompt.slice(0, 200)}..._\n\n` +
                  `📐 ${config.icon} ${config.label}\n` +
-                 `⚡ _${getRandomTagline()}_`,
+                 `⚡ _${getRandomTagline(pending.prompt)}_`,
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
       }
@@ -9716,7 +9745,7 @@ bot.on("message:text", async (ctx) => {
           caption: `🎨 *Generated Image*\n\n` +
                    `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
                    `📐 ${config.icon} ${config.label}\n` +
-                   `⚡ _${getRandomTagline()}_`,
+                   `⚡ _${getRandomTagline(finalPrompt)}_`,
           parse_mode: "Markdown",
           reply_markup: { inline_keyboard: actionButtons },
           reply_to_message_id: messageId
