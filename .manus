@@ -1,0 +1,62 @@
+# Manus Instructions for StarzAI
+
+## Project Overview
+StarzAI is a 20K+ line Telegram AI bot. The main code is in `index.js`. The `src/` folder contains reference modules (NOT imported - just for navigation).
+
+## After ANY Code Changes
+
+1. **Regenerate src/ modules:**
+   ```bash
+   node scripts/extract-modules.js
+   ```
+
+2. **Update TOC in index.js:**
+   - Run this to get new line numbers:
+   ```bash
+   awk '/^\/\/ =====================/ { getline next_line; if (next_line ~ /^\/\/ [A-Z]/) { gsub(/^\/\/ /, "", next_line); printf "%5d: %s\n", NR, next_line } }' index.js
+   ```
+   - Update the TABLE OF CONTENTS section (lines 13-85) with new line numbers
+
+3. **Update ARCHITECTURE.md** if:
+   - New features added
+   - New env variables added
+   - Structure changed
+
+## Key Files
+- `index.js` - Main bot code (THIS IS WHAT RUNS)
+- `src/` - Reference modules (for navigation only)
+- `ARCHITECTURE.md` - Documentation
+- `CONTRIBUTING.md` - Rules for all developers/agents
+- `scripts/extract-modules.js` - Regenerates src/ from index.js
+
+## Development Pattern
+- Small features (<200 lines): Add to index.js directly
+- Large features (>200 lines): Create in src/, import in index.js
+- Always use feature branches, merge after testing
+
+## Common Tasks
+
+### "Update architecture docs"
+```bash
+cd ~/Starzai
+git pull origin main
+node scripts/extract-modules.js
+# Then update TOC line numbers in index.js
+# Then update ARCHITECTURE.md if needed
+git add -A && git commit -m "Docs: Update architecture" && git push origin main
+```
+
+### "Add new feature"
+1. Create branch: `git checkout -b feature/name`
+2. Add code to index.js or create module in src/
+3. Update TOC and ARCHITECTURE.md
+4. Run `node scripts/extract-modules.js`
+5. Commit and push branch
+6. Merge to main after user tests
+
+## Owner Preferences
+- Max quality, comprehensive features
+- Mobile-first UI
+- Cost-efficient development
+- Always use branches for new features
+- No performance degradation
