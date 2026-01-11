@@ -133,6 +133,50 @@ bot.command("myfeature", async (ctx) => {
 
 4. **Update package.json** if needed for new dependencies.
 
+## Super Utilities (27 Features)
+
+The bot includes a comprehensive utilities module (`src/features/super-utilities.js`) with:
+
+### Downloads
+- `/dl` or `/download` - YouTube, TikTok, Instagram, Twitter, Spotify, SoundCloud
+- Auto-detection: Just paste a link in DM and bot offers download options
+
+### Music
+- `/lyrics Artist - Song` - Get song lyrics
+
+### Movies/TV
+- `/movie title` - Search movies (TMDB)
+- `/tv title` - Search TV shows
+
+### Utilities
+- `/qr text` - Generate QR code
+- `/short url` - Shorten URL (TinyURL)
+- `/currency 100 USD EUR` - Convert currency
+- `/weather city` - Get weather
+- `/translate text` - Translate text
+- `/convert 100 km mi` - Convert units
+
+### Knowledge
+- `/wiki topic` - Wikipedia summary
+- `/define word` - Dictionary definition
+- `/fact` - Random fact
+- `/today` - This day in history
+
+### Fun
+- `/quote` - Random inspirational quote
+- `/quotify` - Reply to message to make quote image
+- `/truth` - Truth question
+- `/dare` - Dare challenge
+- `/wyr` - Would you rather
+- `/roast` - Roast generator
+- `/pickup` - Pickup lines
+
+### Dev Tools
+- `/run language\ncode` - Run code (50+ languages via Piston)
+
+### Media
+- `/wallpaper query` - Search HD wallpapers
+
 ## Key Patterns
 
 ### User Tier System

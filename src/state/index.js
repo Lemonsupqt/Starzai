@@ -8,97 +8,97 @@
 // Lines 1067-1159 from original index.js
 // =====================
 
-// =====================
-// IN-MEMORY STATE
-// =====================
-const chatHistory = new Map(); // chatId -> [{role, content}...]
-const partnerChatHistory = new Map(); // oderId -> [{role, content}...] - separate history for partner mode
-const inlineCache = new Map(); // key -&gt; { prompt, answer, model, createdAt, userId }
-// For DM/GC answers: simple continuation cache keyed by random id
-// Used when the user taps the "Continue" button to ask the AI to extend its answer.
-const dmContinueCache = new Map(); // key -> { userId, chatId, model, systemPrompt, userTextWithContext, modeLabel, sourcesHtml, createdAt }
-const rate = new Map(); // userId -> { windowStartMs, count }
-const groupActiveUntil = new Map(); // chatId -> timestamp when bot becomes dormant
-const GROUP_ACTIVE_DURATION = 2 * 60 * 1000; // 2 minutes in ms
-
-// Response caching removed - was not being used and may cause issues
-
-// Ensure prefsDb.groups exists (for group authorization metadata)
-function ensurePrefsGroups() {
-  if (!prefsDb.groups) {
-    prefsDb.groups = {};
+    if (dataType === "users") {
+      data = usersDb;
+      label = "📊 USERS_DATA";
+    } else if (dataType === "prefs") {
+      data = prefsDb;
+      label = "⚙️ PREFS_DATA";
+    } else if (dataType === "inlineSessions") {
+      data = inlineSessionsDb;
+      label = "💬 INLINE_SESSIONS";
+    } else if (dataType === "partners") {
+      data = partnersDb;
+      label = "🤝🏻 PARTNERS_DATA";
+    } else if (dataType === "todos") {
+      data = todosDb;
+      label = "📋 TODOS_DATA";
+    } else if (dataType === "collabTodos") {
+      data = collabTodosDb;
+      label = "👥 COLLAB_TODOS_DATA";
+    } else {
+      return;
+    }
+    
+    const jsonStr = JSON.stringify(data);
+    
+    // Always use document upload - more reliable and no size/formatting issues
+    const buffer = Buffer.from(jsonStr, "utf8");
+    const inputFile = new InputFile(buffer, `${dataType}.json`);
+    
+    if (storageMessageIds[dataType]) {
+      // Delete old message and send new one (can't edit documents)
+      try {
+        await bot.api.deleteMessage(STORAGE_CHANNEL_ID, storageMessageIds[dataType]);
+      } catch (e) {
+        // Ignore delete errors
+      }
+    }
+    
+    const msg = await bot.api.sendDocument(STORAGE_CHANNEL_ID, inputFile, {
+      caption: `${label} | Updated: ${new Date().toISOString()}`,
+    });
+    storageMessageIds[dataType] = msg.message_id;
+    saveStorageIds(); // Persist message ID so we can delete it after restart
+    console.log(`Saved ${dataType} to Telegram (msg_id: ${msg.message_id})`);
+    
+    // Also save locally as backup
+    if (dataType === "users") writeJson(USERS_FILE, usersDb);
+    if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
+    if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
+    
+  } catch (e) {
+    console.error(`Failed to save ${dataType} to Telegram:`, e.message);
+    // Fallback to local storage
+    if (dataType === "users") writeJson(USERS_FILE, usersDb);
+    if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
+    if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
   }
 }
 
-function getGroupRecord(chatId) {
-  ensurePrefsGroups();
-  const id = String(chatId);
-  return prefsDb.groups[id] || null;
-}
-
-function setGroupAuthorization(chatId, allowed, meta = {}) {
-  ensurePrefsGroups();
-  const id = String(chatId);
-  const existing = prefsDb.groups[id] || {};
-  prefsDb.groups[id] = {
-    id,
-    allowed,
-    title: meta.title !== undefined ? meta.title : existing.title || null,
-    addedBy: meta.addedBy !== undefined ? meta.addedBy : existing.addedBy || null,
-    updatedAt: new Date().toISOString(),
-    note: meta.note !== undefined ? meta.note : existing.note || null,
-  };
-  savePrefs();
-}
-
-function isGroupAuthorized(chatId) {
-  const rec = getGroupRecord(chatId);
-  return !!rec?.allowed;
-}
-
-// Active inline message tracking (for editing)
-const activeInlineMessages = new Map(); // sessionKey -&gt; inline_message_id
-
-function nowMs() {
-  return Date.now();
-}
-function makeId(bytes = 6) {
-  return crypto.randomBytes(bytes).toString("hex");
-}
-function isOwner(ctx) {
-  const uid = ctx.from?.id ? String(ctx.from.id) : "";
-  return OWNER_IDS.has(uid);
-}
-
-// Parse human duration strings like "10m", "2h", "1d" or plain minutes ("30")
-function parseDurationToMs(input) {
-  if (!input) return null;
-  const trimmed = String(input).trim().toLowerCase();
-
-  const unitMatch = trimmed.match(/^(\d+)([smhd])$/);
-  let value;
-  let unit;
-
-  if (unitMatch) {
-    value = Number(unitMatch[1]);
-    unit = unitMatch[2];
-  } else if (/^\d+$/.test(trimmed)) {
-    value = Number(trimmed);
-    unit = "m"; // default to minutes
-  } else {
-    return null;
+async function loadFromTelegram() {
+  if (!STORAGE_CHANNEL_ID) {
+    console.log("No STORAGE_CHANNEL_ID set, using local storage only.");
+    return;
   }
-
-  if (!Number.isFinite(value) || value <= 0) return null;
-
-  const multipliers = {
-    s: 1000,
-    m: 60 * 1000,
-    h: 60 * 60 * 1000,
-    d: 24 * 60 * 60 * 1000,
-  };
-
-  return value * multipliers[unit];
-}
-
+  
+  console.log("Loading data from Telegram storage channel...");
+  
+  try {
+    // Verify channel access
+    const chat = await bot.api.getChat(STORAGE_CHANNEL_ID);
+    console.log(`Storage channel verified: ${chat.title || chat.id}`);
+    
+    // Search for recent messages with our data files
+    // We need to find the most recent users.json, prefs.json, and inline_sessions.json
+    const dataTypes = ["users", "prefs", "inlineSessions"];
+    const labels = {
+      users: "📊 USERS_DATA",
+      prefs: "⚙️ PREFS_DATA",
+      inlineSessions: "💬 INLINE_SESSIONS"
+    };
+    
+    // Get recent messages from channel (search last 50 messages)
+    // Note: We can't search, so we'll rely on pinned messages or just use local + save
+    // For now, let's just verify and use local files, but ensure we save properly
+    
+    console.log("Telegram storage ready. Using local files as primary, syncing to Telegram.");
+    console.log(`Loaded users: ${Object.keys(usersDb.users || {}).length}`);
+    
 

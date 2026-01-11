@@ -8,6 +8,131 @@
 // Lines 6748-7482 from original index.js
 // =====================
 
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "💡 *Feedback Mode*\n\n" +
+      "Please send *one message* with your feedback.\n" +
+      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Owner command: reply to feedback by feedback ID
+bot.command("fbreply", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /fbreply <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("fbreply send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
+});
+
+// Alias: /f <feedbackId> <message>
+bot.command("f", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
+  if (args.length < 2) {
+    return ctx.reply("Usage: /f <feedbackId> <message>");
+  }
+
+  const [feedbackId, ...rest] = args;
+  const replyText = rest.join(" ").trim();
+  if (!replyText) {
+    return ctx.reply("Please provide a reply message after the feedbackId.");
+  }
+
+  const userId = extractUserIdFromFeedbackId(feedbackId);
+  if (!userId) {
+    return ctx.reply("⚠️ Invalid feedback ID format.");
+  }
+
+  try {
+    await bot.api.sendMessage(
+      userId,
+      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
+      { parse_mode: "Markdown" }
+    );
+    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
+  } catch (e) {
+    console.error("f send error:", e.message);
+    await ctx.reply(
+      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
+    );
+  }
+});
+
+// /stats - Show user usage statistics
+bot.command("stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = getUserRecord(u.id);
+  if (!user) {
+    return ctx.reply("❌ You're not registered yet. Send /start first!");
+  }
+  
+  const stats = user.stats || { totalMessages: 0, totalInlineQueries: 0, totalTokensUsed: 0, lastActive: "Never" };
+  const shortModel = (user.model || "None").split("/").pop();
+  
+  // Calculate days since registration
+  const regDate = new Date(user.registeredAt || Date.now());
+  const daysSinceReg = Math.floor((Date.now() - regDate.getTime()) / (1000 * 60 * 60 * 24));
+  
+  // Format last active
+  const lastActive = stats.lastActive ? new Date(stats.lastActive).toLocaleDateString() : "Never";
+  
+  const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
+  
+  const statsMsg = `📊 *Your StarzAI Stats*
+
+👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})
+${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
+🤖 *Model:* \`${shortModel}\`
+
+💬 *DM Messages:* ${stats.totalMessages.toLocaleString()}
+⚡ *Inline Queries:* ${stats.totalInlineQueries.toLocaleString()}
+📝 *Total Interactions:* ${(stats.totalMessages + stats.totalInlineQueries).toLocaleString()}
+
+📅 *Member for:* ${daysSinceReg} days
+🕒 *Last Active:* ${lastActive}
+
+_Keep chatting to grow your stats!_`;
+  
+  await ctx.reply(statsMsg, {
+    parse_mode: "Markdown",
+    reply_to_message_id: ctx.message?.message_id,
+  });
+});
+
 // =====================
 // ADVANCED TODO/CHECKLIST SYSTEM
 // =====================
@@ -618,129 +743,4 @@ const pendingTodoInput = new Map();
 
 // Current filter state per user
 const todoFilters = new Map();
-
-function getTodoFilters(userId) {
-  return todoFilters.get(String(userId)) || {};
-}
-
-function setTodoFilters(userId, filters) {
-  todoFilters.set(String(userId), filters);
-}
-
-function clearTodoFilters(userId) {
-  todoFilters.delete(String(userId));
-}
-
-// Filter todos based on filters
-function filterTodos(tasks, filters) {
-  if (!tasks || !Array.isArray(tasks)) return [];
-  if (!filters || Object.keys(filters).length === 0) return tasks;
-  
-  return tasks.filter(task => {
-    if (filters.priority && task.priority !== filters.priority) return false;
-    if (filters.category && task.category !== filters.category) return false;
-    if (filters.completed !== undefined && task.completed !== filters.completed) return false;
-    if (filters.hasDueDate && !task.dueDate) return false;
-    return true;
-  });
-}
-
-// Sort todos based on sort option
-function sortTodos(tasks, sortBy) {
-  if (!tasks || !Array.isArray(tasks)) return [];
-  
-  const sorted = [...tasks];
-  
-  switch (sortBy) {
-    case 'priority':
-      const priorityOrder = { high: 0, medium: 1, low: 2, null: 3 };
-      sorted.sort((a, b) => (priorityOrder[a.priority] || 3) - (priorityOrder[b.priority] || 3));
-      break;
-    case 'dueDate':
-      sorted.sort((a, b) => {
-        if (!a.dueDate && !b.dueDate) return 0;
-        if (!a.dueDate) return 1;
-        if (!b.dueDate) return -1;
-        return a.dueDate.localeCompare(b.dueDate);
-      });
-      break;
-    case 'category':
-      sorted.sort((a, b) => (a.category || 'zzz').localeCompare(b.category || 'zzz'));
-      break;
-    case 'created':
-    default:
-      sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      break;
-  }
-  
-  return sorted;
-}
-
-// Parse due date from natural language
-function parseTodoDueDate(input) {
-  const lower = input.toLowerCase().trim();
-  const today = new Date();
-  
-  if (lower === 'today') {
-    return today.toISOString().slice(0, 10);
-  }
-  if (lower === 'tomorrow') {
-    today.setDate(today.getDate() + 1);
-    return today.toISOString().slice(0, 10);
-  }
-  if (lower === 'nextweek' || lower === 'next week') {
-    today.setDate(today.getDate() + 7);
-    return today.toISOString().slice(0, 10);
-  }
-  
-  const dateMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (dateMatch) {
-    return input;
-  }
-  
-  const shortMatch = input.match(/^(\d{1,2})\/(\d{1,2})$/);
-  if (shortMatch) {
-    const month = parseInt(shortMatch[1]);
-    const day = parseInt(shortMatch[2]);
-    const year = today.getFullYear();
-    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-  
-  return null;
-}
-
-// Parse task from text (supports inline options)
-// Format: task text #category !priority @date
-function parseTaskText(text) {
-  const result = {
-    text: text,
-    category: null,
-    priority: null,
-    dueDate: null
-  };
-  
-  const categoryMatch = text.match(/#(\w+)/);
-  if (categoryMatch) {
-    result.category = categoryMatch[1].toLowerCase();
-    result.text = result.text.replace(/#\w+/, '').trim();
-  }
-  
-  const priorityMatch = text.match(/!(high|med|medium|low|h|m|l)/i);
-  if (priorityMatch) {
-    const p = priorityMatch[1].toLowerCase();
-    if (p === 'h' || p === 'high') result.priority = 'high';
-    else if (p === 'm' || p === 'med' || p === 'medium') result.priority = 'medium';
-    else if (p === 'l' || p === 'low') result.priority = 'low';
-    result.text = result.text.replace(/!(high|med|medium|low|h|m|l)/i, '').trim();
-  }
-  
-  const dateMatch = text.match(/@(\S+)/);
-  if (dateMatch) {
-    result.dueDate = parseTodoDueDate(dateMatch[1]);
-    result.text = result.text.replace(/@\S+/, '').trim();
-  }
-  
-  return result;
-}
-
 

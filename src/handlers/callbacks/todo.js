@@ -8,6 +8,131 @@
 // Lines 8906-9833 from original index.js
 // =====================
 
+    const ownerBadge = isOwner ? " 👑" : "";
+    message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
+    
+    kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  
+  if (userLists.length % 2 !== 0) kb.row();
+  
+  kb.text("➕ Create", "collab_create")
+    .text("🔗 Join", "collab_join")
+    .row()
+    .text("« Back to Personal", "todo_list");
+  
+  try {
+    await ctx.editMessageText(message.join("\n"), {
+      parse_mode: "Markdown",
+      reply_markup: kb
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^collab_open:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const listId = ctx.match[1];
+  const list = getCollabList(listId);
+  
+  if (!list) {
+    try {
+      await ctx.editMessageText("⚠️ List not found.", {
+        reply_markup: new InlineKeyboard().text("« Back", "collab_list")
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const listText = buildCollabListMessage(list, 0);
+  const keyboard = buildCollabListKeyboard(list, 0);
+  
+  // Replace the inline switch button with a DM-friendly back button
+  // We need to rebuild the keyboard for DM context
+  const dmKeyboard = new InlineKeyboard();
+  
+  const pageSize = 8;
+  const pageTasks = list.tasks.slice(0, pageSize);
+  
+  for (let i = 0; i < pageTasks.length; i += 2) {
+    const task1 = pageTasks[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    dmKeyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
+    
+    if (pageTasks[i + 1]) {
+      const task2 = pageTasks[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      dmKeyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
+    }
+    dmKeyboard.row();
+  }
+  
+  dmKeyboard
+    .text("➕ Add", `ct_add:${list.id}`)
+    .text("🗑️ Clear", `ct_clear:${list.id}`)
+    .row()
+    .text("👥 Members", `ct_members:${list.id}`)
+    .text("🔗 Share", `ct_share:${list.id}`)
+    .row()
+    .text("« My Lists", "collab_list");
+  
+  try {
+    await ctx.editMessageText(listText, {
+      parse_mode: "HTML",
+      reply_markup: dmKeyboard
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_create", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_create", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "➕ *Create Collaborative List*\n\n" +
+      "Type a name for your shared list:\n\n" +
+      "_Example: Party Planning_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
+});
+
+bot.callbackQuery("collab_join", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  pendingTodoInput.set(String(userId), { action: "collab_join", timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      "🔗 *Join Collaborative List*\n\n" +
+      "Enter the join code:\n\n" +
+      "_Example: ABC123_",
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
+      }
+    );
+  } catch (e) {}
+});
+
 // =====================
 // INLINE TODO CALLBACK HANDLERS
 // Double-tap pattern: first tap toggles, second tap within 3s opens action menu
@@ -811,129 +936,4 @@ bot.callbackQuery("itodo_fclear", async (ctx) => {
     if (!task || !task.text) return; // Skip invalid tasks
     const icon = task.completed ? "✅" : "⬜";
     const text = task.text.slice(0, 28) + (task.text.length > 28 ? "..." : "");
-    const catEmoji = getCategoryEmoji(task.category);
-    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
-    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
-    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
-    keyboard.row();
-  });
-  
-  keyboard
-    .switchInlineCurrent("➕", "t:add ")
-    .text("🔍", "itodo_filter")
-    .text("👥", "itodo_collab")
-    .row()
-    .text("← Back", "inline_main_menu");
-  
-  try {
-    await ctx.editMessageText(taskListText, {
-      parse_mode: "HTML",
-      reply_markup: keyboard,
-    });
-  } catch (e) {}
-});
-
-bot.callbackQuery("itodo_stats", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  const stats = getTodoStats(userId);
-  
-  const statsText = [
-    `📊 <b>Task Statistics</b>`,
-    ``,
-    `📋 Total tasks: ${stats.total}`,
-    `✅ Completed: ${stats.completed}`,
-    `⬜ Pending: ${stats.pending}`,
-    `📈 Completion rate: ${stats.completionRate}%`,
-    ``,
-    `🔥 Current streak: ${stats.streak} days`,
-    `🏆 Best streak: ${stats.bestStreak} days`,
-  ].join("\n");
-  
-  try {
-    await ctx.editMessageText(statsText, {
-      parse_mode: "HTML",
-      reply_markup: new InlineKeyboard()
-        .text("🗑️ Clear Completed", "itodo_clear_done")
-        .row()
-        .text("← Back to List", "itodo_back"),
-    });
-  } catch (e) {}
-});
-
-bot.callbackQuery("itodo_clear_done", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  const cleared = clearCompletedTasks(userId);
-  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
-  
-  // Go back to stats
-  const stats = getTodoStats(userId);
-  
-  const statsText = [
-    `📊 <b>Task Statistics</b>`,
-    ``,
-    `📋 Total tasks: ${stats.total}`,
-    `✅ Completed: ${stats.completed}`,
-    `⬜ Pending: ${stats.pending}`,
-    `📈 Completion rate: ${stats.completionRate}%`,
-    ``,
-    `🔥 Current streak: ${stats.streak} days`,
-    `🏆 Best streak: ${stats.bestStreak} days`,
-  ].join("\n");
-  
-  try {
-    await ctx.editMessageText(statsText, {
-      parse_mode: "HTML",
-      reply_markup: new InlineKeyboard()
-        .text("🗑️ Clear Completed", "itodo_clear_done")
-        .row()
-        .text("← Back to List", "itodo_back"),
-    });  } catch (e) {}
-});
-
-bot.callbackQuery("itodo_collab", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  const userLists = getCollabListsForUser(userId);
-  
-  let collabText = `👥 <b>Collab Lists</b>`;
-  
-  const keyboard = new InlineKeyboard();
-  
-  if (userLists.length === 0) {
-    keyboard.text("📋 No lists yet", "ct_create").row();
-  } else {
-    userLists.slice(0, 5).forEach((list) => {
-      const doneCount = list.tasks.filter(t => t.completed).length;
-      const totalCount = list.tasks.length;
-      keyboard.text(`📋 ${list.name} (${doneCount}/${totalCount})`, `ct_open:${list.id}`).row();
-    });
-  }
-  
-  keyboard
-    .text("➕ Create", "ct_create")
-    .text("🔗 Join", "ct_join")
-    .row()
-    .text("← Back", "itodo_back");
-  
-  try {
-    await ctx.editMessageText(collabText, {
-      parse_mode: "HTML",
-      reply_markup: keyboard,
-    });
-  } catch (e) {}
-});
-
 

@@ -8,187 +8,187 @@
 // Lines 13512-13694 from original index.js
 // =====================
 
-// =====================
-// SETTINGS MENU CALLBACKS (Editable inline message menu)
-// =====================
+  const kb = new InlineKeyboard()
+    .text(`🅰️ Option A`, 'wyr_a')
+    .text(`🅱️ Option B`, 'wyr_b');
+  
+  await ctx.reply(
+    `🤷 <b>Would You Rather...</b>\n\n` +
+    `🅰️ ${escapeHTML(option1)}\n\n` +
+    `<b>OR</b>\n\n` +
+    `🅱️ ${escapeHTML(option2)}`,
+    { parse_mode: 'HTML', reply_markup: kb, reply_to_message_id: ctx.message?.message_id }
+  );
+});
 
-// Handle category selection (Free/Premium/Ultra)
-bot.callbackQuery(/^setmenu:(free|premium|ultra)$/, async (ctx) => {
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+// /run - Code runner
+bot.command("run", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const category = ctx.callbackQuery.data.split(":")[1];
-  const currentModel = ensureChosenModelValid(userId);
-  const shortModel = currentModel.split("/").pop();
+  const text = ctx.message.text.replace(/^\/run\s*/i, '').trim();
   
-  await ctx.answerCallbackQuery();
-  
-  const categoryNames = { free: "🆓 Free", premium: "⭐ Premium", ultra: "💎 Ultra" };
-  
-  try {
-    await ctx.editMessageText(
-      `⚙️ *${categoryNames[category]} Models*\n\nCurrent: \`${shortModel}\`\n\nSelect a model:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: settingsCategoryKeyboard(category, userId, currentModel)
-      }
+  if (!text) {
+    const popular = ['python', 'javascript', 'java', 'c', 'cpp', 'go', 'rust', 'ruby', 'php'];
+    
+    return ctx.reply(
+      '💻 <b>Code Runner</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/run language\nyour code here</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/run python\nprint("Hello World!")</code>\n\n' +
+      `<b>Popular languages:</b> ${popular.join(', ')}\n\n` +
+      `<i>50+ languages supported!</i>`,
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
-  } catch (e) {
-    console.error("Edit settings error:", e.message);
-  }
-});
-
-// Handle model selection
-bot.callbackQuery(/^setmodel:(.+)$/, async (ctx) => {
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const newModel = ctx.callbackQuery.data.slice(9); // Remove "setmodel:"
-  const user = getUserRecord(userId);
-  const tier = user?.tier || "free";
-  const allowed = allModelsForTier(tier);
-  
-  if (!allowed.includes(newModel)) {
-    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
   }
   
-  // Set the model
-  setUserModel(userId, newModel);
-  const inlineSess = getInlineSession(userId);
-  inlineSess.model = newModel;
+  const lines = text.split('\n');
+  const language = lines[0].trim().toLowerCase();
+  const code = lines.slice(1).join('\n');
   
-  const shortModel = newModel.split("/").pop();
-  await ctx.answerCallbackQuery({ text: `✅ Model set to ${shortModel}` });
-  
-  // Show confirmation and go back to main menu
-  try {
-    await ctx.editMessageText(
-      `⚙️ *StarzAI Settings*\n\n✅ Model changed to: \`${shortModel}\`\n\nSelect a category:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: settingsMainKeyboard(userId)
-      }
+  if (!code) {
+    return ctx.reply(
+      '❌ Please provide code to run.\n\n' +
+      '<b>Format:</b>\n' +
+      '<code>/run language\nyour code here</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
-  } catch (e) {
-    console.error("Edit settings error:", e.message);
   }
-});
-
-// Handle back button
-bot.callbackQuery(/^setmenu:back$/, async (ctx) => {
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
   
-  const currentModel = ensureChosenModelValid(userId);
-  const shortModel = currentModel.split("/").pop();
+  const statusMsg = await ctx.reply(`💻 Running ${language} code...`, {
+    reply_to_message_id: ctx.message?.message_id
+  });
   
-  await ctx.answerCallbackQuery();
+  const result = await runCode(language, code);
   
-  try {
-    await ctx.editMessageText(
-      `⚙️ *StarzAI Settings*\n\nCurrent model: \`${shortModel}\`\n\nSelect a category:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: settingsMainKeyboard(userId)
-      }
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${escapeHTML(result.error)}`,
+      { parse_mode: 'HTML' }
     );
-  } catch (e) {
-    console.error("Edit settings error:", e.message);
+    return;
   }
+  
+  let response = `💻 <b>${escapeHTML(result.language)} ${escapeHTML(result.version)}</b>\n\n`;
+  
+  if (result.output) {
+    response += `<b>Output:</b>\n<code>${escapeHTML(result.output.slice(0, 2000))}</code>\n`;
+  }
+  
+  if (result.stderr) {
+    response += `\n<b>Errors:</b>\n<code>${escapeHTML(result.stderr.slice(0, 500))}</code>\n`;
+  }
+  
+  response += `\n<i>Exit code: ${result.exitCode}</i>`;
+  
+  await ctx.api.editMessageText(
+    ctx.chat.id, statusMsg.message_id,
+    response,
+    { parse_mode: 'HTML' }
+  );
 });
 
-// Handle close button
-bot.callbackQuery(/^setmenu:close$/, async (ctx) => {
-  await ctx.answerCallbackQuery({ text: "Settings closed" });
+// /wallpaper - Search wallpapers
+bot.command("wallpaper", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  try {
-    // Try to delete first (works for regular messages)
-    await ctx.deleteMessage();
-  } catch (e) {
-    // Can't delete inline messages, edit to show closed state
-    try {
-      await ctx.editMessageText(
-        `⚙️ *Settings closed*\n\n_Use @starztechbot to open again_`,
-        { parse_mode: "Markdown" }
-      );
-    } catch {
-      // Message unchanged or other error
-    }
-  }
-});
-
-// Handle pagination for model selection
-bot.callbackQuery(/^setpage:(.+):(\d+)$/, async (ctx) => {
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  const text = ctx.message.text.replace(/^\/wallpaper\s*/i, '').trim();
   
-  const [, category, pageStr] = ctx.callbackQuery.data.match(/^setpage:(.+):(\d+)$/);
-  const page = parseInt(pageStr, 10);
-  const currentModel = ensureChosenModelValid(userId);
-  const shortModel = currentModel.split("/").pop();
-  
-  await ctx.answerCallbackQuery();
-  
-  const categoryNames = { free: "🆓 Free", premium: "⭐ Premium", ultra: "💎 Ultra" };
-  
-  try {
-    await ctx.editMessageText(
-      `⚙️ *${categoryNames[category]} Models*\n\nCurrent: \`${shortModel}\`\n\nSelect a model:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: settingsCategoryKeyboard(category, userId, currentModel, page)
-      }
+  if (!text) {
+    return ctx.reply(
+      '🖼️ <b>Wallpaper Search</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/wallpaper search term</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/wallpaper nature</code>\n' +
+      '<code>/wallpaper cyberpunk city</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
-  } catch (e) {
-    console.error("Edit settings error:", e.message);
   }
-});
-
-// Noop handler for page indicator button
-bot.callbackQuery(/^noop$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
-});
-
-// =====================
-// SHARED CHAT CALLBACKS (Multi-user inline chat)
-// Now uses switch_inline_query_current_chat - no DM needed!
-// =====================
-
-// Page navigation (legacy Yap shared chat - now disabled)
-bot.callbackQuery(/^schat_page:(.+):(\d+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery({
-    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
-    show_alert: true,
+  
+  const statusMsg = await ctx.reply('🔍 Searching wallpapers...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await searchWallpapers(text);
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${result.error}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  const wallpaper = result.wallpapers[0];
+  
+  const kb = new InlineKeyboard();
+  if (result.wallpapers.length > 1) {
+    kb.text('Next →', `wp_next:${encodeURIComponent(text)}:1`);
+  }
+  kb.row().url('🔗 Full Resolution', wallpaper.url);
+  
+  await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+  
+  await ctx.replyWithPhoto(wallpaper.thumbnail, {
+    caption: `🖼️ <b>Wallpaper</b> (1/${result.wallpapers.length})\n\nResolution: ${wallpaper.resolution}`,
+    parse_mode: 'HTML',
+    reply_markup: kb,
+    reply_to_message_id: ctx.message?.message_id
   });
 });
 
-// Noop for page indicator button (doesn't count towards rate limit)
-bot.callbackQuery(/^schat_noop$/, async (ctx) => {
-  await ctx.answerCallbackQuery();
+// /roast - AI roast generator
+bot.command("roast", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const target = ctx.message.reply_to_message?.from?.first_name || ctx.from.first_name;
+  
+  const roasts = [
+    `${target}, you're not stupid; you just have bad luck thinking.`,
+    `${target}, I'd agree with you but then we'd both be wrong.`,
+    `${target}, you're like a cloud. When you disappear, it's a beautiful day.`,
+    `${target}, I'm not saying I hate you, but I would unplug your life support to charge my phone.`,
+    `${target}, you bring everyone so much joy... when you leave.`,
+    `${target}, if I had a face like yours, I'd sue my parents.`,
+    `${target}, you're the reason the gene pool needs a lifeguard.`,
+    `${target}, I'd explain it to you but I left my crayons at home.`,
+    `${target}, you're not completely useless. You can always serve as a bad example.`,
+    `${target}, somewhere out there is a tree producing oxygen for you. You owe it an apology.`
+  ];
+  
+  const roast = roasts[Math.floor(Math.random() * roasts.length)];
+  
+  await ctx.reply(
+    `🔥 <b>Roast</b>\n\n${escapeHTML(roast)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
 });
 
-// Ask AI - legacy Yap input (now disabled)
-bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery({
-    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
-    show_alert: true,
-  });
-});
-
-// Refresh shared chat display (legacy Yap - now disabled)
-bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery({
-    text: "Yap (shared chat) mode has been removed.",
-    show_alert: true,
-  });
-});
-
-// Clear shared chat (legacy Yap - now disabled)
-bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery({
-    text: "Yap (shared chat) mode has been removed.",
-    show_alert: true,
-  });
-});
-
+// /pickup - Pickup lines
+bot.command("pickup", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const lines = [
+    "Are you a magician? Because whenever I look at you, everyone else disappears.",
+    "Do you have a map? Because I just got lost in your eyes.",
+    "Is your name Google? Because you have everything I've been searching for.",
+    "Are you a parking ticket? Because you've got 'fine' written all over you.",
+    "Do you believe in love at first sight, or should I walk by again?",
+    "Is your dad a boxer? Because you're a knockout!",
+    "Are you a campfire? Because you're hot and I want s'more.",
+    "Do you have a Band-Aid? Because I just scraped my knee falling for you.",
+    "Is there an airport nearby, or is that just my heart taking off?",
+    "Are you a time traveler? Because I see you in my future."
+  ];
 

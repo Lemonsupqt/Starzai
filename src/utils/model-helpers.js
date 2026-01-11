@@ -8,6 +8,131 @@
 // Lines 11092-11233 from original index.js
 // =====================
 
+  await ctx.reply("🎭 *Enter personality traits:*\n\n_Example: cheerful, witty, caring, playful_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_set_background", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "background", timestamp: Date.now() });
+  await ctx.reply("📖 *Enter background/backstory:*\n\n_Example: A mysterious traveler from another dimension who loves stargazing_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_set_style", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  pendingPartnerInput.set(String(ctx.from.id), { field: "style", timestamp: Date.now() });
+  await ctx.reply("💬 *Enter speaking style:*\n\n_Example: speaks softly with poetic phrases, uses lots of emojis_", { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("open_partner", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const partner = getPartner(ctx.from.id);
+  try {
+    await ctx.editMessageText(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
+  } catch (e) {
+    await ctx.reply(
+      buildPartnerSetupMessage(partner),
+      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+    );
+  }
+});
+
+bot.callbackQuery("do_stats", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  const userRecord = getUserRecord(u.id);
+  
+  if (!userRecord) {
+    return ctx.answerCallbackQuery({ text: "❌ Not registered yet!", show_alert: true });
+  }
+  
+  const model = ensureChosenModelValid(u.id);
+  const memberSince = userRecord.createdAt ? new Date(userRecord.createdAt).toLocaleDateString() : "Unknown";
+  const messages = userRecord.messageCount || 0;
+  const queries = userRecord.inlineQueryCount || 0;
+  
+  const stats = [
+    `📊 *Your Stats*`,
+    ``,
+    `👤 *User ID:* \`${u.id}\``,
+    `🌟 *Tier:* ${userRecord.tier?.toUpperCase() || "FREE"}`,
+    `🤖 *Model:* ${model.split("/").pop()}`,
+    ``,
+    `💬 *Messages:* ${messages}`,
+    `⌨️ *Inline queries:* ${queries}`,
+    `📅 *Member since:* ${memberSince}`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
+  } catch (e) {
+    await ctx.reply(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
+  }
+});
+
+bot.callbackQuery("partner_chat", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  const partner = getPartner(u.id);
+  
+  if (!partner?.name) {
+    return ctx.reply("❌ Please set a name first!", { parse_mode: "Markdown" });
+  }
+  
+  setPartner(u.id, { active: true });
+  const updatedPartner = getPartner(u.id);
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(updatedPartner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(updatedPartner) }
+  );
+  await ctx.reply(`🤝🏻 *${partner.name} is ready!*\n\nJust send messages and they'll respond in character.`, { parse_mode: "Markdown" });
+});
+
+bot.callbackQuery("partner_stop", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const u = ctx.from;
+  setPartner(u.id, { active: false });
+  const partner = getPartner(u.id);
+  
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(partner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+  );
+});
+
+bot.callbackQuery("partner_clearchat", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Chat history cleared!" });
+  clearPartnerChat(ctx.from.id);
+  const partner = getPartner(ctx.from.id);
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(partner),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
+  );
+});
+
+bot.callbackQuery("partner_delete", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Partner deleted" });
+  clearPartner(ctx.from.id);
+  await ctx.editMessageText(
+    buildPartnerSetupMessage(null),
+    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(null) }
+  );
+});
+
+// Helper for time ago
+function getTimeAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 // =====================
 // MODEL CATEGORY HELPERS
 // =====================
@@ -25,129 +150,4 @@ function modelCategoryKeyboard(userTier) {
   }
   
   // Show ULTRA if user has access
-  if (userTier === "ultra") {
-    rows.push([{ text: "💎 Ultra Models", callback_data: "model_cat:ultra" }]);
-  }
-  
-  // Add back to main menu button
-  rows.push([{ text: "« Back to Menu", callback_data: "menu_back" }]);
-  
-  return { inline_keyboard: rows };
-}
-
-// Build model list keyboard for a specific category
-function modelListKeyboard(category, currentModel, userTier, page = 0) {
-  const rows = [];
-  let models = [];
-  
-  // Combine MegaLLM and GitHub Models for each category
-  if (category === "free") {
-    models = [...FREE_MODELS, ...GITHUB_FREE_MODELS];
-  } else if (category === "premium" && (userTier === "premium" || userTier === "ultra")) {
-    models = [...PREMIUM_MODELS, ...GITHUB_PREMIUM_MODELS];
-  } else if (category === "ultra" && userTier === "ultra") {
-    models = [...ULTRA_MODELS, ...GITHUB_ULTRA_MODELS];
-  }
-  
-  const MODELS_PER_PAGE = 4;
-  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE);
-  const startIdx = page * MODELS_PER_PAGE;
-  const pageModels = models.slice(startIdx, startIdx + MODELS_PER_PAGE);
-  
-  // Add model buttons (1 per row for clean mobile display)
-  pageModels.forEach((m) => {
-    const short = m.split("/").pop();
-    rows.push([{
-      text: `${m === currentModel ? "✅ " : ""}${short}`,
-      callback_data: `setmodel:${m}`,
-    }]);
-  });
-  
-  // Pagination row
-  if (totalPages > 1) {
-    const navRow = [];
-    if (page > 0) {
-      navRow.push({ text: "◀️", callback_data: `model_page:${category}:${page - 1}` });
-    }
-    navRow.push({ text: `${page + 1}/${totalPages}`, callback_data: "noop" });
-    if (page < totalPages - 1) {
-      navRow.push({ text: "▶️", callback_data: `model_page:${category}:${page + 1}` });
-    }
-    rows.push(navRow);
-  }
-  
-  // Add back button
-  rows.push([{ text: "← Back", callback_data: "model_back" }]);
-  
-  return { inline_keyboard: rows };
-}
-
-// Category emoji/title helper
-function categoryTitle(category) {
-  if (category === "free") return "🆓 FREE";
-  if (category === "premium") return "⭐ PREMIUM";
-  if (category === "ultra") return "💎 ULTRA";
-  return category.toUpperCase();
-}
-
-bot.command("model", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  if (!(await enforceCommandCooldown(ctx))) return;
-
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const current = ensureChosenModelValid(ctx.from.id);
-
-  await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: modelCategoryKeyboard(u.tier),
-      reply_to_message_id: ctx.message?.message_id,
-    }
-  );
-});
-
-bot.command("whoami", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  if (!(await enforceCommandCooldown(ctx))) return;
-
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const model = ensureChosenModelValid(ctx.from.id);
-  const stats = u.stats || {};
-
-  const safeUsername = u.username ? escapeMarkdown("@" + u.username) : "_not set_";
-  const safeName = u.firstName ? escapeMarkdown(u.firstName) : "_not set_";
-  const shortModel = model.split("/").pop();
-  // Show model as-is inside code block to avoid ugly backslashes like grok\-4\.1
-  const safeModel = shortModel;
-
-  const isOwnerUser = OWNER_IDS.has(String(ctx.from.id));
-  const tierLabel = isOwnerUser
-    ? `${u.tier.toUpperCase()} (OWNER)`
-    : (u.tier || "free").toUpperCase();
-
-  const lines = [
-    `👤 *Your Profile*`,
-    ``,
-    `🆔 User ID: \`${ctx.from.id}\``,
-    `📛 Username: ${safeUsername}`,
-    `👋 Name: ${safeName}`,
-    ``,
-    `🎫 *Tier:* ${tierLabel}`,
-    `🤖 *Model:* \`${safeModel}\``,
-    ``,
-    `📊 *Usage Stats*`,
-    `• Messages: ${stats.totalMessages || 0}`,
-    `• Inline queries: ${stats.totalInlineQueries || 0}`,
-    `• Last active: ${stats.lastActive ? new Date(stats.lastActive).toLocaleString() : "_unknown_"}`,
-    ``,
-    `📅 Registered: ${u.registeredAt ? new Date(u.registeredAt).toLocaleDateString() : "_unknown_"}`,
-  ];
-
-  await ctx.reply(lines.join("\n"), {
-    parse_mode: "Markdown",
-    reply_to_message_id: ctx.message?.message_id,
-  });
-});
-
 

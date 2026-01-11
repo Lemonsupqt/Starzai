@@ -8,6 +8,131 @@
 // Lines 2094-2238 from original index.js
 // =====================
 
+
+  // Owners: no quota enforcement
+  if (!Number.isFinite(limit)) {
+    return { allowed: true, limit, used: 0, remaining: Infinity };
+  }
+
+  const usage = getWebsearchUsage(u);
+  if (usage.used >= limit) {
+    return { allowed: false, limit, used: usage.used, remaining: 0 };
+  }
+
+  usage.used += 1;
+  saveUsers();
+
+  const remaining = Math.max(0, limit - usage.used);
+  return { allowed: true, limit, used: usage.used, remaining };
+}
+
+// Read-only view of current quota status.
+function getWebsearchQuotaStatus(userId) {
+  const u = ensureUser(userId);
+  const limit = getWebsearchDailyLimitForUser(userId);
+
+  if (!Number.isFinite(limit)) {
+    return { limit, used: 0, remaining: Infinity };
+  }
+
+  const usage = getWebsearchUsage(u);
+  const remaining = Math.max(0, limit - usage.used);
+  return { limit, used: usage.used, remaining };
+}
+
+// Add prompt to user's history (max 10 recent)
+// DISABLED: History tracking removed to prevent database bloat
+function addToHistory(userId, prompt, mode = "default") {
+  // History tracking disabled
+  return;
+}
+
+function registerUser(from) {
+  return ensureUser(from.id, from);
+}
+
+// =====================
+// PARTNER MANAGEMENT
+// =====================
+function getPartner(userId) {
+  const id = String(userId);
+  return partnersDb.partners[id] || null;
+}
+
+function setPartner(userId, partnerData) {
+  const id = String(userId);
+  if (!partnersDb.partners[id]) {
+    partnersDb.partners[id] = {
+      name: null,
+      personality: null,
+      background: null,
+      style: null,
+      createdAt: Date.now(),
+      chatHistory: [],
+      active: false, // Whether partner mode is active
+    };
+  }
+  Object.assign(partnersDb.partners[id], partnerData, { updatedAt: Date.now() });
+  savePartners();
+  return partnersDb.partners[id];
+}
+
+function clearPartner(userId) {
+  const id = String(userId);
+  delete partnersDb.partners[id];
+  partnerChatHistory.delete(id);
+  savePartners();
+}
+
+function getPartnerChatHistory(userId) {
+  const id = String(userId);
+  const partner = getPartner(userId);
+  
+  // Try in-memory first, then fall back to stored
+  if (partnerChatHistory.has(id)) {
+    return partnerChatHistory.get(id);
+  }
+  
+  // Load from partner data if exists
+  if (partner?.chatHistory) {
+    partnerChatHistory.set(id, partner.chatHistory);
+    return partner.chatHistory;
+  }
+  
+  return [];
+}
+
+function addPartnerMessage(userId, role, content) {
+  const id = String(userId);
+  let history = getPartnerChatHistory(userId);
+  
+  history.push({ role, content });
+  
+  // Keep last 20 messages for context
+  if (history.length > 20) history = history.slice(-20);
+  
+  partnerChatHistory.set(id, history);
+  
+  // Also save to persistent storage
+  const partner = getPartner(userId);
+  if (partner) {
+    partner.chatHistory = history;
+    savePartners();
+  }
+  
+  return history;
+}
+
+function clearPartnerChat(userId) {
+  const id = String(userId);
+  partnerChatHistory.delete(id);
+  const partner = getPartner(userId);
+  if (partner) {
+    partner.chatHistory = [];
+    savePartners();
+  }
+}
+
 // =====================
 // CHARACTER MODE MANAGEMENT
 // =====================
@@ -28,129 +153,4 @@ function saveCharacter(userId, characterName) {
   // Check if already saved
   if (u.savedCharacters.some(c => c.toLowerCase() === normalizedName)) {
     return { success: false, message: "Character already saved!" };
-  }
-  
-  // Max 10 saved characters
-  if (u.savedCharacters.length >= 10) {
-    return { success: false, message: "Max 10 characters! Remove one first." };
-  }
-  
-  u.savedCharacters.push(characterName.trim());
-  saveUsers();
-  return { success: true, message: `Saved ${characterName}!` };
-}
-
-function removeCharacter(userId, characterName) {
-  const u = ensureUser(userId);
-  if (!u.savedCharacters) return { success: false, message: "No saved characters!" };
-  
-  const normalizedName = characterName.trim().toLowerCase();
-  const index = u.savedCharacters.findIndex(c => c.toLowerCase() === normalizedName);
-  
-  if (index === -1) {
-    return { success: false, message: "Character not found!" };
-  }
-  
-  u.savedCharacters.splice(index, 1);
-  saveUsers();
-  return { success: true, message: `Removed ${characterName}!` };
-}
-
-function setActiveCharacter(userId, chatId, characterName) {
-  const u = ensureUser(userId);
-  const chatKey = String(chatId);
-  
-  if (!u.activeCharacter) u.activeCharacter = {};
-  
-  if (characterName) {
-    u.activeCharacter[chatKey] = {
-      name: characterName,
-      activatedAt: Date.now(),
-    };
-  } else {
-    delete u.activeCharacter[chatKey];
-  }
-  saveUsers();
-}
-
-function getActiveCharacter(userId, chatId) {
-  const u = ensureUser(userId);
-  if (!u.activeCharacter) return null;
-  
-  const chatKey = String(chatId);
-  return u.activeCharacter[chatKey] || null;
-}
-
-function clearActiveCharacter(userId, chatId) {
-  setActiveCharacter(userId, chatId, null);
-  // Also clear character chat history
-  const historyKey = `${userId}_${chatId}`;
-  characterChatHistory.delete(historyKey);
-}
-
-function getCharacterChatHistory(userId, chatId) {
-  const historyKey = `${userId}_${chatId}`;
-  return characterChatHistory.get(historyKey) || [];
-}
-
-function addCharacterMessage(userId, chatId, role, content) {
-  const historyKey = `${userId}_${chatId}`;
-  let history = getCharacterChatHistory(userId, chatId);
-  
-  history.push({ role, content });
-  
-  // Keep last 20 messages for context
-  if (history.length > 20) history = history.slice(-20);
-  
-  characterChatHistory.set(historyKey, history);
-  return history;
-}
-
-function buildCharacterSystemPrompt(characterName) {
-  return `You are roleplaying as ${characterName}. Stay completely in character throughout the entire conversation. Respond to everything as ${characterName} would - use their speech patterns, vocabulary, mannerisms, and personality. Be creative and entertaining while still being helpful. Never break character unless explicitly asked to stop.`;
-}
-
-function buildPartnerSystemPrompt(partner) {
-  let prompt = `You are ${partner.name || "a companion"}, a personalized AI partner.`;
-  
-  if (partner.personality) {
-    prompt += ` Your personality: ${partner.personality}.`;
-  }
-  if (partner.background) {
-    prompt += ` Your background: ${partner.background}.`;
-  }
-  if (partner.style) {
-    prompt += ` Your speaking style: ${partner.style}.`;
-  }
-  
-  prompt += " Stay in character throughout the conversation. Be engaging, warm, and remember previous messages in our chat. Respond naturally as this character would.";
-  
-  return prompt;
-}
-
-function ensureChosenModelValid(userId) {
-  const u = ensureUser(userId);
-  const allowed = allModelsForTier(u.tier);
-
-  // If no allowed models, fail safe
-  if (!allowed.length) {
-    u.model = "";
-    saveUsers();
-    return "";
-  }
-
-  if (!allowed.includes(u.model)) {
-    // Choose tier-appropriate default
-    if (u.tier === "ultra") u.model = DEFAULT_ULTRA_MODEL;
-    else if (u.tier === "premium") u.model = DEFAULT_PREMIUM_MODEL;
-    else u.model = DEFAULT_FREE_MODEL;
-
-    // final fallback
-    if (!allowed.includes(u.model)) u.model = allowed[0];
-
-    saveUsers();
-  }
-  return u.model;
-}
-
 

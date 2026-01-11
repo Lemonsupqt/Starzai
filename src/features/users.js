@@ -8,6 +8,131 @@
 // Lines 1581-1731 from original index.js
 // =====================
 
+  
+  // Log spam detection
+  console.log(`[SPAM] User ${userId}: ${spamResult.reason} (severity: ${spamResult.severity}, count: ${record.spamCount})`);
+  
+  // Auto-mute after threshold
+  if (record.spamCount >= SPAM_CONFIG.AUTO_MUTE_THRESHOLD) {
+    const durationMs = SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000;
+    const autoReason = `${spamResult.reason} (automatic spam detection)`;
+    
+    // Apply a regular mute using the global mute system
+    const { until } = applyMuteToUser(
+      String(userId),
+      durationMs,
+      "all",
+      autoReason,
+      "system"
+    );
+    
+    // Reset spam count
+    record.spamCount = 0;
+    
+    // Notify user
+    try {
+      const untilDate = until ? new Date(until).toLocaleString() : "unknown";
+      await ctx.reply(
+        `🚫 *Auto-Muted for Spam*\\n\\n` +
+        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\\n\\n` +
+        `Reason: ${spamResult.reason}\\n` +
+        `Mute expires: ${untilDate}\\n\\n` +
+        `_Please avoid spamming to use the bot._`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Failed to notify muted user:", e);
+    }
+    
+    return true; // Muted
+  }
+  
+  // Send warning (with cooldown)
+  if (nowMs - record.lastWarning > SPAM_CONFIG.WARNING_COOLDOWN_MS) {
+    record.lastWarning = nowMs;
+    
+    try {
+      await ctx.reply(
+        `⚠️ *Spam Warning*\\n\\n` +
+        `${spamResult.reason}\\n\\n` +
+        `Please slow down or you will be automatically muted.\\n` +
+        `(Warning ${record.spamCount}/${SPAM_CONFIG.AUTO_MUTE_THRESHOLD})`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Failed to send spam warning:", e);
+    }
+  }
+  
+  return false; // Not muted yet
+}
+
+async function checkAntiSpam(ctx, messageText) {
+  const userId = ctx.from?.id;
+  if (!userId) return true; // Allow if no user ID
+  
+  // Skip spam check for owners
+  if (OWNER_IDS.has(String(userId))) return true;
+  
+  // Detect spam
+  const spamResult = detectSpam(userId, messageText);
+  
+  if (spamResult.isSpam) {
+    const wasMuted = await handleSpamDetection(ctx, spamResult, userId);
+    if (wasMuted) {
+      return false; // Block message
+    }
+    
+    // For high severity, block immediately
+    if (spamResult.severity === "high") {
+      return false;
+    }
+  }
+  
+  // Track this message
+  trackMessage(userId, messageText);
+  
+  return true; // Allow message
+}
+
+// =====================
+// ANTI-SPAM SYSTEM
+// =====================
+// =====================
+// GROUP ACTIVATION SYSTEM
+// =====================
+// Bot is dormant by default in groups. Activates for 2 minutes after command/mention.
+// During active window, responds to all messages. Goes dormant after inactivity.
+
+function activateGroup(chatId) {
+  const id = String(chatId);
+  groupActiveUntil.set(id, Date.now() + GROUP_ACTIVE_DURATION);
+}
+
+function deactivateGroup(chatId) {
+  const id = String(chatId);
+  groupActiveUntil.delete(id);
+}
+
+function isGroupActive(chatId) {
+  const id = String(chatId);
+  const until = groupActiveUntil.get(id);
+  if (!until) return false;
+  if (Date.now() > until) {
+    groupActiveUntil.delete(id); // Clean up expired
+    return false;
+  }
+  return true;
+}
+
+function getGroupActiveRemaining(chatId) {
+  const id = String(chatId);
+  const until = groupActiveUntil.get(id);
+  if (!until) return 0;
+  const remaining = until - Date.now();
+  return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
+}
+
 // =====================
 // USER + ACCESS CONTROL
 // =====================
@@ -34,129 +159,4 @@ function ensureUser(userId, from = null) {
       allowedModels: [],
       banned: false,
       // Usage stats
-      stats: {
-        totalMessages: 0,
-        totalInlineQueries: 0,
-        totalTokensUsed: 0,
-        lastActive: new Date().toISOString(),
-        lastModel: defaultModel,
-      },
-      // Recent prompts history (DISABLED to prevent database bloat)
-      // history: [],
-      // Saved characters for quick roleplay (max 10)
-      savedCharacters: [],
-      // Active character mode for DM/GC
-      activeCharacter: null,
-      // Web search toggle - when ON, all messages get web search
-      webSearch: false,
-      // Per-user websearch usage (daily)
-      webSearchUsage: {
-        date: new Date().toISOString().slice(0, 10),
-        used: 0,
-      },
-      // Warning history (for /warn)
-      warnings: [],
-      // Image generation preferences
-      imagePrefs: {
-        defaultRatio: "1:1",  // Default aspect ratio
-        steps: 8,              // Generation steps (owner-only adjustment)
-        safeMode: true,        // NSFW filter (free=always on, premium/ultra=toggle, owner=off)
-      },
-    };
-    saveUsers();
-  } else {
-    // Existing user - upgrade owners to ultra if not already
-    if (isOwnerUser && usersDb.users[id].tier !== "ultra") {
-      usersDb.users[id].tier = "ultra";
-      usersDb.users[id].role = "ultra";
-      saveUsers();
-    }
-    // migration: if old users exist without tier
-    if (!usersDb.users[id].tier) {
-      usersDb.users[id].tier = usersDb.users[id].role || "free";
-    }
-    if (!usersDb.users[id].model) {
-      usersDb.users[id].model = DEFAULT_FREE_MODEL;
-    }
-    // migration: add stats if missing
-    if (!usersDb.users[id].stats) {
-      usersDb.users[id].stats = {
-        totalMessages: 0,
-        totalInlineQueries: 0,
-        totalTokensUsed: 0,
-        lastActive: usersDb.users[id].registeredAt || new Date().toISOString(),
-        lastModel: usersDb.users[id].model,
-      };
-    }
-    // Update username/firstName if provided
-    if (from?.username) usersDb.users[id].username = from.username;
-    if (from?.first_name) usersDb.users[id].firstName = from.first_name;
-    // migration: add savedCharacters if missing
-    if (!usersDb.users[id].savedCharacters) {
-      usersDb.users[id].savedCharacters = [];
-    }
-    // migration: add activeCharacter if missing
-    if (usersDb.users[id].activeCharacter === undefined) {
-      usersDb.users[id].activeCharacter = null;
-    }
-    // migration: add banned flag if missing
-    if (usersDb.users[id].banned === undefined) {
-      usersDb.users[id].banned = false;
-    }
-    // migration: add warnings array if missing
-    if (!usersDb.users[id].warnings) {
-      usersDb.users[id].warnings = [];
-    }
-    // migration: add webSearchUsage if missing
-    if (!usersDb.users[id].webSearchUsage) {
-      usersDb.users[id].webSearchUsage = {
-        date: new Date().toISOString().slice(0, 10),
-        used: 0,
-      };
-    }
-    // migration: add imagePrefs if missing
-    if (!usersDb.users[id].imagePrefs) {
-      usersDb.users[id].imagePrefs = {
-        defaultRatio: "1:1",
-        steps: 8,
-        safeMode: true,
-      };
-    }
-    // migration: add safeMode to imagePrefs if missing
-    if (usersDb.users[id].imagePrefs && usersDb.users[id].imagePrefs.safeMode === undefined) {
-      usersDb.users[id].imagePrefs.safeMode = true;
-    }
-    saveUsers();
-  }
-  return usersDb.users[id];
-}
-
-// Check if a user is banned
-function isUserBanned(userId) {
-  const rec = getUserRecord(userId);
-  return !!rec?.banned;
-}
-
-// Check if a user is trusted (skip spam checks for performance)
-function isTrustedUser(userId) {
-  // Owners are always trusted
-  if (OWNER_IDS.includes(String(userId))) {
-    return true;
-  }
-  
-  const rec = getUserRecord(userId);
-  if (!rec) return false;
-  
-  // Trusted if:
-  // - No warnings
-  // - 100+ messages sent
-  // - Not banned or muted
-  const hasNoWarnings = !rec.warnings || rec.warnings.length === 0;
-  const hasGoodHistory = (rec.messagesCount || 0) >= 100;
-  const notBanned = !rec.banned;
-  const notMuted = !rec.mute;
-  
-  return hasNoWarnings && hasGoodHistory && notBanned && notMuted;
-}
-
 

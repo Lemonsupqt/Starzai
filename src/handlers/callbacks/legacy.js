@@ -8,213 +8,213 @@
 // Lines 13123-13331 from original index.js
 // =====================
 
-// =====================
-// CALLBACKS: LEGACY (for backwards compatibility)
-// =====================
-
-// Noop callback for tier headers (non-clickable)
-bot.callbackQuery("noop", async (ctx) => {
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery("help_features", async (ctx) => {
+// /weather - Get weather
+bot.command("weather", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const featuresText = [
-    "🌟 *StarzAI Features*",
-    "",
-    "⚡ *AI Modes (Inline)*",
-    "• ⭐ *Quark* (`q:`) - Lightning fast answers",
-    "• 🗿🔬 *Blackhole* (`b:`) - Deep research & analysis",
-    "• 💻 *Code* (`code:`) - Programming help & snippets",
-    "• 🧠 *Explain* (`e:`) - Simple ELI5 explanations",
-    "• 🎭 *Character* (`as:`) - Roleplay as any character",
-    "• 📝 *Summarize* (`sum:`) - Condense long text",
-    "",
-    "🤝🏻 *AI Partner*",
-    "Create your personalized AI companion!",
-    "• Custom name, personality, background",
-    "• Persistent chat memory",
-    "• Works in DM and inline (`p:`)",
-    "_Use /partner to set up_",
-    "",
-    "🎭 *Character Mode*",
-    "Quick roleplay as existing characters!",
-    "• `/char yoda` - Start as Yoda",
-    "• `/char save yoda` - Save to favorites",
-    "• `/char list` - View saved characters",
-    "• `/char stop` - End character mode",
-    "_Works in DM and group chats_",
-    "",
-    "🎨 *AI Image Generator*",
-    "Create stunning images from text!",
-    "• `/img prompt` - Fast turbo model",
-    "• `/img2 prompt` - Flux model (alt style)",
-    "• `/imagine prompt` - Free alternative",
-    "• Or just say: \"generate image of...\" or \"draw...\"",
-    "• `/imgset` - Set default ratio & safe mode",
-    "",
-    "📊 *Stats*",
-    "• /stats - Your usage statistics",
-    "",
-    "📡 *Multi-Platform*",
-    "• DM - Direct chat with AI",
-    "• Groups - Say \"Starz\" / \"Ai\" or reply to the bot",
-    "• Inline - Type @starztechbot anywhere",
-  ].join("\n");
+  const text = ctx.message.text.replace(/^\/weather\s*/i, '').trim();
   
-  await ctx.reply(featuresText, { parse_mode: "Markdown", reply_markup: helpKeyboard() });
-});
-
-bot.callbackQuery("do_register", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-
-  const u = ctx.from;
-  if (!u?.id) return ctx.answerCallbackQuery({ text: "No user id.", show_alert: true });
-
-  if (!getUserRecord(u.id)) registerUser(u);
-
-  await ctx.answerCallbackQuery({ text: "Registered ✅" });
-  await ctx.reply("✅ Registered! Use /model to choose models.", { reply_markup: helpKeyboard() });
-});
-
-bot.callbackQuery("do_whoami", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const model = ensureChosenModelValid(ctx.from.id);
+  if (!text) {
+    return ctx.reply(
+      '🌤️ <b>Weather</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/weather city name</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/weather Tokyo</code>\n' +
+      '<code>/weather New York</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
   
-  await ctx.answerCallbackQuery();
-  await ctx.reply(`Your userId: ${ctx.from.id}\nTier: ${u.tier}\nCurrent model: ${model}`);
-});
-
-bot.callbackQuery("open_model", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const current = ensureChosenModelValid(ctx.from.id);
-
-  await ctx.answerCallbackQuery();
+  const result = await getWeather(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
-    { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+    `🌤️ <b>Weather in ${escapeHTML(result.location)}${result.country ? `, ${escapeHTML(result.country)}` : ''}</b>\n\n` +
+    `🌡️ Temperature: <b>${result.temp_c}°C</b> (${result.temp_f}°F)\n` +
+    `🤔 Feels like: ${result.feels_like_c}°C\n` +
+    `☁️ Condition: ${escapeHTML(result.condition)}\n` +
+    `💧 Humidity: ${result.humidity}%\n` +
+    `💨 Wind: ${result.wind_kph} km/h ${result.wind_dir}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
   );
 });
 
-// Category selection callback
-bot.callbackQuery(/^model_cat:(free|premium|ultra)$/, async (ctx) => {
+// /translate - Translate text
+bot.command("translate", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const match = ctx.callbackQuery.data.match(/^model_cat:(free|premium|ultra)$/);
-  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
+  const text = ctx.message.text.replace(/^\/translate\s*/i, '').trim();
   
-  const category = match[1];
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const current = ensureChosenModelValid(ctx.from.id);
-  
-  // Check access
-  if (category === "premium" && u.tier === "free") {
-    return ctx.answerCallbackQuery({ text: "🔒 Premium tier required", show_alert: true });
-  }
-  if (category === "ultra" && u.tier !== "ultra") {
-    return ctx.answerCallbackQuery({ text: "🔒 Ultra tier required", show_alert: true });
-  }
-  
-  await ctx.answerCallbackQuery();
-  
-  try {
-    await ctx.editMessageText(
-      `${categoryTitle(category)} *Models*\n\n🤖 Current: \`${current}\`\n\n_Select a model:_`,
-      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier) }
+  if (!text) {
+    return ctx.reply(
+      '🌐 <b>Translate</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/translate [to:lang] text</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/translate Hello world</code> (auto-detect → English)\n' +
+      '<code>/translate to:es Hello world</code> (→ Spanish)\n' +
+      '<code>/translate to:ja Good morning</code> (→ Japanese)\n\n' +
+      '<b>Language codes:</b> en, es, fr, de, ja, ko, zh, ru, ar, hi',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
-  } catch {
-    // If edit fails, ignore
+  }
+  
+  let targetLang = 'en';
+  let textToTranslate = text;
+  
+  const langMatch = text.match(/^to:([a-z]{2})\s+/i);
+  if (langMatch) {
+    targetLang = langMatch[1].toLowerCase();
+    textToTranslate = text.slice(langMatch[0].length);
+  }
+  
+  const result = await translateText(textToTranslate, 'auto', targetLang);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `🌐 <b>Translation</b>\n\n` +
+    `<b>Original:</b>\n${escapeHTML(result.original)}\n\n` +
+    `<b>Translated (${result.to}):</b>\n${escapeHTML(result.translated)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /convert - Unit converter
+bot.command("convert", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/convert\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📐 <b>Unit Converter</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/convert value from to</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/convert 100 km mi</code>\n' +
+      '<code>/convert 70 kg lb</code>\n' +
+      '<code>/convert 30 c f</code>\n\n' +
+      '<b>Supported:</b>\n' +
+      '• Length: km↔mi, m↔ft, cm↔in\n' +
+      '• Weight: kg↔lb, g↔oz\n' +
+      '• Temp: c↔f\n' +
+      '• Volume: l↔gal, ml↔floz',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const match = text.match(/^([\d.]+)\s*([a-z]+)\s+([a-z]+)$/i);
+  
+  if (!match) {
+    return ctx.reply(
+      '❌ Invalid format. Use: <code>/convert 100 km mi</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const [, value, from, to] = match;
+  const result = convertUnit(parseFloat(value), from, to);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `📐 <b>Unit Conversion</b>\n\n` +
+    `<code>${result.value} ${result.fromUnit}</code> = <code>${result.result} ${result.toUnit}</code>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /wiki - Wikipedia search
+bot.command("wiki", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/wiki\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📚 <b>Wikipedia</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/wiki search term</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/wiki Artificial Intelligence</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const result = await getWikipedia(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  let response = `📚 <b>${escapeHTML(result.title)}</b>\n\n`;
+  response += escapeHTML(result.extract);
+  
+  if (result.url) {
+    response += `\n\n<a href="${result.url}">Read more on Wikipedia →</a>`;
+  }
+  
+  if (result.thumbnail) {
+    await ctx.replyWithPhoto(result.thumbnail, {
+      caption: response.slice(0, 1024),
+      parse_mode: 'HTML',
+      reply_to_message_id: ctx.message?.message_id
+    });
+  } else {
+    await ctx.reply(response, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
+      reply_to_message_id: ctx.message?.message_id
+    });
   }
 });
 
-// Back button callback
-bot.callbackQuery("model_back", async (ctx) => {
+// /define - Dictionary
+bot.command("define", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const current = ensureChosenModelValid(ctx.from.id);
+  const text = ctx.message.text.replace(/^\/define\s*/i, '').trim();
   
-  await ctx.answerCallbackQuery();
-  
-  try {
-    await ctx.editMessageText(
-      `⚙️ *Model Selection*\n\n👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\n_Select a category:_`,
-      { parse_mode: "Markdown", reply_markup: modelCategoryKeyboard(u.tier) }
+  if (!text) {
+    return ctx.reply(
+      '📖 <b>Dictionary</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/define word</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/define serendipity</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
-  } catch {
-    // If edit fails, ignore
   }
-});
-
-// Handle pagination for model selection
-bot.callbackQuery(/^model_page:(.+):(\d+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   
-  const match = ctx.callbackQuery.data.match(/^model_page:(.+):(\d+)$/);
-  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
+  const result = await getDefinition(text);
   
-  const category = match[1];
-  const page = parseInt(match[2], 10);
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const current = ensureChosenModelValid(ctx.from.id);
-  
-  await ctx.answerCallbackQuery();
-  
-  try {
-    await ctx.editMessageText(
-      `${categoryTitle(category)} *Models*\n\n🤖 Current: \`${current}\`\n\n_Select a model:_`,
-      { parse_mode: "Markdown", reply_markup: modelListKeyboard(category, current, u.tier, page) }
-    );
-  } catch {
-    // If edit fails, ignore
-  }
-});
-
-bot.callbackQuery(/^(set_model|setmodel):(.+)$/i, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-
-  const match = ctx.callbackQuery.data.match(/^(?:set_model|setmodel):(.+)$/i);
-  if (!match) return ctx.answerCallbackQuery({ text: "Invalid.", show_alert: true });
-
-  const modelId = match[1];
-  const u = ensureUser(ctx.from.id, ctx.from);
-  const allowed = allModelsForTier(u.tier);
-
-  if (!allowed.includes(modelId)) {
-    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
-  }
-
-  u.model = modelId;
-  saveUsers();
-
-  // Also update inline session model
-  updateInlineSession(ctx.from.id, { model: modelId });
-
-  await ctx.answerCallbackQuery({ text: `✅ Switched to ${modelId}` });
-
-  try {
-    // Show success message with back options
-    await ctx.editMessageText(
-      `✅ *Model Changed*\n\n🤖 Now using: \`${modelId}\`\n👤 Plan: *${u.tier.toUpperCase()}*`,
-      { 
-        parse_mode: "Markdown", 
-        reply_markup: { 
-          inline_keyboard: [
-            [{ text: "← Back to Models", callback_data: "model_back" }],
-            [{ text: "« Back to Menu", callback_data: "menu_back" }]
-          ] 
-        } 
-      }
-    );
-  } catch {
-    // ignore if can't edit
-  }
-});
-
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
 

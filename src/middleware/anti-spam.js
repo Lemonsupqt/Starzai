@@ -8,6 +8,131 @@
 // Lines 1282-1545 from original index.js
 // =====================
 
+  return value * multipliers[unit];
+}
+
+// =====================
+// RATE LIMIT
+// =====================
+function rateKey(ctx) {
+  return ctx.from?.id ? String(ctx.from.id) : "anon";
+}
+function checkRateLimit(ctx) {
+  const key = rateKey(ctx);
+  const t = nowMs();
+  const windowMs = 60_000;
+
+  const entry = rate.get(key) || { windowStartMs: t, count: 0 };
+
+  if (t - entry.windowStartMs >= windowMs) {
+    entry.windowStartMs = t;
+    entry.count = 0;
+  }
+
+  entry.count += 1;
+  rate.set(key, entry);
+
+  if (entry.count > RATE_LIMIT_PER_MINUTE) {
+    const waitSec = Math.ceil((windowMs - (t - entry.windowStartMs)) / 1000);
+    return { ok: false, waitSec };
+  }
+  return { ok: true, waitSec: 0 };
+}
+
+async function enforceRateLimit(ctx) {
+  const fromId = ctx.from?.id;
+  if (fromId && OWNER_IDS.has(String(fromId))) {
+    // Owners are not rate-limited
+    return true;
+  }
+
+  const r = checkRateLimit(ctx);
+  if (r.ok) return true;
+
+  const msg = `Rate limit hit. Try again in ~${r.waitSec}s.`;
+
+  if (ctx.inlineQuery) {
+    await safeAnswerInline(
+      ctx,
+      [
+        {
+          type: "article",
+          id: "rate",
+          title: "Slow down 😅",
+          description: msg,
+          input_message_content: { message_text: msg },
+        },
+      ],
+      { cache_time: 1, is_personal: true }
+    );
+  } else if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+  } else {
+    await ctx.reply(msg);
+  }
+  return false;
+}
+
+// Per-tier command cooldowns (slash commands only)
+const commandCooldown = new Map(); // userId -> last command timestamp (ms)
+
+function getTierForCooldown(user, userId) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) return "owner";
+  const t = user?.tier || "free";
+  if (t === "premium" || t === "ultra" || t === "free") return t;
+  return "free";
+}
+
+function getCommandCooldownSecondsForTier(tier) {
+  if (tier === "owner") return 0;
+  if (tier === "ultra") return 10;
+  if (tier === "premium") return 30;
+  // free and unknown default
+  return 60;
+}
+
+async function enforceCommandCooldown(ctx) {
+  const from = ctx.from;
+  const userId = from?.id ? String(from.id) : null;
+  if (!userId) return true;
+
+  // Owners: no command cooldown
+  if (OWNER_IDS.has(userId)) {
+    return true;
+  }
+
+  const user = getUserRecord(userId) || ensureUser(userId, from);
+  const tier = getTierForCooldown(user, userId);
+  const cooldownSec = getCommandCooldownSecondsForTier(tier);
+  if (cooldownSec <= 0) {
+    return true;
+  }
+
+  const cooldownMs = cooldownSec * 1000;
+  const now = nowMs();
+  const last = commandCooldown.get(userId) || 0;
+  const elapsed = now - last;
+
+  if (last && elapsed < cooldownMs) {
+    const remainingSec = Math.ceil((cooldownMs - elapsed) / 1000);
+    const msg = `⏱️ Command cooldown: wait ~${remainingSec}s before using another command.`;
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+      } else {
+        await ctx.reply(msg);
+      }
+    } catch {
+      // Ignore notification errors
+    }
+    return false;
+  }
+
+  commandCooldown.set(userId, now);
+  return true;
+}
+
 // =====================
 // ANTI-SPAM SYSTEM
 // =====================
@@ -147,129 +272,4 @@ function detectSpam(userId, messageText) {
       };
     }
   }
-  
-  // Check 5: Suspicious patterns (URLs, mentions, etc.)
-  if (messageText) {
-    const urlCount = (messageText.match(/https?:\/\//gi) || []).length;
-    const mentionCount = (messageText.match(/@\w+/g) || []).length;
-    
-    if (urlCount > 3 || mentionCount > 5) {
-      return {
-        isSpam: true,
-        reason: "Suspicious content pattern",
-        severity: "low"
-      };
-    }
-  }
-  
-  return { isSpam: false };
-}
-
-function trackMessage(userId, messageText) {
-  const record = getSpamRecord(userId);
-  const nowMs = Date.now();
-  
-  record.messages.push({
-    text: messageText || "",
-    timestamp: nowMs
-  });
-  
-  cleanOldMessages(record, nowMs);
-}
-
-async function handleSpamDetection(ctx, spamResult, userId) {
-  const record = getSpamRecord(userId);
-  const nowMs = Date.now();
-  
-  record.spamCount = (record.spamCount || 0) + 1;
-  
-  // Log spam detection
-  console.log(`[SPAM] User ${userId}: ${spamResult.reason} (severity: ${spamResult.severity}, count: ${record.spamCount})`);
-  
-  // Auto-mute after threshold
-  if (record.spamCount >= SPAM_CONFIG.AUTO_MUTE_THRESHOLD) {
-    const durationMs = SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES * 60 * 1000;
-    const autoReason = `${spamResult.reason} (automatic spam detection)`;
-    
-    // Apply a regular mute using the global mute system
-    const { until } = applyMuteToUser(
-      String(userId),
-      durationMs,
-      "all",
-      autoReason,
-      "system"
-    );
-    
-    // Reset spam count
-    record.spamCount = 0;
-    
-    // Notify user
-    try {
-      const untilDate = until ? new Date(until).toLocaleString() : "unknown";
-      await ctx.reply(
-        `🚫 *Auto-Muted for Spam*\\n\\n` +
-        `You have been automatically muted for ${SPAM_CONFIG.AUTO_MUTE_DURATION_MINUTES} minutes due to spam behavior.\\n\\n` +
-        `Reason: ${spamResult.reason}\\n` +
-        `Mute expires: ${untilDate}\\n\\n` +
-        `_Please avoid spamming to use the bot._`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Failed to notify muted user:", e);
-    }
-    
-    return true; // Muted
-  }
-  
-  // Send warning (with cooldown)
-  if (nowMs - record.lastWarning > SPAM_CONFIG.WARNING_COOLDOWN_MS) {
-    record.lastWarning = nowMs;
-    
-    try {
-      await ctx.reply(
-        `⚠️ *Spam Warning*\\n\\n` +
-        `${spamResult.reason}\\n\\n` +
-        `Please slow down or you will be automatically muted.\\n` +
-        `(Warning ${record.spamCount}/${SPAM_CONFIG.AUTO_MUTE_THRESHOLD})`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Failed to send spam warning:", e);
-    }
-  }
-  
-  return false; // Not muted yet
-}
-
-async function checkAntiSpam(ctx, messageText) {
-  const userId = ctx.from?.id;
-  if (!userId) return true; // Allow if no user ID
-  
-  // Skip spam check for owners
-  if (OWNER_IDS.has(String(userId))) return true;
-  
-  // Detect spam
-  const spamResult = detectSpam(userId, messageText);
-  
-  if (spamResult.isSpam) {
-    const wasMuted = await handleSpamDetection(ctx, spamResult, userId);
-    if (wasMuted) {
-      return false; // Block message
-    }
-    
-    // For high severity, block immediately
-    if (spamResult.severity === "high") {
-      return false;
-    }
-  }
-  
-  // Track this message
-  trackMessage(userId, messageText);
-  
-  return true; // Allow message
-}
-
-// =====================
-// ANTI-SPAM SYSTEM
-// =====================
 

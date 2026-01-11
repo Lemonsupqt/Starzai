@@ -8,6 +8,137 @@
 // Lines 2287-2299 from original index.js
 // =====================
 
+  
+  const chatKey = String(chatId);
+  return u.activeCharacter[chatKey] || null;
+}
+
+function clearActiveCharacter(userId, chatId) {
+  setActiveCharacter(userId, chatId, null);
+  // Also clear character chat history
+  const historyKey = `${userId}_${chatId}`;
+  characterChatHistory.delete(historyKey);
+}
+
+function getCharacterChatHistory(userId, chatId) {
+
+// =====================
+// LLM HELPERS + VIDEO PROCESSING
+// Lines 2300-2767 from original index.js
+// =====================
+
+  const historyKey = `${userId}_${chatId}`;
+  return characterChatHistory.get(historyKey) || [];
+}
+
+function addCharacterMessage(userId, chatId, role, content) {
+  const historyKey = `${userId}_${chatId}`;
+  let history = getCharacterChatHistory(userId, chatId);
+  
+  history.push({ role, content });
+  
+  // Keep last 20 messages for context
+  if (history.length > 20) history = history.slice(-20);
+  
+  characterChatHistory.set(historyKey, history);
+  return history;
+}
+
+function buildCharacterSystemPrompt(characterName) {
+  return `You are roleplaying as ${characterName}. Stay completely in character throughout the entire conversation. Respond to everything as ${characterName} would - use their speech patterns, vocabulary, mannerisms, and personality. Be creative and entertaining while still being helpful. Never break character unless explicitly asked to stop.`;
+}
+
+function buildPartnerSystemPrompt(partner) {
+  let prompt = `You are ${partner.name || "a companion"}, a personalized AI partner.`;
+  
+  if (partner.personality) {
+    prompt += ` Your personality: ${partner.personality}.`;
+  }
+  if (partner.background) {
+    prompt += ` Your background: ${partner.background}.`;
+  }
+  if (partner.style) {
+    prompt += ` Your speaking style: ${partner.style}.`;
+  }
+  
+  prompt += " Stay in character throughout the conversation. Be engaging, warm, and remember previous messages in our chat. Respond naturally as this character would.";
+  
+  return prompt;
+}
+
+function ensureChosenModelValid(userId) {
+  const u = ensureUser(userId);
+  const allowed = allModelsForTier(u.tier);
+
+  // If no allowed models, fail safe
+  if (!allowed.length) {
+    u.model = "";
+    saveUsers();
+    return "";
+  }
+
+  if (!allowed.includes(u.model)) {
+    // Choose tier-appropriate default
+    if (u.tier === "ultra") u.model = DEFAULT_ULTRA_MODEL;
+    else if (u.tier === "premium") u.model = DEFAULT_PREMIUM_MODEL;
+    else u.model = DEFAULT_FREE_MODEL;
+
+    // final fallback
+    if (!allowed.includes(u.model)) u.model = allowed[0];
+
+    saveUsers();
+  }
+  return u.model;
+}
+
+// =====================
+// INLINE SESSION MANAGEMENT
+// =====================
+function getInlineSession(userId) {
+  const id = String(userId);
+  if (!inlineSessionsDb.sessions[id]) {
+    inlineSessionsDb.sessions[id] = {
+      history: [],
+      model: ensureChosenModelValid(userId),
+      lastActive: nowMs(),
+      state: "idle", // idle, chatting
+    };
+    saveInlineSessions();
+  }
+  return inlineSessionsDb.sessions[id];
+}
+
+function updateInlineSession(userId, updates) {
+  const id = String(userId);
+  const session = getInlineSession(userId);
+  Object.assign(session, updates, { lastActive: nowMs() });
+  inlineSessionsDb.sessions[id] = session;
+  saveInlineSessions();
+  return session;
+}
+
+function clearInlineSession(userId) {
+  const id = String(userId);
+  inlineSessionsDb.sessions[id] = {
+    history: [],
+    model: ensureChosenModelValid(userId),
+    lastActive: nowMs(),
+    state: "idle",
+  };
+  saveInlineSessions();
+  return inlineSessionsDb.sessions[id];
+}
+
+function addToInlineHistory(userId, role, content) {
+  const session = getInlineSession(userId);
+  session.history.push({ role, content });
+  // Keep last 20 messages
+  while (session.history.length > 20) session.history.shift();
+  session.lastActive = nowMs();
+  saveInlineSessions();
+  return session;
+}
+
 // =====================
 // HISTORY (DM/Group)
 // =====================
@@ -20,12 +151,6 @@ function pushHistory(chatId, role, content) {
   h.push({ role, content });
   while (h.length > 24) h.shift();
 }
-
-
-// =====================
-// LLM HELPERS + VIDEO PROCESSING
-// Lines 2300-2767 from original index.js
-// =====================
 
 // =====================
 // LLM HELPERS
@@ -370,129 +495,4 @@ async function llmVisionReply({ chatId, userText, imageBase64, mime, model }) {
   pushHistory(chatId, "assistant", out);
   return out || "(no output)";
 }
-
-async function telegramFileToBase64(fileUrl) {
-  const resp = await fetch(fileUrl);
-  const buf = await resp.arrayBuffer();
-  return Buffer.from(buf).toString("base64");
-}
-
-// =====================
-// VIDEO PROCESSING UTILITIES
-// =====================
-
-// Download video from Telegram and save to temp file
-async function downloadTelegramVideo(fileUrl) {
-  const tempDir = `/tmp/starzai_video_${Date.now()}`;
-  await execAsync(`mkdir -p ${tempDir}`);
-  const videoPath = `${tempDir}/video.mp4`;
-  
-  const resp = await fetch(fileUrl);
-  const buf = await resp.arrayBuffer();
-  fs.writeFileSync(videoPath, Buffer.from(buf));
-  
-  return { tempDir, videoPath };
-}
-
-// Extract key frames from video (5 frames evenly distributed)
-async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
-  try {
-    // Check if ffprobe exists
-    try {
-      await execAsync('which ffprobe');
-    } catch {
-      console.error("ffprobe not found - ffmpeg not installed");
-      return { frames: [], duration: 0, error: "ffmpeg not installed" };
-    }
-    
-    // Get video duration
-    console.log(`[VIDEO] Getting duration for: ${videoPath}`);
-    const { stdout: durationOut, stderr: durationErr } = await execAsync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}" 2>&1`
-    );
-    console.log(`[VIDEO] Duration output: ${durationOut}, stderr: ${durationErr}`);
-    const duration = parseFloat(durationOut.trim()) || 10;
-    
-    // Extract frames at intervals
-    const frames = [];
-    const interval = duration / (numFrames + 1);
-    
-    for (let i = 1; i <= numFrames; i++) {
-      const timestamp = interval * i;
-      const framePath = `${tempDir}/frame_${i}.jpg`;
-      
-      console.log(`[VIDEO] Extracting frame ${i} at ${timestamp}s`);
-      try {
-        await execAsync(
-          `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}" -y 2>&1`,
-          { timeout: 30000 }
-        );
-      } catch (frameErr) {
-        console.error(`[VIDEO] Frame ${i} extraction failed:`, frameErr.message);
-        continue;
-      }
-      
-      // Read frame as base64
-      if (fs.existsSync(framePath)) {
-        const frameData = fs.readFileSync(framePath);
-        frames.push({
-          timestamp: timestamp.toFixed(1),
-          base64: frameData.toString("base64")
-        });
-        console.log(`[VIDEO] Frame ${i} extracted successfully`);
-      }
-    }
-    
-    console.log(`[VIDEO] Total frames extracted: ${frames.length}`);
-    return { frames, duration };
-  } catch (e) {
-    console.error("Frame extraction error:", e.message, e.stack);
-    return { frames: [], duration: 0, error: e.message };
-  }
-}
-
-// Extract and transcribe audio from video
-async function extractAndTranscribeAudio(videoPath, tempDir) {
-  try {
-    const audioPath = `${tempDir}/audio.mp3`;
-    
-    // Extract audio
-    await execAsync(
-      `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -q:a 4 "${audioPath}" -y 2>/dev/null`
-    );
-    
-    if (!fs.existsSync(audioPath)) {
-      return { transcript: null, hasAudio: false };
-    }
-    
-    // Check if audio file has content (not silent)
-    const stats = fs.statSync(audioPath);
-    if (stats.size < 1000) {
-      return { transcript: null, hasAudio: false };
-    }
-    
-    // Use manus-speech-to-text for transcription
-    try {
-      const { stdout } = await execAsync(`manus-speech-to-text "${audioPath}"`, { timeout: 60000 });
-      const transcript = stdout.trim();
-      return { transcript: transcript || null, hasAudio: true };
-    } catch (e) {
-      console.error("Transcription error:", e.message);
-      return { transcript: null, hasAudio: true };
-    }
-  } catch (e) {
-    console.error("Audio extraction error:", e.message);
-    return { transcript: null, hasAudio: false };
-  }
-}
-
-// Clean up temp directory
-async function cleanupTempDir(tempDir) {
-  try {
-    await execAsync(`rm -rf "${tempDir}"`);
-  } catch (e) {
-    console.error("Cleanup error:", e.message);
-  }
-}
-
 

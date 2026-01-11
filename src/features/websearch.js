@@ -8,6 +8,131 @@
 // Lines 2768-3463 from original index.js
 // =====================
 
+
+async function telegramFileToBase64(fileUrl) {
+  const resp = await fetch(fileUrl);
+  const buf = await resp.arrayBuffer();
+  return Buffer.from(buf).toString("base64");
+}
+
+// =====================
+// VIDEO PROCESSING UTILITIES
+// =====================
+
+// Download video from Telegram and save to temp file
+async function downloadTelegramVideo(fileUrl) {
+  const tempDir = `/tmp/starzai_video_${Date.now()}`;
+  await execAsync(`mkdir -p ${tempDir}`);
+  const videoPath = `${tempDir}/video.mp4`;
+  
+  const resp = await fetch(fileUrl);
+  const buf = await resp.arrayBuffer();
+  fs.writeFileSync(videoPath, Buffer.from(buf));
+  
+  return { tempDir, videoPath };
+}
+
+// Extract key frames from video (5 frames evenly distributed)
+async function extractVideoFrames(videoPath, tempDir, numFrames = 5) {
+  try {
+    // Check if ffprobe exists
+    try {
+      await execAsync('which ffprobe');
+    } catch {
+      console.error("ffprobe not found - ffmpeg not installed");
+      return { frames: [], duration: 0, error: "ffmpeg not installed" };
+    }
+    
+    // Get video duration
+    console.log(`[VIDEO] Getting duration for: ${videoPath}`);
+    const { stdout: durationOut, stderr: durationErr } = await execAsync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}" 2>&1`
+    );
+    console.log(`[VIDEO] Duration output: ${durationOut}, stderr: ${durationErr}`);
+    const duration = parseFloat(durationOut.trim()) || 10;
+    
+    // Extract frames at intervals
+    const frames = [];
+    const interval = duration / (numFrames + 1);
+    
+    for (let i = 1; i <= numFrames; i++) {
+      const timestamp = interval * i;
+      const framePath = `${tempDir}/frame_${i}.jpg`;
+      
+      console.log(`[VIDEO] Extracting frame ${i} at ${timestamp}s`);
+      try {
+        await execAsync(
+          `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -q:v 2 "${framePath}" -y 2>&1`,
+          { timeout: 30000 }
+        );
+      } catch (frameErr) {
+        console.error(`[VIDEO] Frame ${i} extraction failed:`, frameErr.message);
+        continue;
+      }
+      
+      // Read frame as base64
+      if (fs.existsSync(framePath)) {
+        const frameData = fs.readFileSync(framePath);
+        frames.push({
+          timestamp: timestamp.toFixed(1),
+          base64: frameData.toString("base64")
+        });
+        console.log(`[VIDEO] Frame ${i} extracted successfully`);
+      }
+    }
+    
+    console.log(`[VIDEO] Total frames extracted: ${frames.length}`);
+    return { frames, duration };
+  } catch (e) {
+    console.error("Frame extraction error:", e.message, e.stack);
+    return { frames: [], duration: 0, error: e.message };
+  }
+}
+
+// Extract and transcribe audio from video
+async function extractAndTranscribeAudio(videoPath, tempDir) {
+  try {
+    const audioPath = `${tempDir}/audio.mp3`;
+    
+    // Extract audio
+    await execAsync(
+      `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -q:a 4 "${audioPath}" -y 2>/dev/null`
+    );
+    
+    if (!fs.existsSync(audioPath)) {
+      return { transcript: null, hasAudio: false };
+    }
+    
+    // Check if audio file has content (not silent)
+    const stats = fs.statSync(audioPath);
+    if (stats.size < 1000) {
+      return { transcript: null, hasAudio: false };
+    }
+    
+    // Use manus-speech-to-text for transcription
+    try {
+      const { stdout } = await execAsync(`manus-speech-to-text "${audioPath}"`, { timeout: 60000 });
+      const transcript = stdout.trim();
+      return { transcript: transcript || null, hasAudio: true };
+    } catch (e) {
+      console.error("Transcription error:", e.message);
+      return { transcript: null, hasAudio: true };
+    }
+  } catch (e) {
+    console.error("Audio extraction error:", e.message);
+    return { transcript: null, hasAudio: false };
+  }
+}
+
+// Clean up temp directory
+async function cleanupTempDir(tempDir) {
+  try {
+    await execAsync(`rm -rf "${tempDir}"`);
+  } catch (e) {
+    console.error("Cleanup error:", e.message);
+  }
+}
+
 // =====================
 // WEB SEARCH - Multi-Engine Integration
 // =====================
@@ -579,129 +704,4 @@ function needsWebSearch(text) {
     'search for', 'look up', 'find out', 'google'
   ];
   
-  return searchTriggers.some(trigger => lowerText.includes(trigger));
-}
-
-// Format search results for AI context
-function formatSearchResultsForAI(searchResult) {
-  if (!searchResult.success) {
-    return `[Web search failed: ${searchResult.error}]`;
-  }
-  
-  let context = `[Web Search Results for \"${searchResult.query}\"]:\\n\\n`;
-  searchResult.results.forEach((r, i) => {
-    context += `${i + 1}. ${r.title}\\n`;
-    context += `   URL: ${r.url}\\n`;
-    context += `   ${r.content}\\n\\n`;
-  });
-  
-  return context;
-}
-
-// Decide how many sources to show in websearch based on user tier / ownership
-function getWebsearchSourceLimit(userId, totalResults) {
-  const idStr = String(userId);
-  if (OWNER_IDS.has(idStr)) return totalResults; // owners see all sources
-  
-  const user = getUserRecord(idStr);
-  const tier = user?.tier || "free";
-  let limit = 2; // default for free
-  
-  if (tier === "premium") limit = 5;
-  else if (tier === "ultra") limit = 7;
-  
-  return Math.min(totalResults, limit);
-}
-
-// Build HTML-formatted sources list with clickable titles (one line, like: Sources: Title1, Title2)
-function buildWebsearchSourcesHtml(searchResult, userId) {
-  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
-    return "";
-  }
-
-  const total = searchResult.results.length;
-  const limit = getWebsearchSourceLimit(userId, total);
-  if (!limit) return "";
-
-  const parts = [];
-  for (let i = 0; i < limit; i++) {
-    const r = searchResult.results[i];
-    const url = r.url || "";
-    const title = escapeHTML(r.title || url || `Source ${i + 1}`);
-
-    if (url) {
-      parts.push(`<a href="${url}">${title}</a>`);
-    } else {
-      parts.push(title);
-    }
-  }
-
-  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
-  const idStr = String(userId);
-  if (limit < total && !OWNER_IDS.has(idStr)) {
-    html += ` <i>(showing ${limit} of ${total})</i>`;
-  }
-  html += "\n";
-
-  return html;
-}
-
-// Build inline-specific sources list that uses [1], [2] style clickable indices
-function buildWebsearchSourcesInlineHtml(searchResult, userId) {
-  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
-    return "";
-  }
-
-  const total = searchResult.results.length;
-  const limit = getWebsearchSourceLimit(userId, total);
-  if (!limit) return "";
-
-  const parts = [];
-  for (let i = 0; i < limit; i++) {
-    const r = searchResult.results[i];
-    const url = r.url || "";
-    const label = `[${i + 1}]`;
-
-    if (url) {
-      parts.push(`<a href="${url}">${label}</a>`);
-    } else {
-      parts.push(label);
-    }
-  }
-
-  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
-  const idStr = String(userId);
-  if (limit < total && !OWNER_IDS.has(idStr)) {
-    html += ` <i>(showing ${limit} of ${total})</i>`;
-  }
-  html += "\n";
-
-  return html;
-}
-
-// Turn numeric citations into [1], [2] form and make them clickable links to result URLs.
-function linkifyWebsearchCitations(text, searchResult) {
-  if (!text || !searchResult || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
-    return text;
-  }
-
-  const total = searchResult.results.length;
-
-  // First, normalize bare numeric citations like " 1." or " 2" into "[1]" / "[2]"
-  text = text.replace(/(\s)(\d+)(?=(?:[)\].,!?;:]\s|[)\].,!?;:]?$|\s|$))/g, (match, space, numStr) => {
-    const idx = parseInt(numStr, 10);
-    if (!idx || idx < 1 || idx > total) return match;
-    return `${space}[${idx}]`;
-  });
-
-  // Then, convert [1], [2] into Markdown links so convertToTelegramHTML renders them as <a href="...">[1]</a>
-  return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
-    const idx = parseInt(numStr, 10);
-    if (!idx || idx < 1 || idx > total) return match;
-    const r = searchResult.results[idx - 1];
-    if (!r || !r.url) return match;
-    return `[${idx}](${r.url})`;
-  });
-}
-
 

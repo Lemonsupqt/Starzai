@@ -8,6 +8,131 @@
 // Lines 4956-6747 from original index.js
 // =====================
 
+      "_You have 2 minutes. After that, feedback mode will expire._",
+    {
+      parse_mode: "Markdown",
+      reply_to_message_id: ctx.message?.message_id,
+    }
+  );
+});
+
+// /imagine - AI image generation (free, unlimited)
+bot.command("imagine", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  ensureUser(u.id, u);
+  
+  // Activate group if used in group chat
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
+  const text = ctx.message?.text || "";
+  const prompt = text.replace(/^\/imagine\s*/i, "").trim();
+  
+  if (!prompt) {
+    await ctx.reply(
+      "🎨 *AI Image Generator*\n\n" +
+      "Generate stunning images from text descriptions!\n\n" +
+      "*Usage:*\n" +
+      "`/imagine a cute cat in space`\n" +
+      "`/imagine fantasy landscape with mountains`\n" +
+      "`/imagine cyberpunk city at night`\n\n" +
+      `_Powered by ${getRandomTagline()}_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Check if prompt is too long
+  if (prompt.length > 500) {
+    await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  // Send generating message
+  const statusMsg = await ctx.reply(
+    "🎨 *Generating image...*\n\n" +
+    `Prompt: _${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_\n\n` +
+    "⏳ This may take 10-30 seconds...",
+    { parse_mode: "Markdown" }
+  );
+  
+  try {
+    // URL encode the prompt
+    const encodedPrompt = encodeURIComponent(prompt);
+    
+    // Build image generation URL with parameters
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+    
+    // Fetch the image
+    const response = await fetch(imageUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'StarzAI-Bot/1.0'
+      },
+      timeout: 60000 // 60 second timeout
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    // Get image as buffer
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+    
+    // Send the image
+    await ctx.replyWithPhoto(
+      new InputFile(imageBuffer, "generated_image.jpg"),
+      {
+        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _Powered by ${getRandomTagline(prompt)}_`,
+        parse_mode: "Markdown"
+      }
+    );
+    
+    // Delete the status message
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    } catch (e) {
+      // Ignore deletion errors
+    }
+    
+    // Track usage (save is batched automatically)
+    const rec = getUserRecord(u.id);
+    if (rec) {
+      rec.messagesCount = (rec.messagesCount || 0) + 1;
+      saveUsers(); // Batched save - won't block other requests
+    }
+    
+    console.log(`[IMAGINE] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("Image generation error:", error);
+    
+    // Update status message with error
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "❌ *Image generation failed*\n\n" +
+        "The service might be temporarily unavailable. Please try again in a moment.\n\n" +
+        "_If the problem persists, use /feedback to report it._",
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      // If edit fails, send new message
+      await ctx.reply(
+        "❌ *Image generation failed*\n\n" +
+        "The service might be temporarily unavailable. Please try again in a moment.",
+        { parse_mode: "Markdown" }
+      );
+    }
+  }
+});
+
 // =====================
 // IMAGE GENERATION
 // =====================
@@ -1674,130 +1799,5 @@ bot.callbackQuery("menu_feedback", async (ctx) => {
   }
 
   pendingFeedback.set(String(u.id), { createdAt: Date.now(), source });
-
-  await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "💡 *Feedback Mode*\n\n" +
-      "Please send *one message* with your feedback.\n" +
-      "You can attach *one photo or video* with a caption, or just send text.\n\n" +
-      "_You have 2 minutes. After that, feedback mode will expire._",
-    { parse_mode: "Markdown" }
-  );
-});
-
-// Owner command: reply to feedback by feedback ID
-bot.command("fbreply", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-
-  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 2) {
-    return ctx.reply("Usage: /fbreply <feedbackId> <message>");
-  }
-
-  const [feedbackId, ...rest] = args;
-  const replyText = rest.join(" ").trim();
-  if (!replyText) {
-    return ctx.reply("Please provide a reply message after the feedbackId.");
-  }
-
-  const userId = extractUserIdFromFeedbackId(feedbackId);
-  if (!userId) {
-    return ctx.reply("⚠️ Invalid feedback ID format.");
-  }
-
-  try {
-    await bot.api.sendMessage(
-      userId,
-      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
-      { parse_mode: "Markdown" }
-    );
-    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
-  } catch (e) {
-    console.error("fbreply send error:", e.message);
-    await ctx.reply(
-      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
-    );
-  }
-});
-
-// Alias: /f <feedbackId> <message>
-bot.command("f", async (ctx) => {
-  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
-
-  const args = (ctx.message?.text || "").split(/\s+/).slice(1);
-  if (args.length < 2) {
-    return ctx.reply("Usage: /f <feedbackId> <message>");
-  }
-
-  const [feedbackId, ...rest] = args;
-  const replyText = rest.join(" ").trim();
-  if (!replyText) {
-    return ctx.reply("Please provide a reply message after the feedbackId.");
-  }
-
-  const userId = extractUserIdFromFeedbackId(feedbackId);
-  if (!userId) {
-    return ctx.reply("⚠️ Invalid feedback ID format.");
-  }
-
-  try {
-    await bot.api.sendMessage(
-      userId,
-      `💡 *Feedback response* (ID: \`${feedbackId}\`)\n\n${escapeMarkdown(replyText)}`,
-      { parse_mode: "Markdown" }
-    );
-    await ctx.reply(`✅ Reply sent to user ${userId} for feedback ${feedbackId}.`);
-  } catch (e) {
-    console.error("f send error:", e.message);
-    await ctx.reply(
-      `❌ Failed to send reply to user ${userId}. They may not have started the bot or blocked it.`
-    );
-  }
-});
-
-// /stats - Show user usage statistics
-bot.command("stats", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  if (!(await enforceCommandCooldown(ctx))) return;
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = getUserRecord(u.id);
-  if (!user) {
-    return ctx.reply("❌ You're not registered yet. Send /start first!");
-  }
-  
-  const stats = user.stats || { totalMessages: 0, totalInlineQueries: 0, totalTokensUsed: 0, lastActive: "Never" };
-  const shortModel = (user.model || "None").split("/").pop();
-  
-  // Calculate days since registration
-  const regDate = new Date(user.registeredAt || Date.now());
-  const daysSinceReg = Math.floor((Date.now() - regDate.getTime()) / (1000 * 60 * 60 * 24));
-  
-  // Format last active
-  const lastActive = stats.lastActive ? new Date(stats.lastActive).toLocaleDateString() : "Never";
-  
-  const tierEmoji = user.tier === "ultra" ? "💎" : user.tier === "premium" ? "⭐" : "🆓";
-  
-  const statsMsg = `📊 *Your StarzAI Stats*
-
-👤 *User:* ${user.firstName || "Unknown"} (@${user.username || "no username"})
-${tierEmoji} *Plan:* ${(user.tier || "free").toUpperCase()}
-🤖 *Model:* \`${shortModel}\`
-
-💬 *DM Messages:* ${stats.totalMessages.toLocaleString()}
-⚡ *Inline Queries:* ${stats.totalInlineQueries.toLocaleString()}
-📝 *Total Interactions:* ${(stats.totalMessages + stats.totalInlineQueries).toLocaleString()}
-
-📅 *Member for:* ${daysSinceReg} days
-🕒 *Last Active:* ${lastActive}
-
-_Keep chatting to grow your stats!_`;
-  
-  await ctx.reply(statsMsg, {
-    parse_mode: "Markdown",
-    reply_to_message_id: ctx.message?.message_id,
-  });
-});
 
 

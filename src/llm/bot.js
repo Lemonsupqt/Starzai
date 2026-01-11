@@ -8,17 +8,17 @@
 // Lines 316-328 from original index.js
 // =====================
 
-// =====================
-// BOT + LLM
-// =====================
-const bot = new Bot(BOT_TOKEN);
-
-let BOT_ID = null;
-let BOT_USERNAME = "";
-
-const openai = new OpenAI({
-  baseURL: "https://ai.megallm.io/v1",
-  apiKey: MEGALLM_API_KEY,
-});
-
+      scheduleSave('imageStats', 'normal');
+    }
+  },
+  
+  // Record a failed API call
+  recordFailure(key, error) {
+    const keyId = this.getKeyId(key);
+    const stats = this.keyStats.get(keyId);
+    if (stats) {
+      stats.calls++;
+      stats.failures++;
+      stats.lastUsed = Date.now();
+      stats.lastError = error?.message || String(error);
 

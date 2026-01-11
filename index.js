@@ -102,6 +102,34 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+
+// Super Utilities Module (27 features)
+import {
+  downloadMedia,
+  detectPlatform,
+  URL_PATTERNS,
+  getLyrics,
+  searchMedia,
+  getMediaDetails,
+  getTrailers,
+  generateQR,
+  shortenURL,
+  convertCurrency,
+  getWeather,
+  translateText,
+  convertUnit,
+  getWikipedia,
+  getDefinition,
+  getRandomFact,
+  getThisDayInHistory,
+  getRandomQuote,
+  generateQuoteImage,
+  getTruthOrDare,
+  getWouldYouRather,
+  runCode,
+  getSupportedLanguages,
+  searchWallpapers
+} from './src/features/super-utilities.js';
 import { promisify } from "util";
 const execAsync = promisify(exec);
 
@@ -12692,6 +12720,1139 @@ bot.command("ownerhelp", async (ctx) => {
 });
 
 // =====================
+// SUPER UTILITIES (27 Features)
+// =====================
+
+// Platform emoji mapping for downloads
+const PLATFORM_EMOJI = {
+  youtube: '📺',
+  tiktok: '🎵',
+  instagram: '📸',
+  twitter: '🐦',
+  spotify: '🎧',
+  soundcloud: '☁️'
+};
+
+// /download or /dl - Download media from various platforms
+bot.command(["download", "dl"], async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/(download|dl)\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📥 <b>Media Downloader</b>\n\n' +
+      'Download videos and audio from:\n' +
+      '• YouTube, TikTok, Instagram, Twitter\n' +
+      '• Spotify, SoundCloud, Reddit\n' +
+      '• And 20+ more platforms!\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/dl https://youtube.com/watch?v=...</code>\n' +
+      '<code>/dl https://tiktok.com/@user/video/...</code>\n\n' +
+      '<i>Or just paste a link and I\'ll detect it automatically!</i>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const urlMatch = text.match(/https?:\/\/[^\s]+/);
+  if (!urlMatch) {
+    return ctx.reply('❌ Please provide a valid URL.', {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  const url = urlMatch[0];
+  const platform = detectPlatform(url);
+  const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
+  
+  const statusMsg = await ctx.reply(
+    `${emoji} <b>Downloading...</b>\n\nThis may take a moment...`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+  
+  try {
+    const result = await downloadMedia(url, false);
+    
+    if (!result.success) {
+      await ctx.api.editMessageText(
+        ctx.chat.id, statusMsg.message_id,
+        `❌ Download failed: ${escapeHTML(result.error)}`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    if (result.picker) {
+      const kb = new InlineKeyboard();
+      result.options.slice(0, 4).forEach((opt, i) => {
+        kb.text(opt.type || `Option ${i + 1}`, `dl_pick:${i}:${encodeURIComponent(url)}`).row();
+      });
+      
+      await ctx.api.editMessageText(
+        ctx.chat.id, statusMsg.message_id,
+        `${emoji} <b>Multiple options available:</b>\n\nSelect what you want to download:`,
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
+      return;
+    }
+    
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `${emoji} <b>Uploading to Telegram...</b>`,
+      { parse_mode: 'HTML' }
+    );
+    
+    const isAudio = url.includes('soundcloud') || url.includes('spotify');
+    
+    if (isAudio) {
+      await ctx.replyWithAudio(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`,
+        reply_to_message_id: ctx.message?.message_id
+      });
+    } else {
+      await ctx.replyWithVideo(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`,
+        reply_to_message_id: ctx.message?.message_id
+      });
+    }
+    
+    await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    
+  } catch (error) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ Error: ${escapeHTML(error.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+// /lyrics - Get song lyrics
+bot.command("lyrics", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/lyrics\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🎵 <b>Lyrics Search</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/lyrics Artist - Song Title</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/lyrics Ed Sheeran - Shape of You</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  let artist, title;
+  if (text.includes(' - ')) {
+    [artist, title] = text.split(' - ').map(s => s.trim());
+  } else {
+    return ctx.reply(
+      '❌ Please use format: <code>/lyrics Artist - Song Title</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply('🎵 Searching for lyrics...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await getLyrics(artist, title);
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ Lyrics not found for "${escapeHTML(artist)} - ${escapeHTML(title)}"`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  let lyrics = result.lyrics;
+  if (lyrics.length > 3500) {
+    lyrics = lyrics.slice(0, 3500) + '\n\n... (truncated)';
+  }
+  
+  await ctx.api.editMessageText(
+    ctx.chat.id, statusMsg.message_id,
+    `🎵 <b>${escapeHTML(artist)} - ${escapeHTML(title)}</b>\n\n${escapeHTML(lyrics)}`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /movie - Search movies
+bot.command("movie", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/movie\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🎬 <b>Movie Search</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/movie title</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/movie Inception</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply(`🔍 Searching for "${escapeHTML(text)}"...`, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await searchMedia(text, 'movie');
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${result.error}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  let response = `🎬 <b>Search Results:</b>\n\n`;
+  const kb = new InlineKeyboard();
+  
+  result.results.forEach((item, i) => {
+    const title = item.title || item.name;
+    const year = (item.release_date || item.first_air_date || '').slice(0, 4);
+    const rating = item.vote_average ? `⭐ ${item.vote_average.toFixed(1)}` : '';
+    
+    response += `${i + 1}. <b>${escapeHTML(title)}</b> ${year ? `(${year})` : ''} ${rating}\n`;
+    
+    kb.text(`${i + 1}. ${title.slice(0, 20)}`, `media_info:movie:${item.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  
+  if (result.results.length % 2 !== 0) kb.row();
+  
+  await ctx.api.editMessageText(
+    ctx.chat.id, statusMsg.message_id,
+    response,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
+});
+
+// /tv - Search TV shows
+bot.command("tv", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/tv\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📺 <b>TV Show Search</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/tv title</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/tv Breaking Bad</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply(`🔍 Searching for "${escapeHTML(text)}"...`, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await searchMedia(text, 'tv');
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${result.error}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  let response = `📺 <b>Search Results:</b>\n\n`;
+  const kb = new InlineKeyboard();
+  
+  result.results.forEach((item, i) => {
+    const title = item.title || item.name;
+    const year = (item.release_date || item.first_air_date || '').slice(0, 4);
+    const rating = item.vote_average ? `⭐ ${item.vote_average.toFixed(1)}` : '';
+    
+    response += `${i + 1}. <b>${escapeHTML(title)}</b> ${year ? `(${year})` : ''} ${rating}\n`;
+    
+    kb.text(`${i + 1}. ${title.slice(0, 20)}`, `media_info:tv:${item.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  
+  if (result.results.length % 2 !== 0) kb.row();
+  
+  await ctx.api.editMessageText(
+    ctx.chat.id, statusMsg.message_id,
+    response,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
+});
+
+// /qr - Generate QR code
+bot.command("qr", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/qr\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📱 <b>QR Code Generator</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/qr your text or URL here</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/qr https://example.com</code>\n' +
+      '<code>/qr Hello World!</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const result = await generateQR(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ Failed to generate QR: ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.replyWithPhoto(new InputFile(result.buffer, 'qrcode.png'), {
+    caption: `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>`,
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /short - URL shortener
+bot.command("short", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/short\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🔗 <b>URL Shortener</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/short https://your-long-url.com/path</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  if (!/^https?:\/\//i.test(text)) {
+    return ctx.reply('❌ Please provide a valid URL starting with http:// or https://', {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  const result = await shortenURL(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ Failed to shorten URL: ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `🔗 <b>Shortened URL:</b>\n\n` +
+    `<code>${escapeHTML(result.shortUrl)}</code>\n\n` +
+    `<i>Original: ${escapeHTML(text.slice(0, 50))}${text.length > 50 ? '...' : ''}</i>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /currency - Currency converter
+bot.command("currency", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/currency\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '💱 <b>Currency Converter</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/currency 100 USD to EUR</code>\n' +
+      '<code>/currency 50 GBP EUR</code>\n\n' +
+      '<b>Popular codes:</b> USD, EUR, GBP, JPY, INR, AUD, CAD',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const match = text.match(/^([\d.]+)\s*([A-Za-z]{3})\s*(?:to\s*)?([A-Za-z]{3})$/i);
+  
+  if (!match) {
+    return ctx.reply(
+      '❌ Invalid format. Use: <code>/currency 100 USD to EUR</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const [, amount, from, to] = match;
+  const result = await convertCurrency(parseFloat(amount), from, to);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `💱 <b>Currency Conversion</b>\n\n` +
+    `<code>${result.amount} ${result.from}</code> = <code>${result.converted} ${result.to}</code>\n\n` +
+    `<i>Rate: 1 ${result.from} = ${result.rate.toFixed(4)} ${result.to}</i>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /weather - Get weather
+bot.command("weather", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/weather\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🌤️ <b>Weather</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/weather city name</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/weather Tokyo</code>\n' +
+      '<code>/weather New York</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const result = await getWeather(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `🌤️ <b>Weather in ${escapeHTML(result.location)}${result.country ? `, ${escapeHTML(result.country)}` : ''}</b>\n\n` +
+    `🌡️ Temperature: <b>${result.temp_c}°C</b> (${result.temp_f}°F)\n` +
+    `🤔 Feels like: ${result.feels_like_c}°C\n` +
+    `☁️ Condition: ${escapeHTML(result.condition)}\n` +
+    `💧 Humidity: ${result.humidity}%\n` +
+    `💨 Wind: ${result.wind_kph} km/h ${result.wind_dir}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /translate - Translate text
+bot.command("translate", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/translate\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🌐 <b>Translate</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/translate [to:lang] text</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/translate Hello world</code> (auto-detect → English)\n' +
+      '<code>/translate to:es Hello world</code> (→ Spanish)\n' +
+      '<code>/translate to:ja Good morning</code> (→ Japanese)\n\n' +
+      '<b>Language codes:</b> en, es, fr, de, ja, ko, zh, ru, ar, hi',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  let targetLang = 'en';
+  let textToTranslate = text;
+  
+  const langMatch = text.match(/^to:([a-z]{2})\s+/i);
+  if (langMatch) {
+    targetLang = langMatch[1].toLowerCase();
+    textToTranslate = text.slice(langMatch[0].length);
+  }
+  
+  const result = await translateText(textToTranslate, 'auto', targetLang);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `🌐 <b>Translation</b>\n\n` +
+    `<b>Original:</b>\n${escapeHTML(result.original)}\n\n` +
+    `<b>Translated (${result.to}):</b>\n${escapeHTML(result.translated)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /convert - Unit converter
+bot.command("convert", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/convert\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📐 <b>Unit Converter</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/convert value from to</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/convert 100 km mi</code>\n' +
+      '<code>/convert 70 kg lb</code>\n' +
+      '<code>/convert 30 c f</code>\n\n' +
+      '<b>Supported:</b>\n' +
+      '• Length: km↔mi, m↔ft, cm↔in\n' +
+      '• Weight: kg↔lb, g↔oz\n' +
+      '• Temp: c↔f\n' +
+      '• Volume: l↔gal, ml↔floz',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const match = text.match(/^([\d.]+)\s*([a-z]+)\s+([a-z]+)$/i);
+  
+  if (!match) {
+    return ctx.reply(
+      '❌ Invalid format. Use: <code>/convert 100 km mi</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const [, value, from, to] = match;
+  const result = convertUnit(parseFloat(value), from, to);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `📐 <b>Unit Conversion</b>\n\n` +
+    `<code>${result.value} ${result.fromUnit}</code> = <code>${result.result} ${result.toUnit}</code>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /wiki - Wikipedia search
+bot.command("wiki", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/wiki\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📚 <b>Wikipedia</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/wiki search term</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/wiki Artificial Intelligence</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const result = await getWikipedia(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  let response = `📚 <b>${escapeHTML(result.title)}</b>\n\n`;
+  response += escapeHTML(result.extract);
+  
+  if (result.url) {
+    response += `\n\n<a href="${result.url}">Read more on Wikipedia →</a>`;
+  }
+  
+  if (result.thumbnail) {
+    await ctx.replyWithPhoto(result.thumbnail, {
+      caption: response.slice(0, 1024),
+      parse_mode: 'HTML',
+      reply_to_message_id: ctx.message?.message_id
+    });
+  } else {
+    await ctx.reply(response, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+});
+
+// /define - Dictionary
+bot.command("define", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/define\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '📖 <b>Dictionary</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/define word</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/define serendipity</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const result = await getDefinition(text);
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  let response = `📖 <b>${escapeHTML(result.word)}</b>`;
+  if (result.phonetic) {
+    response += ` <i>${escapeHTML(result.phonetic)}</i>`;
+  }
+  response += '\n\n';
+  
+  result.meanings.forEach(meaning => {
+    response += `<b>${escapeHTML(meaning.partOfSpeech)}</b>\n`;
+    meaning.definitions.slice(0, 3).forEach((def, i) => {
+      response += `${i + 1}. ${escapeHTML(def.definition)}\n`;
+      if (def.example) {
+        response += `   <i>"${escapeHTML(def.example)}"</i>\n`;
+      }
+    });
+    response += '\n';
+  });
+  
+  await ctx.reply(response, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /fact - Random fact
+bot.command("fact", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getRandomFact();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `💡 <b>Random Fact</b>\n\n${escapeHTML(result.fact)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /today - This day in history
+bot.command("today", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getThisDayInHistory();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  let response = `📅 <b>This Day in History (${result.date})</b>\n\n`;
+  
+  result.events.forEach(event => {
+    response += `<b>${event.year}</b>: ${escapeHTML(event.text)}\n\n`;
+  });
+  
+  await ctx.reply(response, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /quote - Random quote
+bot.command("quote", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getRandomQuote();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `💬 <i>"${escapeHTML(result.quote)}"</i>\n\n— <b>${escapeHTML(result.author)}</b>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /quotify - Generate Discord-style quote image
+bot.command("quotify", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const replied = ctx.message.reply_to_message;
+  
+  if (!replied || !replied.text) {
+    return ctx.reply(
+      '🖼️ <b>Quote Image Generator</b>\n\n' +
+      'Reply to a message with <code>/quotify</code> to turn it into a quote image!',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply('🎨 Generating quote image...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const user = replied.from;
+  const username = user?.first_name || 'Anonymous';
+  
+  let avatarUrl = null;
+  try {
+    const photos = await ctx.api.getUserProfilePhotos(user.id, { limit: 1 });
+    if (photos.total_count > 0) {
+      const fileId = photos.photos[0][0].file_id;
+      const file = await ctx.api.getFile(fileId);
+      avatarUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    }
+  } catch (e) {
+    // Ignore avatar errors
+  }
+  
+  const result = await generateQuoteImage(replied.text, username, avatarUrl);
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ Failed to generate image: ${result.error}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  await ctx.replyWithPhoto(new InputFile(result.buffer, 'quote.png'), {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+});
+
+// /truth - Truth question
+bot.command("truth", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const question = getTruthOrDare('truth');
+  await ctx.reply(
+    `🤔 <b>Truth</b>\n\n${escapeHTML(question)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /dare - Dare challenge
+bot.command("dare", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const dare = getTruthOrDare('dare');
+  await ctx.reply(
+    `😈 <b>Dare</b>\n\n${escapeHTML(dare)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /wyr - Would You Rather
+bot.command("wyr", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const { option1, option2 } = getWouldYouRather();
+  
+  const kb = new InlineKeyboard()
+    .text(`🅰️ Option A`, 'wyr_a')
+    .text(`🅱️ Option B`, 'wyr_b');
+  
+  await ctx.reply(
+    `🤷 <b>Would You Rather...</b>\n\n` +
+    `🅰️ ${escapeHTML(option1)}\n\n` +
+    `<b>OR</b>\n\n` +
+    `🅱️ ${escapeHTML(option2)}`,
+    { parse_mode: 'HTML', reply_markup: kb, reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /run - Code runner
+bot.command("run", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/run\s*/i, '').trim();
+  
+  if (!text) {
+    const popular = ['python', 'javascript', 'java', 'c', 'cpp', 'go', 'rust', 'ruby', 'php'];
+    
+    return ctx.reply(
+      '💻 <b>Code Runner</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/run language\nyour code here</code>\n\n' +
+      '<b>Example:</b>\n' +
+      '<code>/run python\nprint("Hello World!")</code>\n\n' +
+      `<b>Popular languages:</b> ${popular.join(', ')}\n\n` +
+      `<i>50+ languages supported!</i>`,
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const lines = text.split('\n');
+  const language = lines[0].trim().toLowerCase();
+  const code = lines.slice(1).join('\n');
+  
+  if (!code) {
+    return ctx.reply(
+      '❌ Please provide code to run.\n\n' +
+      '<b>Format:</b>\n' +
+      '<code>/run language\nyour code here</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply(`💻 Running ${language} code...`, {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await runCode(language, code);
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${escapeHTML(result.error)}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  let response = `💻 <b>${escapeHTML(result.language)} ${escapeHTML(result.version)}</b>\n\n`;
+  
+  if (result.output) {
+    response += `<b>Output:</b>\n<code>${escapeHTML(result.output.slice(0, 2000))}</code>\n`;
+  }
+  
+  if (result.stderr) {
+    response += `\n<b>Errors:</b>\n<code>${escapeHTML(result.stderr.slice(0, 500))}</code>\n`;
+  }
+  
+  response += `\n<i>Exit code: ${result.exitCode}</i>`;
+  
+  await ctx.api.editMessageText(
+    ctx.chat.id, statusMsg.message_id,
+    response,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /wallpaper - Search wallpapers
+bot.command("wallpaper", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/wallpaper\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🖼️ <b>Wallpaper Search</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/wallpaper search term</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/wallpaper nature</code>\n' +
+      '<code>/wallpaper cyberpunk city</code>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply('🔍 Searching wallpapers...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const result = await searchWallpapers(text);
+  
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ ${result.error}`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  
+  const wallpaper = result.wallpapers[0];
+  
+  const kb = new InlineKeyboard();
+  if (result.wallpapers.length > 1) {
+    kb.text('Next →', `wp_next:${encodeURIComponent(text)}:1`);
+  }
+  kb.row().url('🔗 Full Resolution', wallpaper.url);
+  
+  await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+  
+  await ctx.replyWithPhoto(wallpaper.thumbnail, {
+    caption: `🖼️ <b>Wallpaper</b> (1/${result.wallpapers.length})\n\nResolution: ${wallpaper.resolution}`,
+    parse_mode: 'HTML',
+    reply_markup: kb,
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /roast - AI roast generator
+bot.command("roast", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const target = ctx.message.reply_to_message?.from?.first_name || ctx.from.first_name;
+  
+  const roasts = [
+    `${target}, you're not stupid; you just have bad luck thinking.`,
+    `${target}, I'd agree with you but then we'd both be wrong.`,
+    `${target}, you're like a cloud. When you disappear, it's a beautiful day.`,
+    `${target}, I'm not saying I hate you, but I would unplug your life support to charge my phone.`,
+    `${target}, you bring everyone so much joy... when you leave.`,
+    `${target}, if I had a face like yours, I'd sue my parents.`,
+    `${target}, you're the reason the gene pool needs a lifeguard.`,
+    `${target}, I'd explain it to you but I left my crayons at home.`,
+    `${target}, you're not completely useless. You can always serve as a bad example.`,
+    `${target}, somewhere out there is a tree producing oxygen for you. You owe it an apology.`
+  ];
+  
+  const roast = roasts[Math.floor(Math.random() * roasts.length)];
+  
+  await ctx.reply(
+    `🔥 <b>Roast</b>\n\n${escapeHTML(roast)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /pickup - Pickup lines
+bot.command("pickup", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const lines = [
+    "Are you a magician? Because whenever I look at you, everyone else disappears.",
+    "Do you have a map? Because I just got lost in your eyes.",
+    "Is your name Google? Because you have everything I've been searching for.",
+    "Are you a parking ticket? Because you've got 'fine' written all over you.",
+    "Do you believe in love at first sight, or should I walk by again?",
+    "Is your dad a boxer? Because you're a knockout!",
+    "Are you a campfire? Because you're hot and I want s'more.",
+    "Do you have a Band-Aid? Because I just scraped my knee falling for you.",
+    "Is there an airport nearby, or is that just my heart taking off?",
+    "Are you a time traveler? Because I see you in my future."
+  ];
+  
+  const line = lines[Math.floor(Math.random() * lines.length)];
+  
+  await ctx.reply(
+    `💕 <b>Pickup Line</b>\n\n<i>${escapeHTML(line)}</i>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// Callback for media info
+bot.callbackQuery(/^media_info:/, async (ctx) => {
+  const [, type, id] = ctx.callbackQuery.data.split(':');
+  
+  await ctx.answerCallbackQuery({ text: 'Loading details...' });
+  
+  const result = await getMediaDetails(id, type);
+  
+  if (!result.success) {
+    await ctx.answerCallbackQuery({ text: result.error, show_alert: true });
+    return;
+  }
+  
+  const d = result.details;
+  const title = d.title || d.name;
+  const year = (d.release_date || d.first_air_date || '').slice(0, 4);
+  const rating = d.vote_average ? `⭐ ${d.vote_average.toFixed(1)}/10` : '';
+  const runtime = d.runtime ? `${d.runtime} min` : d.episode_run_time?.[0] ? `${d.episode_run_time[0]} min/ep` : '';
+  const genres = d.genres?.map(g => g.name).join(', ') || '';
+  
+  let response = `🎬 <b>${escapeHTML(title)}</b> ${year ? `(${year})` : ''}\n\n`;
+  response += `${rating} ${runtime ? `• ${runtime}` : ''}\n`;
+  if (genres) response += `📎 ${escapeHTML(genres)}\n`;
+  response += `\n${escapeHTML(d.overview?.slice(0, 500) || 'No description available.')}\n`;
+  
+  if (result.recommendations && result.recommendations.length > 0) {
+    response += `\n<b>Similar:</b> `;
+    response += result.recommendations.slice(0, 3).map(r => escapeHTML(r.title || r.name)).join(', ');
+  }
+  
+  const kb = new InlineKeyboard();
+  
+  const trailers = await getTrailers(id, type);
+  if (trailers.success && trailers.trailers.length > 0) {
+    const trailer = trailers.trailers[0];
+    kb.url('🎬 Watch Trailer', `https://youtube.com/watch?v=${trailer.key}`);
+  }
+  
+  kb.url('📖 More Info', `https://themoviedb.org/${type}/${id}`);
+  
+  if (d.poster_path) {
+    try {
+      await ctx.editMessageMedia({
+        type: 'photo',
+        media: `https://image.tmdb.org/t/p/w500${d.poster_path}`,
+        caption: response.slice(0, 1024),
+        parse_mode: 'HTML'
+      }, { reply_markup: kb });
+    } catch (e) {
+      await ctx.editMessageText(response, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+    }
+  } else {
+    await ctx.editMessageText(response, {
+      parse_mode: 'HTML',
+      reply_markup: kb
+    });
+  }
+});
+
+// Callback for wallpaper navigation
+bot.callbackQuery(/^wp_next:/, async (ctx) => {
+  const [, query, indexStr] = ctx.callbackQuery.data.split(':');
+  const index = parseInt(indexStr);
+  
+  await ctx.answerCallbackQuery();
+  
+  const result = await searchWallpapers(decodeURIComponent(query));
+  
+  if (!result.success || index >= result.wallpapers.length) {
+    await ctx.answerCallbackQuery({ text: 'No more wallpapers', show_alert: true });
+    return;
+  }
+  
+  const wallpaper = result.wallpapers[index];
+  
+  const kb = new InlineKeyboard();
+  if (index > 0) {
+    kb.text('← Prev', `wp_next:${query}:${index - 1}`);
+  }
+  if (index < result.wallpapers.length - 1) {
+    kb.text('Next →', `wp_next:${query}:${index + 1}`);
+  }
+  kb.row().url('🔗 Full Resolution', wallpaper.url);
+  
+  try {
+    await ctx.editMessageMedia({
+      type: 'photo',
+      media: wallpaper.thumbnail,
+      caption: `🖼️ <b>Wallpaper</b> (${index + 1}/${result.wallpapers.length})\n\nResolution: ${wallpaper.resolution}`,
+      parse_mode: 'HTML'
+    }, { reply_markup: kb });
+  } catch (e) {
+    // Ignore edit errors
+  }
+});
+
+// Callback for auto-detected media download
+bot.callbackQuery(/^auto_dl:/, async (ctx) => {
+  const [, mode, encodedUrl] = ctx.callbackQuery.data.split(':');
+  const url = decodeURIComponent(encodedUrl);
+  const audioOnly = mode === 'audio';
+  
+  await ctx.answerCallbackQuery({ text: 'Starting download...' });
+  
+  const platform = detectPlatform(url);
+  const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
+  
+  try {
+    await ctx.editMessageText(
+      `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\nThis may take a moment...`,
+      { parse_mode: 'HTML' }
+    );
+    
+    const result = await downloadMedia(url, audioOnly);
+    
+    if (!result.success) {
+      await ctx.editMessageText(
+        `❌ Download failed: ${escapeHTML(result.error)}`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    await ctx.editMessageText(
+      `${emoji} <b>Uploading to Telegram...</b>`,
+      { parse_mode: 'HTML' }
+    );
+    
+    if (audioOnly) {
+      await ctx.replyWithAudio(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`
+      });
+    } else {
+      await ctx.replyWithVideo(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`
+      });
+    }
+    
+    await ctx.deleteMessage();
+    
+  } catch (error) {
+    await ctx.editMessageText(
+      `❌ Error: ${escapeHTML(error.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+// =====================
 // CALLBACKS: UNIFIED MENU NAVIGATION
 // =====================
 
@@ -14101,6 +15262,28 @@ bot.on("message:text", async (ctx) => {
   if (text.startsWith("/")) {
     console.log(`[MSG] Ignoring command: ${text}`);
     return;
+  }
+
+  // Auto-detect media links (YouTube, TikTok, Instagram, Twitter, Spotify)
+  const detectedPlatform = detectPlatform(text);
+  if (detectedPlatform && chat.type === "private") {
+    console.log(`[MSG] Auto-detected ${detectedPlatform} link`);
+    
+    const urlMatch = text.match(/https?:\/\/[^\s]+/);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      const emoji = PLATFORM_EMOJI[detectedPlatform] || '📥';
+      
+      const kb = new InlineKeyboard()
+        .text(`${emoji} Download Video`, `auto_dl:video:${encodeURIComponent(url)}`)
+        .text(`🎵 Audio Only`, `auto_dl:audio:${encodeURIComponent(url)}`);
+      
+      await ctx.reply(
+        `${emoji} <b>${detectedPlatform.charAt(0).toUpperCase() + detectedPlatform.slice(1)} link detected!</b>\n\nWhat would you like to download?`,
+        { parse_mode: 'HTML', reply_markup: kb, reply_to_message_id: messageId }
+      );
+      return;
+    }
   }
 
   // Ignore messages that are inline results sent via this bot (via_bot == this bot)

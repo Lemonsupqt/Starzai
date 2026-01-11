@@ -8,425 +8,425 @@
 // Lines 14889-15309 from original index.js
 // =====================
 
-// =====================
-// VIDEO SUMMARIZATION
-// =====================
-bot.on("message:video", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
   
-  const chat = ctx.chat;
-  const u = ctx.from;
-  if (!u?.id) return;
+  const categoryNames = { free: "🆓 Free", premium: "⭐ Premium", ultra: "💎 Ultra" };
   
-  // Anti-spam check
-  const caption = ctx.message?.caption || "";
-  if (!(await checkAntiSpam(ctx, caption))) return;
-  
-  // Feedback handling for video + caption (DM only)
-  const feedbackHandled = await handleFeedbackIfActive(ctx, { caption });
-  if (feedbackHandled) return;
-
-  // In groups: only process if replying to bot or group is active
-  if (chat.type !== "private") {
-    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
-    const groupActive = isGroupActive(chat.id);
-    
-    if (!isReplyToBot && !groupActive) {
-      return; // Ignore videos in groups unless replying to bot or group is active
-    }
-    
-    // Activate group on interaction
-    if (isReplyToBot) {
-      activateGroup(chat.id);
-    }
-  }
-
-  if (!getUserRecord(u.id)) registerUser(u);
-
-  const model = ensureChosenModelValid(u.id);
-  const startTime = Date.now();
-  let statusMsg = null;
-  let tempDir = null;
-
   try {
-    // Check video size (limit to 20MB)
-    const video = ctx.message.video;
-    if (video.file_size > 20 * 1024 * 1024) {
-      return ctx.reply("⚠️ Video too large! Please send videos under 20MB.");
-    }
-
-    statusMsg = await ctx.reply(`🎬 <b>Processing video...</b>\n\n⏳ Downloading...`, { parse_mode: "HTML" });
-
-    // Keep typing indicator active
-    const typingInterval = setInterval(() => {
-      ctx.replyWithChatAction("typing").catch(() => {});
-    }, 4000);
-    await ctx.replyWithChatAction("typing");
-
-    // Download video
-    const file = await ctx.api.getFile(video.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-    const { tempDir: td, videoPath } = await downloadTelegramVideo(fileUrl);
-    tempDir = td;
-
-    // Update status
-    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n⏳ Extracting frames...`, 
-      { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    // Extract frames - more frames for better context
-    const videoDuration = video.duration || 10;
-    const frameCount = Math.min(Math.max(Math.ceil(videoDuration / 2), 5), 15); // 1 frame per 2 seconds, min 5, max 15
-    let { frames, duration, error: frameError } = await extractVideoFrames(videoPath, tempDir, frameCount);
-    
-    // Fallback: use Telegram's video thumbnail if ffmpeg failed
-    if (frames.length === 0 && video.thumb) {
-      console.log("[VIDEO] Using Telegram thumbnail as fallback");
-      try {
-        const thumbFile = await ctx.api.getFile(video.thumb.file_id);
-        const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
-        const thumbB64 = await telegramFileToBase64(thumbUrl);
-        frames = [{ timestamp: "0.0", base64: thumbB64 }];
-        duration = video.duration || 0;
-      } catch (thumbErr) {
-        console.error("[VIDEO] Thumbnail fallback failed:", thumbErr.message);
+    await ctx.editMessageText(
+      `⚙️ *${categoryNames[category]} Models*\n\nCurrent: \`${shortModel}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: settingsCategoryKeyboard(category, userId, currentModel, page)
       }
-    }
-
-    // Update status
-    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ ${frames.length > 0 ? `Got ${frames.length} frame(s)` : "No frames (using thumbnail)"}\n⏳ Transcribing audio...`, 
-      { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    // Extract and transcribe audio (skip if ffmpeg not available)
-    let transcript = null;
-    let hasAudio = false;
-    if (!frameError || !frameError.includes("ffmpeg not installed")) {
-      const audioResult = await extractAndTranscribeAudio(videoPath, tempDir);
-      transcript = audioResult.transcript;
-      hasAudio = audioResult.hasAudio;
-    }
-
-    // Update status
-    await ctx.api.editMessageText(chat.id, statusMsg.message_id, 
-      `🎬 <b>Processing video...</b>\n\n✅ Downloaded\n✅ Extracted ${frames.length} frames\n✅ Audio ${hasAudio ? (transcript ? "transcribed" : "detected (no speech)") : "not found"}\n⏳ Analyzing with AI...`, 
-      { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    // Build prompt for AI
-    const caption = (ctx.message.caption || "").trim();
-    const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
-    
-    let userPrompt = caption || "What's happening in this video? Describe the content.";
-    
-    // Add transcript context if available
-    if (transcript) {
-      userPrompt += `\n\n[Audio transcript]: ${transcript.slice(0, 1500)}`;
-    }
-
-    // Build messages with multiple frames
-    const imageContents = frames.map((f, i) => ({
-      type: "image_url",
-      image_url: { url: `data:image/jpeg;base64,${f.base64}` }
-    }));
-
-    // Context-aware system prompt - emphasize accuracy over speculation
-    let systemPrompt = `You are analyzing a ${duration.toFixed(1)}s video through ${frames.length} sequential frame(s) taken at regular intervals. `;
-    
-    // Core instruction: be accurate, don't hallucinate
-    systemPrompt += `\n\nIMPORTANT RULES:
-- ONLY describe what you can actually SEE in the frames
-- DO NOT make up or guess things that aren't visible
-- If you're unsure about something, say "appears to be" or "possibly"
-- If you can't identify something, say so honestly
-- Focus on observable facts: people, objects, actions, text, setting\n\n`;
-    
-    if (transcript) {
-      systemPrompt += "Audio transcript is provided - use it to understand context, identify speech, music, or sounds. ";
-    }
-    if (hasQuestion) {
-      systemPrompt += "Answer the user's specific question based ONLY on what you can see/hear. If you can't answer from the video, say so.";
-    } else if (caption) {
-      systemPrompt += "Respond to the user's message based on what you observe in the video.";
-    } else {
-      systemPrompt += "Describe what's happening: the setting, people/characters, actions, any visible text, and notable details. Be specific and factual.";
-    }
-
-    const messages = [
-      { role: "system", content: systemPrompt },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: userPrompt },
-          ...imageContents
-        ]
-      }
-    ];
-
-    const out = await llmText({
-      model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 800,
-    });
-
-    clearInterval(typingInterval);
-
-    // Track usage
-    trackUsage(u.id, "message");
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-    // Build response - cleaner format
-    let response = convertToTelegramHTML(out.slice(0, 3500));
-    response += `\n\n<i>🎬 ${elapsed}s • ${escapeHTML(model)}</i>`;
-
-    await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
-
+    );
   } catch (e) {
-    console.error("Video processing error:", e.message);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    
-    const errMsg = `❌ Couldn't process video after ${elapsed}s.\n\nError: ${escapeHTML(e.message?.slice(0, 100) || "Unknown error")}`;
-    if (statusMsg) {
-      try {
-        await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" });
-      } catch {
-        await ctx.reply(errMsg, { parse_mode: "HTML" });
-      }
-    } else {
-      await ctx.reply(errMsg, { parse_mode: "HTML" });
-    }
-  } finally {
-    // Clean up temp files
-    if (tempDir) {
-      cleanupTempDir(tempDir);
-    }
+    console.error("Edit settings error:", e.message);
   }
 });
 
-// Video notes (round videos) - treat as photos using thumbnail
-bot.on("message:video_note", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const chat = ctx.chat;
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  // Anti-spam check
-  if (!(await checkAntiSpam(ctx, "video_note"))) return;
-  
-  // In groups: only process if replying to bot or group is active
-  if (chat.type !== "private") {
-    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
-    const groupActive = isGroupActive(chat.id);
-    const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
-    
-    if (!isReplyToBot && !groupActive && !hasActiveChar) {
-      return;
-    }
-  }
-  
-  // Use the video note thumbnail as an image
-  const videoNote = ctx.message.video_note;
-  if (videoNote.thumb) {
-    try {
-      const thumbFile = await ctx.api.getFile(videoNote.thumb.file_id);
-      const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
-      const b64 = await telegramFileToBase64(thumbUrl);
-      
-      const model = ensureChosenModelValid(u.id);
-      const caption = "What's in this video note?";
-      
-      const statusMsg = await ctx.reply(`📹 Analyzing video note...`, { parse_mode: "HTML" });
-      
-      const out = await llmVision({
-        chatId: chat.id,
-        userText: caption,
-        imageBase64: b64,
-        mime: "image/jpeg",
-        model,
-      });
-      
-      const response = `📹 <b>Video Note</b>\n\n${convertToTelegramHTML(out.slice(0, 3500))}`;
-      await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
-    } catch (e) {
-      console.error("Video note error:", e.message);
-      await ctx.reply("❌ Couldn't process video note.");
-    }
-  }
+// Noop handler for page indicator button
+bot.callbackQuery(/^noop$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
 });
 
-// Animations/GIFs
-bot.on("message:animation", async (ctx) => {
+// =====================
+// SHARED CHAT CALLBACKS (Multi-user inline chat)
+// Now uses switch_inline_query_current_chat - no DM needed!
+// =====================
+
+// Page navigation (legacy Yap shared chat - now disabled)
+bot.callbackQuery(/^schat_page:(.+):(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
+  });
+});
+
+// Noop for page indicator button (doesn't count towards rate limit)
+bot.callbackQuery(/^schat_noop$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+});
+
+// Ask AI - legacy Yap input (now disabled)
+bot.callbackQuery(/^schat_ask:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed. Use inline modes like q:, b:, code:, e:, sum:, or p: instead.",
+    show_alert: true,
+  });
+});
+
+// Refresh shared chat display (legacy Yap - now disabled)
+bot.callbackQuery(/^schat_refresh:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
+});
+
+// Clear shared chat (legacy Yap - now disabled)
+bot.callbackQuery(/^schat_clear:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery({
+    text: "Yap (shared chat) mode has been removed.",
+    show_alert: true,
+  });
+});
+
+// =====================
+// INLINE SETTINGS CALLBACKS
+// =====================
+
+// Category selection - show models for that category
+bot.callbackQuery(/^iset_cat:(.+):(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
-  const chat = ctx.chat;
-  const u = ctx.from;
-  if (!u?.id) return;
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
   
-  // Anti-spam check
-  const caption = ctx.message?.caption || "";
-  if (!(await checkAntiSpam(ctx, caption))) return;
+  const parts = ctx.callbackQuery.data.split(":");
+  const category = parts[1];
+  const sessionKey = parts[2];
   
-  // In groups: only process if replying to bot or group is active or has character
-  if (chat.type !== "private") {
-    const isReplyToBot = BOT_ID && ctx.message?.reply_to_message?.from?.id === BOT_ID;
-    const groupActive = isGroupActive(chat.id);
-    const hasActiveChar = !!getActiveCharacter(u.id, chat.id)?.name;
-    
-    if (!isReplyToBot && !groupActive && !hasActiveChar) {
-      return;
-    }
-    
-    if (isReplyToBot) {
-      activateGroup(chat.id);
-    }
+  const user = getUserRecord(userId);
+  const tier = user?.tier || "free";
+  
+  // Check if user has access to this category
+  if (category === "premium" && tier === "free") {
+    return ctx.answerCallbackQuery({ text: "🔒 Premium required!", show_alert: true });
+  }
+  if (category === "ultra" && tier !== "ultra") {
+    return ctx.answerCallbackQuery({ text: "🔒 Ultra required!", show_alert: true });
   }
   
-  if (!getUserRecord(u.id)) registerUser(u);
+  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
+  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
   
-  const animation = ctx.message.animation;
-  const model = ensureChosenModelValid(u.id);
-  const startTime = Date.now();
-  
-  // Check for character mode
-  const activeChar = getActiveCharacter(u.id, chat.id);
-  const replyToMsg = ctx.message?.reply_to_message;
-  let replyCharacter = null;
-  
-  if (replyToMsg?.text) {
-    const charMatch = replyToMsg.text.match(/^🎭 \*?([^*\n]+)\*?\n/);
-    if (charMatch && replyToMsg.from?.is_bot) {
-      replyCharacter = charMatch[1].trim();
-    }
-  }
-  
-  const effectiveCharacter = replyCharacter || activeChar?.name;
-  const isCharacterMode = !!effectiveCharacter;
-  
-  let statusMsg = null;
-  let tempDir = null;
+  await ctx.answerCallbackQuery({ text: `${categoryEmoji} ${categoryName} Models` });
   
   try {
-    let modeLabel = "";
-    let statusText = `🎬 Analyzing GIF...`;
-    
-    if (isCharacterMode) {
-      modeLabel = `🎭 <b>${escapeHTML(effectiveCharacter)}</b>\n\n`;
-      statusText = `🎭 ${escapeHTML(effectiveCharacter)} is looking at the GIF...`;
-    }
-    
-    statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
-    
-    // Download the actual GIF file
-    const file = await ctx.api.getFile(animation.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-    
-    // Try to extract frames using ffmpeg
-    let frames = [];
-    let duration = animation.duration || 3;
-    
-    try {
-      const { tempDir: td, videoPath } = await downloadTelegramVideo(fileUrl);
-      tempDir = td;
-      const result = await extractVideoFrames(videoPath, tempDir, 4);
-      frames = result.frames;
-      if (result.duration > 0) duration = result.duration;
-    } catch (dlErr) {
-      console.log("[GIF] Frame extraction failed, trying thumbnail:", dlErr.message);
-    }
-    
-    // Fallback to thumbnail if frame extraction failed
-    if (frames.length === 0 && animation.thumb) {
-      try {
-        const thumbFile = await ctx.api.getFile(animation.thumb.file_id);
-        const thumbUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${thumbFile.file_path}`;
-        const thumbB64 = await telegramFileToBase64(thumbUrl);
-        frames = [{ timestamp: "0.0", base64: thumbB64 }];
-      } catch (thumbErr) {
-        console.error("[GIF] Thumbnail fallback failed:", thumbErr.message);
+    await ctx.editMessageText(
+      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId)
       }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Model selection - set the model
+bot.callbackQuery(/^iset_model:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const data = ctx.callbackQuery.data;
+  // Parse: iset_model:model_name:sessionKey
+  const firstColon = data.indexOf(":");
+  const lastColon = data.lastIndexOf(":");
+  const model = data.slice(firstColon + 1, lastColon);
+  const sessionKey = data.slice(lastColon + 1);
+  
+  const user = getUserRecord(userId);
+  if (!user) {
+    return ctx.answerCallbackQuery({ text: "User not found. Use /start first!", show_alert: true });
+  }
+  
+  // Check if user can use this model
+  const allowed = allModelsForTier(user.tier);
+  if (!allowed.includes(model)) {
+    return ctx.answerCallbackQuery({ text: "🔒 You don't have access to this model!", show_alert: true });
+  }
+  
+  // Set the model
+  user.model = model;
+  saveUsers();
+  
+  // Also update inline session
+  updateInlineSession(userId, { model });
+  
+  const shortName = model.split("/").pop();
+  await ctx.answerCallbackQuery({ text: `✅ Switched to ${shortName}!` });
+  
+  try {
+    await ctx.editMessageText(
+      `✅ *Model Changed!*\n\n🤖 Now using: \`${model}\`\n\n_Your new model is ready to use!_`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("← Back to Categories", `iset_back:${sessionKey}`)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Back to categories
+bot.callbackQuery(/^iset_back:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const sessionKey = ctx.callbackQuery.data.split(":")[1];
+  const user = getUserRecord(userId);
+  const model = user?.model || "gpt-4o-mini";
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *Model Settings*\n\n🤖 Current: \`${model}\`\n\nSelect a category to change model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// Handle pagination for inline model selection
+bot.callbackQuery(/^iset_page:(.+):(\d+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  
+  const [, category, pageStr, sessionKey] = ctx.callbackQuery.data.match(/^iset_page:(.+):(\d+):(.+)$/);
+  const page = parseInt(pageStr, 10);
+  const user = getUserRecord(userId);
+  
+  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
+  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+  
+  await ctx.answerCallbackQuery();
+  
+  try {
+    await ctx.editMessageText(
+      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
+      { 
+        parse_mode: "Markdown",
+        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId, page)
+      }
+    );
+  } catch (e) {
+    console.error("Edit message error:", e.message);
+  }
+});
+
+// =====================
+// WEBAPP DATA HANDLER
+// =====================
+bot.on("message:web_app_data", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  try {
+    const data = JSON.parse(ctx.message.web_app_data.data);
+    const { mode, modeName, query, fullQuery } = data;
+    
+    console.log(`WebApp data from ${userId}: mode=${mode}, query=${query}`);
+    
+    if (!mode || !query) {
+      return ctx.reply("⚠️ Invalid data from WebApp");
     }
     
-    if (frames.length === 0) {
-      return ctx.api.editMessageText(chat.id, statusMsg.message_id, "⚠️ Couldn't extract frames from GIF.", { parse_mode: "HTML" });
+    // Get user's model
+    const model = ensureChosenModelValid(userId);
+    const shortModel = model.split("/").pop();
+    
+    // Send processing message
+    const processingMsg = await ctx.reply(`⏳ Processing ${modeName} request...`);
+    
+    // Handle different modes
+    let systemPrompt = "You are a helpful AI assistant.";
+    let maxTokens = 500;
+    let temperature = 0.7;
+    
+    switch (mode) {
+      case "q:":
+        systemPrompt = "Give extremely concise answers. 1-2 sentences max. Be direct and to the point.";
+        maxTokens = 150;
+        temperature = 0.5;
+        break;
+      case "b:":
+        systemPrompt = "You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, and nuances.";
+        maxTokens = 800;
+        break;
+      case "code:":
+        systemPrompt = "You are a programming expert. Provide clear, working code with explanations. Use proper formatting.";
+        maxTokens = 600;
+        break;
+      case "e:":
+        systemPrompt = "Explain concepts simply, like teaching a beginner. Use analogies and examples.";
+        maxTokens = 400;
+        break;
+      case "sum:":
+        systemPrompt = "Summarize the following text concisely, keeping the key points.";
+        maxTokens = 300;
+        break;
+      case "r:":
+        systemPrompt = "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs.";
+        maxTokens = 400;
+        break;
     }
     
-    // Build image contents for AI
-    const imageContents = frames.map(f => ({
-      type: "image_url",
-      image_url: { url: `data:image/jpeg;base64,${f.base64}` }
-    }));
-    
-    // Context-aware prompt
-    const hasQuestion = caption && (caption.includes("?") || /^(who|what|where|when|why|how|is|are|can|does|did|explain|tell|describe|identify)/i.test(caption));
-    let userPrompt = caption || "What's in this GIF? Describe what's happening.";
-    
-    let out;
-    if (isCharacterMode) {
-      const systemPrompt = buildCharacterSystemPrompt(effectiveCharacter);
-      out = await llmText({
+    // Handle character mode specially
+    if (mode === "as ") {
+      systemPrompt = `You are roleplaying as ${query}. Stay completely in character throughout. Respond as ${query} would - use their speech patterns, vocabulary, mannerisms, and personality.`;
+      
+      const response = await llmText({
         model,
         messages: [
           { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: caption || "React to this GIF" },
-              ...imageContents
-            ]
-          }
+          { role: "user", content: "Hello! Introduce yourself briefly." },
         ],
-        temperature: 0.85,
-        max_tokens: 500,
+        temperature: 0.8,
+        max_tokens: 300,
       });
-    } else {
-      let gifSystemPrompt = `You are analyzing a ${duration}s GIF/animation through ${frames.length} sequential frame(s).\n\nIMPORTANT: Only describe what you can actually SEE. Don't guess or make things up. If it's a meme, describe the visual elements and any text. If you recognize a person/character, name them. If unsure, say so.\n\n`;
-      if (hasQuestion) {
-        gifSystemPrompt += "Answer the user's specific question based on what you see.";
-      } else if (caption) {
-        gifSystemPrompt += "Respond to the user's message based on what you observe.";
-      } else {
-        gifSystemPrompt += "Describe: the scene, any people/characters, actions, visible text, and if it's a meme/joke, explain it.";
-      }
       
-      out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: gifSystemPrompt },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: userPrompt },
-              ...imageContents
-            ]
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 500,
-      });
+      const formattedResponse = convertToTelegramHTML(response || "*stays in character*");
+      
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        processingMsg.message_id,
+        `🎭 <b>Character: ${escapeHTML(query)}</b>\n\n${formattedResponse}\n\n<i>via StarzAI • ${shortModel}</i>`,
+        { parse_mode: "HTML" }
+      );
+      return;
     }
     
-    trackUsage(u.id, "message");
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    // Handle partner mode
+    if (mode === "p:") {
+      const partner = getPartner(userId);
+      if (!partner) {
+        await ctx.api.editMessageText(
+          ctx.chat.id,
+          processingMsg.message_id,
+          "⚠️ You don't have a partner set up yet! Use /partner in DM to create one."
+        );
+        return;
+      }
+      systemPrompt = buildPartnerSystemPrompt(partner);
+    }
     
-    const response = `${modeLabel}${convertToTelegramHTML(out.slice(0, 3500))}\n\n<i>🎬 ${elapsed}s • ${escapeHTML(model)}</i>`;
-    await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
+    // Get AI response
+    const response = await llmText({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: query },
+      ],
+      temperature,
+      max_tokens: maxTokens,
+    });
+    
+    const formattedResponse = convertToTelegramHTML(response || "No response generated.");
+    const modeEmoji = {
+      "q:": "⭐", "b:": "🗿🔬", "code:": "💻", "e:": "🧠",
+      "sum:": "📝", "r:": "🔍", "p:": "🤝🏻"
+    };
+    
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      processingMsg.message_id,
+      `${modeEmoji[mode] || "✨"} <b>${modeName}: ${escapeHTML(query.slice(0, 50))}${query.length > 50 ? "..." : ""}</b>\n\n${formattedResponse}\n\n<i>via StarzAI • ${shortModel}</i>`,
+      { parse_mode: "HTML" }
+    );
     
   } catch (e) {
-    console.error("Animation error:", e.message);
-    const errMsg = `❌ Couldn't process GIF: ${escapeHTML(e.message?.slice(0, 50) || "Unknown error")}`;
-    if (statusMsg) {
-      await ctx.api.editMessageText(chat.id, statusMsg.message_id, errMsg, { parse_mode: "HTML" }).catch(() => {});
-    } else {
-      await ctx.reply(errMsg, { parse_mode: "HTML" });
-    }
-  } finally {
-    if (tempDir) cleanupTempDir(tempDir);
+    console.error("WebApp data error:", e);
+    await ctx.reply(`⚠️ Error processing request: ${e.message}`);
   }
 });
+
+// =====================
+// DM / GROUP TEXT
+// =====================
+
+// Track processing messages to prevent duplicates
+const processingMessages = new Map(); // chatId:messageId -> timestamp
+
+bot.on("message:text", async (ctx) => {
+  const chat = ctx.chat;
+  const u = ctx.from;
+  const msg = ctx.message;
+  const text = (msg?.text || "").trim();
+  const messageId = msg?.message_id;
+  
+  // Debug logging
+  console.log(`[MSG] User ${u?.id} in ${chat?.type} (${chat?.id}): "${text?.slice(0, 50)}"`);
+  
+  if (!(await enforceRateLimit(ctx))) {
+    console.log(`[MSG] Rate limited: ${u?.id}`);
+    return;
+  }
+
+  if (!text || !u?.id) {
+    console.log(`[MSG] Empty text or no user ID`);
+    return;
+  }
+  
+  // Anti-spam check
+  if (!(await checkAntiSpam(ctx, text))) {
+    console.log(`[MSG] Spam detected: ${u?.id}`);
+    return;
+  }
+
+  // Ignore commands
+  if (text.startsWith("/")) {
+    console.log(`[MSG] Ignoring command: ${text}`);
+    return;
+  }
+
+  // Auto-detect media links (YouTube, TikTok, Instagram, Twitter, Spotify)
+  const detectedPlatform = detectPlatform(text);
+  if (detectedPlatform && chat.type === "private") {
+    console.log(`[MSG] Auto-detected ${detectedPlatform} link`);
+    
+    const urlMatch = text.match(/https?:\/\/[^\s]+/);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      const emoji = PLATFORM_EMOJI[detectedPlatform] || '📥';
+      
+      const kb = new InlineKeyboard()
+        .text(`${emoji} Download Video`, `auto_dl:video:${encodeURIComponent(url)}`)
+        .text(`🎵 Audio Only`, `auto_dl:audio:${encodeURIComponent(url)}`);
+      
+      await ctx.reply(
+        `${emoji} <b>${detectedPlatform.charAt(0).toUpperCase() + detectedPlatform.slice(1)} link detected!</b>\n\nWhat would you like to download?`,
+        { parse_mode: 'HTML', reply_markup: kb, reply_to_message_id: messageId }
+      );
+      return;
+    }
+  }
+
+  // Ignore messages that are inline results sent via this bot (via_bot == this bot)
+  // This prevents GC wake words like "Ai" inside inline answers from triggering the bot again.
+  if (msg?.via_bot?.id && BOT_ID && msg.via_bot.id === BOT_ID) {
+    console.log(`[MSG] Ignoring via_bot message from this bot in chat ${chat.id}`);
+    return;
+  }
+  
+  // Deduplicate - prevent processing same message twice
+  const dedupeKey = `${chat.id}:${messageId}`;
+  if (processingMessages.has(dedupeKey)) {
+    console.log(`Skipping duplicate message: ${dedupeKey}`);
+    return;
+  }
+  processingMessages.set(dedupeKey, Date.now());
+  
+  // Clean up old entries (older than 5 minutes)
+  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+  for (const [key, time] of processingMessages) {
+    if (time < fiveMinAgo) processingMessages.delete(key);
+  }
 
 

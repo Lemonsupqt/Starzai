@@ -8,184 +8,184 @@
 // Lines 13332-13511 from original index.js
 // =====================
 
-// =====================
-// INLINE CHAT CALLBACKS
-// =====================
-
-// Reply button - prompts user to type
-bot.callbackQuery(/^ichat_reply:(.+)$/, async (ctx) => {
-  await ctx.answerCallbackQuery({ text: "Type your message below! 💬" });
-});
-
-// Regenerate last response
-bot.callbackQuery(/^ichat_regen:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const session = getInlineSession(userId);
-  
-  if (session.history.length < 2) {
-    return ctx.answerCallbackQuery({ text: "No message to regenerate!", show_alert: true });
+      reply_to_message_id: ctx.message?.message_id
+    });
   }
   
-  await ctx.answerCallbackQuery({ text: "Regenerating... ⏳" });
+  let response = `📖 <b>${escapeHTML(result.word)}</b>`;
+  if (result.phonetic) {
+    response += ` <i>${escapeHTML(result.phonetic)}</i>`;
+  }
+  response += '\n\n';
   
-  try {
-    // Get last user message
-    const lastUserMsg = [...session.history].reverse().find(m => m.role === "user");
-    if (!lastUserMsg) {
-      return ctx.answerCallbackQuery({ text: "No user message found!", show_alert: true });
-    }
-    
-    // Remove last assistant message
-    if (session.history[session.history.length - 1].role === "assistant") {
-      session.history.pop();
-    }
-    // Remove last user message too (will be re-added)
-    if (session.history[session.history.length - 1]?.role === "user") {
-      session.history.pop();
-    }
-    saveInlineSessions();
-    
-    // Regenerate
-    const model = session.model || ensureChosenModelValid(userId);
-    await llmInlineChatReply({ userId, userText: lastUserMsg.content, model });
-    
-    // Update the message
-    const updatedSession = getInlineSession(userId);
-    const sessionKey = makeId(6);
-    
-    await ctx.editMessageText(
-      formatInlineChatDisplay(updatedSession, userId),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineChatKeyboard(sessionKey, updatedSession.history.length > 0)
+  result.meanings.forEach(meaning => {
+    response += `<b>${escapeHTML(meaning.partOfSpeech)}</b>\n`;
+    meaning.definitions.slice(0, 3).forEach((def, i) => {
+      response += `${i + 1}. ${escapeHTML(def.definition)}\n`;
+      if (def.example) {
+        response += `   <i>"${escapeHTML(def.example)}"</i>\n`;
       }
+    });
+    response += '\n';
+  });
+  
+  await ctx.reply(response, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /fact - Random fact
+bot.command("fact", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getRandomFact();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `💡 <b>Random Fact</b>\n\n${escapeHTML(result.fact)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /today - This day in history
+bot.command("today", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getThisDayInHistory();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  let response = `📅 <b>This Day in History (${result.date})</b>\n\n`;
+  
+  result.events.forEach(event => {
+    response += `<b>${event.year}</b>: ${escapeHTML(event.text)}\n\n`;
+  });
+  
+  await ctx.reply(response, {
+    parse_mode: 'HTML',
+    reply_to_message_id: ctx.message?.message_id
+  });
+});
+
+// /quote - Random quote
+bot.command("quote", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const result = await getRandomQuote();
+  
+  if (!result.success) {
+    return ctx.reply(`❌ ${result.error}`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+  }
+  
+  await ctx.reply(
+    `💬 <i>"${escapeHTML(result.quote)}"</i>\n\n— <b>${escapeHTML(result.author)}</b>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
+// /quotify - Generate Discord-style quote image
+bot.command("quotify", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const replied = ctx.message.reply_to_message;
+  
+  if (!replied || !replied.text) {
+    return ctx.reply(
+      '🖼️ <b>Quote Image Generator</b>\n\n' +
+      'Reply to a message with <code>/quotify</code> to turn it into a quote image!',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
+  }
+  
+  const statusMsg = await ctx.reply('🎨 Generating quote image...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  const user = replied.from;
+  const username = user?.first_name || 'Anonymous';
+  
+  let avatarUrl = null;
+  try {
+    const photos = await ctx.api.getUserProfilePhotos(user.id, { limit: 1 });
+    if (photos.total_count > 0) {
+      const fileId = photos.photos[0][0].file_id;
+      const file = await ctx.api.getFile(fileId);
+      avatarUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    }
   } catch (e) {
-    console.error("Regen error:", e);
-    await ctx.answerCallbackQuery({ text: "Failed to regenerate. Try again.", show_alert: true });
+    // Ignore avatar errors
   }
-});
-
-// Clear conversation
-bot.callbackQuery(/^ichat_clear:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  const result = await generateQuoteImage(replied.text, username, avatarUrl);
   
-  clearInlineSession(userId);
-  
-  await ctx.answerCallbackQuery({ text: "Chat cleared! 🗑️" });
-  
-  const session = getInlineSession(userId);
-  const sessionKey = makeId(6);
-  
-  try {
-    await ctx.editMessageText(
-      formatInlineChatDisplay(session, userId),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineChatKeyboard(sessionKey, false)
-      }
+  if (!result.success) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ Failed to generate image: ${result.error}`,
+      { parse_mode: 'HTML' }
     );
-  } catch {
-    // ignore
+    return;
   }
+  
+  await ctx.replyWithPhoto(new InputFile(result.buffer, 'quote.png'), {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
 });
 
-// Show model selection
-bot.callbackQuery(/^ichat_model:(.+)$/, async (ctx) => {
+// /truth - Truth question
+bot.command("truth", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  await ctx.answerCallbackQuery();
-  
-  const sessionKey = ctx.callbackQuery.data.split(":")[1];
-  
-  try {
-    await ctx.editMessageText(
-      "⚙️ *Select Model*\n\nChoose a model for inline chat:",
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineModelSelectKeyboard(sessionKey, userId)
-      }
-    );
-  } catch {
-    // ignore
-  }
+  const question = getTruthOrDare('truth');
+  await ctx.reply(
+    `🤔 <b>Truth</b>\n\n${escapeHTML(question)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
 });
 
-// Set model from inline
-bot.callbackQuery(/^ichat_setmodel:(.+):(.+)$/, async (ctx) => {
+// /dare - Dare challenge
+bot.command("dare", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const parts = ctx.callbackQuery.data.split(":");
-  const sessionKey = parts[1];
-  const modelId = parts.slice(2).join(":"); // Handle model IDs with colons
-  
-  const u = ensureUser(userId);
-  const allowed = allModelsForTier(u.tier);
-  
-  if (!allowed.includes(modelId)) {
-    return ctx.answerCallbackQuery({ text: "Model not available for your tier.", show_alert: true });
-  }
-  
-  // Update both user model and session model
-  u.model = modelId;
-  saveUsers();
-  updateInlineSession(userId, { model: modelId });
-  
-  await ctx.answerCallbackQuery({ text: `Model: ${modelId} ✅` });
-  
-  // Go back to chat view
-  const session = getInlineSession(userId);
-  const newSessionKey = makeId(6);
-  
-  try {
-    await ctx.editMessageText(
-      formatInlineChatDisplay(session, userId),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineChatKeyboard(newSessionKey, session.history.length > 0)
-      }
-    );
-  } catch {
-    // ignore
-  }
+  const dare = getTruthOrDare('dare');
+  await ctx.reply(
+    `😈 <b>Dare</b>\n\n${escapeHTML(dare)}`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
 });
 
-// Back to chat from model selection
-bot.callbackQuery(/^ichat_back:(.+)$/, async (ctx) => {
+// /wyr - Would You Rather
+bot.command("wyr", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  const { option1, option2 } = getWouldYouRather();
   
-  await ctx.answerCallbackQuery();
-  
-  const session = getInlineSession(userId);
-  const sessionKey = makeId(6);
-  
-  try {
-    await ctx.editMessageText(
-      formatInlineChatDisplay(session, userId),
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0)
-      }
-    );
-  } catch {
-    // ignore
-  }
-});
-
 

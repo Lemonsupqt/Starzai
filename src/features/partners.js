@@ -8,86 +8,86 @@
 // Lines 2012-2093 from original index.js
 // =====================
 
-// =====================
-// PARTNER MANAGEMENT
-// =====================
-function getPartner(userId) {
-  const id = String(userId);
-  return partnersDb.partners[id] || null;
-}
+      await ctx.answerCallbackQuery({
+        text: "🔇 You are muted on this bot.",
+        show_alert: true,
+      });
+      return;
+    }
 
-function setPartner(userId, partnerData) {
-  const id = String(userId);
-  if (!partnersDb.partners[id]) {
-    partnersDb.partners[id] = {
-      name: null,
-      personality: null,
-      background: null,
-      style: null,
-      createdAt: Date.now(),
-      chatHistory: [],
-      active: false, // Whether partner mode is active
+    if (ctx.message && isPrivate) {
+      const text = `🔇 *You are muted on StarzAI.*${reasonLine}${untilLine}`;
+      await ctx.reply(text, { parse_mode: "Markdown" });
+      return;
+    }
+
+    // In groups, stay silent to avoid spam
+    if (ctx.message && isGroup) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  return;
+});
+
+// Track user activity
+function trackUsage(userId, type = "message", tokens = 0) {
+  const u = ensureUser(userId);
+  if (!u.stats) {
+    u.stats = {
+      totalMessages: 0,
+      totalInlineQueries: 0,
+      totalTokensUsed: 0,
+      lastActive: new Date().toISOString(),
+      lastModel: u.model,
     };
   }
-  Object.assign(partnersDb.partners[id], partnerData, { updatedAt: Date.now() });
-  savePartners();
-  return partnersDb.partners[id];
-}
-
-function clearPartner(userId) {
-  const id = String(userId);
-  delete partnersDb.partners[id];
-  partnerChatHistory.delete(id);
-  savePartners();
-}
-
-function getPartnerChatHistory(userId) {
-  const id = String(userId);
-  const partner = getPartner(userId);
   
-  // Try in-memory first, then fall back to stored
-  if (partnerChatHistory.has(id)) {
-    return partnerChatHistory.get(id);
+  if (type === "message") u.stats.totalMessages++;
+  if (type === "inline") u.stats.totalInlineQueries++;
+  u.stats.totalTokensUsed += tokens;
+  u.stats.lastActive = new Date().toISOString();
+  u.stats.lastModel = u.model;
+  saveUsers();
+}
+
+// Websearch quota helpers
+
+function getTodayDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getWebsearchDailyLimitForTier(tier) {
+  if (tier === "ultra") return 18;
+  if (tier === "premium") return 6;
+  // free and unknown
+  return 2;
+}
+
+function getWebsearchDailyLimitForUser(userId) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) {
+    // Owners: effectively unlimited
+    return Infinity;
   }
-  
-  // Load from partner data if exists
-  if (partner?.chatHistory) {
-    partnerChatHistory.set(id, partner.chatHistory);
-    return partner.chatHistory;
-  }
-  
-  return [];
+  const user = getUserRecord(idStr);
+  const tier = user?.tier || "free";
+  return getWebsearchDailyLimitForTier(tier);
 }
 
-function addPartnerMessage(userId, role, content) {
-  const id = String(userId);
-  let history = getPartnerChatHistory(userId);
-  
-  history.push({ role, content });
-  
-  // Keep last 20 messages for context
-  if (history.length > 20) history = history.slice(-20);
-  
-  partnerChatHistory.set(id, history);
-  
-  // Also save to persistent storage
-  const partner = getPartner(userId);
-  if (partner) {
-    partner.chatHistory = history;
-    savePartners();
+function getWebsearchUsage(user) {
+  const today = getTodayDateKey();
+  if (!user.webSearchUsage || user.webSearchUsage.date !== today) {
+    user.webSearchUsage = { date: today, used: 0 };
   }
-  
-  return history;
+  return user.webSearchUsage;
 }
 
-function clearPartnerChat(userId) {
-  const id = String(userId);
-  partnerChatHistory.delete(id);
-  const partner = getPartner(userId);
-  if (partner) {
-    partner.chatHistory = [];
-    savePartners();
-  }
-}
-
+// Consume one websearch from the user's daily quota.
+// Returns { allowed, limit, used, remaining }.
+function consumeWebsearchQuota(userId) {
+  const u = ensureUser(userId);
+  const limit = getWebsearchDailyLimitForUser(userId);
 

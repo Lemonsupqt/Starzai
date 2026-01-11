@@ -8,6 +8,1286 @@
 // Lines 18194-19865 from original index.js
 // =====================
 
+      {
+        type: "article",
+        id: `ct_help_${sessionKey}`,
+        title: "👥 Starz Check - Collab Help",
+        description: "ct: lists • ct:new <name> • ct:join <code>",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `👥 <b>Starz Check - Collab Help</b>\n\n<code>ct:</code> - View your shared lists\n<code>ct:new Party Planning</code> - Create new list\n<code>ct:join ABC123</code> - Join with code\n<code>ct:open [id]</code> - Open specific list\n\n<i>via StarzAI • Starz Check</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("👥 My Lists", "ct: ")
+          .switchInlineCurrent("← Back", ""),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "p:" or "p " - Partner mode (chat with your AI partner)
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
+  if (qLower.startsWith("p:") || qLower.startsWith("p ")) {
+    const message = q.slice(2).trim();
+    const partner = getPartner(userId);
+    
+    if (!partner?.name) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `p_nopartner_${sessionKey}`,
+          title: "🤝🏻 No Partner Set Up",
+          description: "Use /partner in bot DM to create your AI companion",
+          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+          input_message_content: { 
+            message_text: "🤝🏻 *Set up your Partner first!*\n\nGo to @starztechbot DM and use:\n\n\`/partner name [name]\`\n\`/partner personality [traits]\`\n\`/partner background [story]\`\n\`/partner style [how they talk]\`\n\nThen come back and chat!",
+            parse_mode: "Markdown"
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    if (!message) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `p_typing_${sessionKey}`,
+          title: `🤝🏻 Chat with ${partner.name}`,
+          description: "Type your message to your partner",
+          thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Generate a unique key for this request
+    const pKey = makeId(6);
+    const escapedPartnerName = escapeHTML(partner.name);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`p_pending_${pKey}`, {
+      prompt: message,
+      userId: String(userId),
+      model,
+      shortModel,
+      partner,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`p_pending_${pKey}`), 5 * 60 * 1000);
+    
+    // Return placeholder immediately - AI response will be edited in
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `p_start_${pKey}`,
+        title: `🤝🏻 ${partner.name}: ${message.slice(0, 30)}`,
+        description: "Tap to chat with your partner",
+        thumbnail_url: "https://img.icons8.com/fluency/96/heart.png",
+        input_message_content: {
+          message_text: `🤝🏻 <b>${escapedPartnerName}</b>\n\n⏳ <i>${partner.name} is thinking...</i>\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        // IMPORTANT: Must include reply_markup to receive inline_message_id
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "r " or "r:" - Research shortcut
+  // Uses deferred response pattern: sends placeholder immediately, then edits with AI response
+  if (qLower.startsWith("r ") || qLower.startsWith("r:")) {
+    const topic = q.slice(2).trim();
+    
+    if (!topic) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `r_typing_${sessionKey}`,
+          title: "🔍 Research",
+          description: "Type your research topic...",
+          thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Generate a unique key for this request
+    const rKey = makeId(6);
+    const escapedTopic = escapeHTML(topic);
+    
+    // Store pending request - will be processed in chosen_inline_result
+    inlineCache.set(`r_pending_${rKey}`, {
+      type: "research",
+      prompt: topic,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    
+    // Send placeholder immediately - this won't timeout!
+    // IMPORTANT: Must include reply_markup (inline keyboard) to receive inline_message_id in chosen_inline_result
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `r_start_${rKey}`,
+        title: `🔍 ${topic.slice(0, 40)}`,
+        description: "🔄 Tap to start research...",
+        thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+        input_message_content: {
+          message_text: `🔍 <b>Research: ${escapedTopic}</b>\n\n⏳ <i>Researching... Please wait...</i>\n\n<i>via StarzAI • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        // Keyboard is required to get inline_message_id for editing!
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", `r_loading_${rKey}`),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  
+  // "s" or "s " - Settings shortcut - show model categories with navigation buttons
+  if (qLower === "s" || qLower === "s ") {
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    
+    const results = [
+      {
+        type: "article",
+        id: `s_free_${sessionKey}`,
+        title: `🆓 Free Models (${FREE_MODELS.length})`,
+        description: "➡️ Tap button to view",
+        thumbnail_url: "https://img.icons8.com/fluency/96/free.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🆓 View Free Models", "s:free "),
+      },
+    ];
+    
+    if (tier === "premium" || tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `s_premium_${sessionKey}`,
+        title: `⭐ Premium Models (${PREMIUM_MODELS.length})`,
+        description: "➡️ Tap button to view",
+        thumbnail_url: "https://img.icons8.com/fluency/96/star.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⭐ View Premium Models", "s:premium "),
+      });
+    }
+    
+    if (tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `s_ultra_${sessionKey}`,
+        title: `💎 Ultra Models (${ULTRA_MODELS.length})`,
+        description: "➡️ Tap button to view",
+        thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("💎 View Ultra Models", "s:ultra "),
+      });
+    }
+    
+    results.push({
+      type: "article",
+      id: `s_current_${sessionKey}`,
+      title: `✅ Current: ${shortModel}`,
+      description: "Your selected model",
+      thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+      input_message_content: { message_text: "_" },
+    });
+    
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "s:free", "s:premium", "s:ultra" - Show models in category
+  if (qLower.startsWith("s:") && qLower.length > 2) {
+    const category = qLower.slice(2).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    
+    let models = [];
+    if (category === "free" || category.startsWith("free")) models = FREE_MODELS;
+    else if ((category === "premium" || category.startsWith("premium")) && (tier === "premium" || tier === "ultra")) models = PREMIUM_MODELS;
+    else if ((category === "ultra" || category.startsWith("ultra")) && tier === "ultra") models = ULTRA_MODELS;
+    
+    if (models.length === 0) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `s_noaccess_${sessionKey}`,
+          title: "🚫 No access to this tier",
+          description: "Upgrade to access more models",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const results = models.map((m, i) => {
+      const mShort = m.split("/").pop();
+      const isSelected = m === model;
+      return {
+        type: "article",
+        id: `s_model_${i}_${sessionKey}`,
+        title: `${isSelected ? "✅ " : ""}${mShort}`,
+        description: isSelected ? "Currently selected" : "➡️ Tap button to select",
+        thumbnail_url: isSelected 
+          ? "https://img.icons8.com/fluency/96/checkmark.png"
+          : "https://img.icons8.com/fluency/96/robot.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: isSelected 
+          ? new InlineKeyboard().switchInlineCurrent("← Back to Settings", "s ")
+          : new InlineKeyboard().switchInlineCurrent(`Select ${mShort}`, `set:${m} `),
+      };
+    });
+    
+    // Add back button
+    results.push({
+      type: "article",
+      id: `s_back_${sessionKey}`,
+      title: "← Back to Categories",
+      description: "Return to settings",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "s "),
+    });
+    
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "set:modelname" - Actually set the model
+  if (qLower.startsWith("set:")) {
+    const newModel = q.slice(4).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const allowedModels = allModelsForTier(tier);
+    
+    if (allowedModels.includes(newModel)) {
+      // Set the model
+      setUserModel(userId, newModel);
+      const inlineSess = getInlineSession(userId);
+      inlineSess.model = newModel;
+      
+      const newShortModel = newModel.split("/").pop();
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `set_done_${sessionKey}`,
+          title: `✅ Model set to ${newShortModel}`,
+          description: "➡️ Tap button to go back",
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } else {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `set_err_${sessionKey}`,
+          title: "❌ Model not available",
+          description: "You don't have access to this model",
+          thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "s "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // =====================
+  // ORIGINAL HANDLERS
+  // =====================
+  
+  // "yap" filter - legacy shared chat mode (now removed)
+  if (qLower === "yap" || (qLower.startsWith("yap ") && !qLower.includes(":"))) {
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `yap_disabled_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Use other inline modes instead (q:, b:, code:, e:, sum:, p:).",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
+          parse_mode: "Markdown",
+        },
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // c:key: message - Continue conversation (Reply button)
+  // Match c:XXXXXX: or c:XXXXXX (with or without trailing colon/space)
+  const cMatch = q.match(/^c:([a-zA-Z0-9]+):?\s*(.*)$/i);
+  if (cMatch) {
+    const cacheKey = cMatch[1];
+    const userMessage = (cMatch[2] || "").trim();
+    
+    const cached = inlineCache.get(cacheKey);
+    
+    if (!cached) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `c_expired_${sessionKey}`,
+          title: "⚠️ Session Expired",
+          description: "Start a new conversation",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    if (!userMessage) {
+      // Show typing hint with context
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `c_typing_${sessionKey}`,
+          title: "✍️ Type your follow-up...",
+          description: `Previous: ${(cached.prompt || "").slice(0, 50)}...`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/chat.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Deferred reply: send placeholder immediately, compute answer after user sends
+    const replyKey = makeId(6);
+    const replyShortModel = model.split("/").pop();
+    
+    // Store pending payload for chosen_inline_result handler
+    inlineCache.set(`pending_${replyKey}`, {
+      cacheKey,
+      userMessage,
+      model,
+      cached,
+      userId: String(userId),
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`pending_${replyKey}`), 30 * 60 * 1000);
+    
+    const preview = (cached.answer || "").replace(/\s+/g, " ").slice(0, 80);
+    
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `c_reply_${replyKey}`,
+        title: `✉️ ${userMessage.slice(0, 40)}`,
+        description: preview || "Send follow-up reply",
+        thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+        input_message_content: {
+          message_text: `❓ *${userMessage}*\n\n⏳ _Thinking..._\n\n_via StarzAI • ${replyShortModel}_`,
+          parse_mode: "Markdown",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "reply_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // yap:chatKey: message - legacy Yap mode (removed)
+  if (qLower.startsWith("yap:") && q.includes(": ")) {
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `yap_legacy_${sessionKey}`,
+        title: "Yap mode has been removed",
+        description: "Shared Yap chats are no longer supported.",
+        thumbnail_url: "https://img.icons8.com/fluency/96/conference-call.png",
+        input_message_content: {
+          message_text: "👥 Yap (shared group chat) mode has been removed.\n\nUse other inline modes instead:\n\n• q:  – Quark (quick answers)\n• b:  – Blackhole (deep research)\n• code: – Programming help\n• e:  – Explain (ELI5)\n• sum: – Summarize\n• p:  – Partner chat",
+          parse_mode: "Markdown",
+        },
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // =====================
+  // SETTINGS - All in popup, no messages sent!
+  // =====================
+  
+  // "settings" - show model categories
+  if (qLower === "settings" || qLower === "settings ") {
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const shortModel = model.split("/").pop();
+    
+    const results = [
+      {
+        type: "article",
+        id: `set_cat_free_${sessionKey}`,
+        title: "🆓 Free Models",
+        description: `${FREE_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/free.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("🆓 View Free Models", "settings:free "),
+      },
+    ];
+    
+    if (tier === "premium" || tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `set_cat_premium_${sessionKey}`,
+        title: "⭐ Premium Models",
+        description: `${PREMIUM_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/star.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("⭐ View Premium Models", "settings:premium "),
+      });
+    }
+    
+    if (tier === "ultra") {
+      results.push({
+        type: "article",
+        id: `set_cat_ultra_${sessionKey}`,
+        title: "💎 Ultra Models",
+        description: `${ULTRA_MODELS.length} models available`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent("💎 View Ultra Models", "settings:ultra "),
+      });
+    }
+    
+    // Back to main menu
+    results.push({
+      type: "article",
+      id: `set_back_${sessionKey}`,
+      title: `← Back (Current: ${shortModel})`,
+      description: "Return to main menu",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+    });
+    
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "settings:category" - show models in category
+  if (qLower.startsWith("settings:")) {
+    const category = qLower.split(":")[1]?.trim()?.split(" ")[0];
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const shortModel = model.split("/").pop();
+    
+    let models = [];
+    let categoryTitle = "";
+    let categoryEmoji = "";
+    
+    if (category === "free") {
+      models = FREE_MODELS;
+      categoryTitle = "Free";
+      categoryEmoji = "🆓";
+    } else if (category === "premium" && (tier === "premium" || tier === "ultra")) {
+      models = PREMIUM_MODELS;
+      categoryTitle = "Premium";
+      categoryEmoji = "⭐";
+    } else if (category === "ultra" && tier === "ultra") {
+      models = ULTRA_MODELS;
+      categoryTitle = "Ultra";
+      categoryEmoji = "💎";
+    }
+    
+    if (models.length === 0) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `set_noaccess_${sessionKey}`,
+          title: "🚫 No Access",
+          description: "Upgrade your tier to access these models",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const results = models.map((m, i) => {
+      const mShort = m.split("/").pop();
+      const isSelected = m === model;
+      return {
+        type: "article",
+        id: `set_model_${i}_${sessionKey}`,
+        title: `${isSelected ? "✅ " : ""}${mShort}`,
+        description: isSelected ? "Currently selected" : "Tap to select",
+        thumbnail_url: isSelected 
+          ? "https://img.icons8.com/fluency/96/checkmark.png"
+          : "https://img.icons8.com/fluency/96/robot.png",
+        input_message_content: { message_text: "_" },
+        reply_markup: new InlineKeyboard().switchInlineCurrent(
+          isSelected ? `✅ ${mShort}` : `Select ${mShort}`,
+          `set:${m} `
+        ),
+      };
+    });
+    
+    // Back button
+    results.push({
+      type: "article",
+      id: `set_back_cat_${sessionKey}`,
+      title: "← Back to Categories",
+      description: "Return to category selection",
+      thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+      input_message_content: { message_text: "_" },
+      reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+    });
+    
+    return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+  }
+  
+  // "set:modelname" - select model (no message sent!)
+  if (qLower.startsWith("set:")) {
+    const newModel = q.slice(4).trim();
+    const user = getUserRecord(userId);
+    const tier = user?.tier || "free";
+    const allowedModels = allModelsForTier(tier);
+    
+    if (allowedModels.includes(newModel)) {
+      // Set the model
+      setUserModel(userId, newModel);
+      const inlineSess = getInlineSession(userId);
+      inlineSess.model = newModel;
+      
+      const shortModel = newModel.split("/").pop();
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `set_done_${sessionKey}`,
+          title: `✅ Model set to ${shortModel}`,
+          description: "Tap to return to main menu",
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Menu", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } else {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `set_err_${sessionKey}`,
+          title: "❌ Model not available",
+          description: "You don't have access to this model",
+          thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", "settings "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // =====================
+  // RESEARCH MODE
+  // =====================
+  
+  // "research:" prefix - detailed research answer
+  if (qLower.startsWith("research:") || qLower.startsWith("research ")) {
+    const topic = q.replace(/^research[:\s]+/i, "").trim();
+    
+    if (!topic) {
+      // Show typing hint - stays in popup
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `research_typing_${sessionKey}`,
+          title: "✍️ Type your research topic...",
+          description: "Example: quantum computing, climate change, AI",
+          thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: "You are a research assistant. Provide detailed, well-structured, informative answers. Use bullet points and sections where appropriate. Be thorough but clear." },
+          { role: "user", content: `Research and explain in detail: ${topic}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+        timeout: 15000,
+        retries: 1,
+      });
+      
+      const answer = (out || "No results").slice(0, 3500);
+      const shortModel = model.split("/").pop();
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `research_${makeId(6)}`,
+          title: `✉️ Send: ${topic.slice(0, 35)}`,
+          description: `🔍 ${answer.slice(0, 80)}...`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+          input_message_content: {
+            message_text: `🔍 *Research: ${topic}*\n\n${answer}\n\n_via StarzAI • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+        },
+        {
+          type: "article",
+          id: `research_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `research_err_${sessionKey}`,
+          title: "⚠️ Taking too long...",
+          description: "Try a simpler topic",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `research: ${topic}`),
+        },
+        {
+          type: "article",
+          id: `research_back_err_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+  
+  // "translate" prefix - translation mode
+  if (qLower.startsWith("translate")) {
+    const match = q.match(/^translate\s+to\s+([\w]+)[:\s]+(.+)$/i);
+    
+    if (!match) {
+      // Show language options or typing hint
+      const partialMatch = q.match(/^translate\s+to\s+([\w]*)$/i);
+      if (partialMatch) {
+        // User is typing language, show common options
+        const languages = ["English", "Spanish", "French", "German", "Chinese", "Japanese", "Korean", "Arabic", "Hindi", "Portuguese"];
+        const typed = partialMatch[1]?.toLowerCase() || "";
+        const filtered = languages.filter(l => l.toLowerCase().startsWith(typed));
+        
+        const results = filtered.slice(0, 8).map((lang, i) => ({
+          type: "article",
+          id: `translate_lang_${i}_${sessionKey}`,
+          title: `🌐 Translate to ${lang}`,
+          description: "Tap to select this language",
+          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent(`🌐 ${lang}`, `translate to ${lang}: `),
+        }));
+        
+        results.push({
+          type: "article",
+          id: `translate_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        });
+        
+        return safeAnswerInline(ctx, results, { cache_time: 0, is_personal: true });
+      }
+      
+      // Show typing hint
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `translate_typing_${sessionKey}`,
+          title: "✍️ Type: translate to [language]: text",
+          description: "Example: translate to Spanish: Hello",
+          thumbnail_url: "https://img.icons8.com/fluency/96/google-translate.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    const targetLang = match[1];
+    const textToTranslate = match[2].trim();
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          { role: "system", content: `You are a translator. Translate the given text to ${targetLang}. Only output the translation, nothing else.` },
+          { role: "user", content: textToTranslate },
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+        timeout: 10000,
+        retries: 1,
+      });
+      
+      const translation = (out || "Translation failed").trim();
+      const shortModel = model.split("/").pop();
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `translate_${makeId(6)}`,
+          title: `✉️ Send: ${translation.slice(0, 35)}`,
+          description: `🌐 ${targetLang} translation`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/send.png",
+          input_message_content: {
+            message_text: `🌐 *Translation to ${targetLang}*\n\n📝 Original: ${textToTranslate}\n\n✅ ${targetLang}: ${translation}\n\n_via StarzAI • ${shortModel}_`,
+            parse_mode: "Markdown",
+          },
+        },
+        {
+          type: "article",
+          id: `translate_back_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `translate_err_${sessionKey}`,
+          title: "⚠️ Translation failed",
+          description: "Try again",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `translate to ${targetLang}: ${textToTranslate}`),
+        },
+        {
+          type: "article",
+          id: `translate_back_err_${sessionKey}`,
+          title: "← Back to Menu",
+          description: "Cancel and return",
+          thumbnail_url: "https://img.icons8.com/fluency/96/back.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
+  // "bhcont KEY" - Blackhole continuation via inline mode
+  if (qLower.startsWith("bhcont")) {
+    const parts = q.split(/\s+/);
+    const contKey = (parts[1] || "").trim();
+
+    if (!contKey) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_hint_${sessionKey}`,
+          title: "🗿🔬 Continue Blackhole",
+          description: "Tap Continue under a Blackhole answer to use this.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const baseItem = inlineCache.get(contKey);
+    if (!baseItem || baseItem.mode !== "blackhole") {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_expired_${sessionKey}`,
+          title: "⚠️ Session expired",
+          description: "Start a new Blackhole analysis.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (String(userId) !== String(baseItem.userId)) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `bhcont_denied_${sessionKey}`,
+          title: "🚫 Not your session",
+          description: "Only the original requester can continue.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const model = baseItem.model || ensureChosenModelValid(userId);
+    const shortModel = model.split("/").pop();
+    const prompt = baseItem.prompt || "";
+
+    const pendingKey = makeId(6);
+    inlineCache.set(`bh_cont_pending_${pendingKey}`, {
+      baseKey: contKey,
+      userId: String(userId),
+      model,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`bh_cont_pending_${pendingKey}`), 5 * 60 * 1000);
+
+    const escapedPrompt = escapeHTML(prompt);
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `bh_cont_start_${pendingKey}`,
+        title: `🗿🔬 Continue Blackhole`,
+        description: `Continue: ${prompt.slice(0, 40)}${prompt.length > 40 ? "..." : ""}`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/black-hole.png",
+        input_message_content: {
+          message_text: `🗿🔬 <b>Blackhole Analysis (cont.): ${escapedPrompt}</b>\n\n⏳ <i>Continuing in depth... Please wait...</i>\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "bh_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
+  // "ultrasum KEY" - Ultra Summary for Blackhole / Explain / Code as a new inline message
+  if (qLower.startsWith("ultrasum")) {
+    const parts = q.split(/\s+/);
+    const baseKey = (parts[1] || "").trim();
+
+    const userRec = getUserRecord(userId);
+    const tier = userRec?.tier || "free";
+    if (tier !== "ultra") {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_locked_${sessionKey}`,
+          title: "🧾 Ultra Summary (Ultra only)",
+          description: "Upgrade to Ultra to unlock Ultra Summary.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/diamond.png",
+          input_message_content: {
+            message_text:
+              "💎 *Ultra Summary is an Ultra feature.*\n\n" +
+              "Upgrade to Ultra to unlock:\n" +
+              "• Ultra Summary for long answers\n" +
+              "• Extra Shorter/Longer usage\n" +
+              "• Access to all Ultra models\n\n" +
+              "_Use the Plans button in the menu or /model for details._",
+            parse_mode: "Markdown",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (!baseKey) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_hint_${sessionKey}`,
+          title: "🧾 Ultra Summary",
+          description: "Tap Ultra Summary under a completed answer to use this.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
+          input_message_content: { message_text: "_" },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_expired_${sessionKey}`,
+          title: "⚠️ Session expired",
+          description: "The original answer is no longer available.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    if (String(userId) !== String(baseItem.userId)) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_denied_${sessionKey}`,
+          title: "🚫 Not your session",
+          description: "Only the original requester can summarize.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/lock.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const mode = baseItem.mode || "default";
+    const supported = mode === "blackhole" || mode === "explain" || mode === "code";
+    if (!supported || !baseItem.completed) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `ultrasum_incomplete_${sessionKey}`,
+          title: "🧾 Ultra Summary",
+          description: "Finish the answer first, then summarize.",
+          thumbnail_url: "https://img.icons8.com/fluency/96/survey.png",
+          input_message_content: { message_text: "_" },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    const modelForSum = baseItem.model || ensureChosenModelValid(userId);
+    const shortModel = modelForSum.split("/").pop();
+    const prompt = baseItem.prompt || "";
+
+    const pendingKey = makeId(6);
+    inlineCache.set(`ultrasum_pending_${pendingKey}`, {
+      baseKey,
+      userId: String(userId),
+      mode,
+      model: modelForSum,
+      shortModel,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`ultrasum_pending_${pendingKey}`), 5 * 60 * 1000);
+
+    const escapedPrompt = escapeHTML(prompt);
+    let headerTitle = "Ultra Summary";
+    if (mode === "blackhole") {
+      const partsCount = baseItem.part || 1;
+      headerTitle = `Ultra Summary of Blackhole (${partsCount} part${partsCount > 1 ? "s" : ""})`;
+    } else if (mode === "code") {
+      headerTitle = "Ultra Summary of Code Answer";
+    } else if (mode === "explain") {
+      headerTitle = "Ultra Summary of Explanation";
+    }
+
+    const icon =
+      mode === "blackhole" ? "🗿🔬" : mode === "code" ? "💻" : mode === "explain" ? "🧠" : "🧾";
+    const thumb =
+      mode === "blackhole"
+        ? "https://img.icons8.com/fluency/96/black-hole.png"
+        : mode === "code"
+        ? "https://img.icons8.com/fluency/96/source-code.png"
+        : mode === "explain"
+        ? "https://img.icons8.com/fluency/96/brain.png"
+        : "https://img.icons8.com/fluency/96/survey.png";
+
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `ultrasum_start_${pendingKey}`,
+        title: "🧾 Ultra Summary",
+        description: `Summarize: ${prompt.slice(0, 40)}${prompt.length > 40 ? "..." : ""}`,
+        thumbnail_url: thumb,
+        input_message_content: {
+          message_text: `${icon} <b>${headerTitle}: ${escapedPrompt}</b>\n\n⏳ <i>Summarizing all parts... Please wait...</i>\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Loading...", "ultrasum_loading"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+
+  // "chat:" prefix - interactive chat mode
+  if (q.startsWith("chat:")) {
+    const userMessage = q.slice(5).trim();
+    
+    if (!userMessage) {
+      // Just show current chat state
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `chatview_${sessionKey}`,
+          title: "💬 View Chat",
+          description: "See your conversation",
+          input_message_content: {
+            message_text: formatInlineChatDisplay(session, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, session.history.length > 0),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    // User typed a message - process it
+    try {
+      const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
+      const updatedSession = getInlineSession(userId);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `chatreply_${sessionKey}`,
+          title: "💬 Send & View Chat",
+          description: answer.slice(0, 80),
+          input_message_content: {
+            message_text: formatInlineChatDisplay(updatedSession, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, true),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      console.error("Inline chat error:", e);
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `chaterr_${sessionKey}`,
+          title: "⚠️ Error",
+          description: "Model is slow. Try again.",
+          input_message_content: {
+            message_text: "⚠️ Model is slow right now. Please try again.",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
+  // "new:" prefix - clear and start new chat
+  if (q.startsWith("new:")) {
+    clearInlineSession(userId);
+    const userMessage = q.slice(4).trim();
+    
+    if (!userMessage) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `newchat_${sessionKey}`,
+          title: "🆕 New Chat Ready",
+          description: "Type your first message",
+          input_message_content: {
+            message_text: formatInlineChatDisplay(getInlineSession(userId), userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, false),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    // Process first message
+    try {
+      const answer = await llmInlineChatReply({ userId, userText: userMessage, model });
+      const updatedSession = getInlineSession(userId);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `newreply_${sessionKey}`,
+          title: "💬 New Chat",
+          description: answer.slice(0, 80),
+          input_message_content: {
+            message_text: formatInlineChatDisplay(updatedSession, userId),
+            parse_mode: "Markdown",
+          },
+          reply_markup: inlineChatKeyboard(sessionKey, true),
+        },
+      ], { cache_time: 0, is_personal: true });
+    } catch (e) {
+      console.error("New chat error:", e);
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `newerr_${sessionKey}`,
+          title: "⚠️ Error",
+          description: "Model is slow. Try again.",
+          input_message_content: {
+            message_text: "⚠️ Model is slow right now. Please try again.",
+          },
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
+  // Regular query - quick one-shot answer
+  // If web mode is enabled (or the query looks time-sensitive), try websearch + AI summary first.
+  // Otherwise, fall back to offline quick answer.
+  const quickKey = makeId(6);
+  const quickShortModel = model.split("/").pop();
+  const userRecord = getUserRecord(userId);
+  const wantsWebsearch = userRecord?.webSearch || needsWebSearch(q);
+  
+  try {
+    // Attempt websearch-backed answer if desired and quota allows
+    if (wantsWebsearch) {
+      const quota = consumeWebsearchQuota(userId);
+      if (quota.allowed) {
+        try {
+          const searchResult = await webSearch(q, 5);
+          if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
+            const searchContext = formatSearchResultsForAI(searchResult);
+            const startTime = Date.now();
+  
+            const aiResponse = await llmText({
+              model,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You are a helpful assistant with access to real-time web search results.\n" +
+                    "\n" +
+                    "CRITICAL CITATION INSTRUCTIONS:\n" +
+                    "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
+                    "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
+                    "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
+                    "• Never invent citations; only use indices that exist in the search results.\n" +
+                    "\n" +
+                    "GENERAL STYLE:\n" +
+                    "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
+                    "• Make it clear which parts come from which sources via [index] references.\n" +
+                    "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
+                    "• If the search results don't contain relevant information, say so explicitly."
+                },
+                {
+                  role: "user",
+                  content:
+                    `${searchContext}\n\n` +
+                    `User's question: ${q}\n\n` +
+                    "The numbered search results above are your ONLY sources of truth. " +
+                    "Write an answer that:\n" +
+                    "1) Directly answers the user's question, and\n" +
+                    "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
+                    "Do not cite sources that are not provided."
+                }
+              ],
+              temperature: 0.6,
+              max_tokens: 800,
+              timeout: 15000,
+              retries: 1,
+            });
+  
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  
+            let aiText = aiResponse || "No answer generated.";
+            aiText = linkifyWebsearchCitations(aiText, searchResult);
+  
+            // Store the full AI text (with citations) for regen / transforms
+            inlineCache.set(quickKey, {
+              prompt: q,
+              answer: aiText,
+              userId: String(userId),
+              model,
+              mode: "websearch",
+              createdAt: Date.now(),
+            });
+            setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
+  
+            // Track in history
+            addToHistory(userId, q, "websearch");
+  
+            const formattedAnswer = convertToTelegramHTML(aiText.slice(0, 3500));
+            const escapedQ = escapeHTML(q);
+            const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, userId);
+  
+            await safeAnswerInline(ctx, [
+              {
+                type: "article",
+                id: `answer_${quickKey}`,
+                title: `🌐 ${q.slice(0, 40)}`,
+                description: aiText.replace(/\s+/g, " ").slice(0, 80),
+                thumbnail_url: "https://img.icons8.com/fluency/96/search.png",
+                input_message_content: {
+                  message_text:
+                    `🌐 <b>Websearch</b>\n\n` +
+                    `<b>Query:</b> <i>${escapedQ}</i>\n\n` +
+                    `${formattedAnswer}${sourcesHtml}\n\n` +
+                    `<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${quickShortModel}</i>`,
+                  parse_mode: "HTML",
+                },
+                reply_markup: inlineAnswerKeyboard(quickKey),
+              },
+            ], { cache_time: 0, is_personal: true });
+  
+            trackUsage(userId, "inline");
+            return;
+          }
+        } catch (searchErr) {
+          console.log("Inline quick websearch failed:", searchErr.message || searchErr);
+          // Fall through to offline answer
+        }
+      } else {
+        console.log(
+          `Inline quick websearch quota exhausted for user ${userId}: used=${quota.used}, limit=${quota.limit}`
+        );
+      }
+    }
+  
+    // Fallback: offline quick answer (no websearch or websearch unavailable)
+    const out = await llmText({
+      model,
+      messages: [
+        { role: "system", content: "Answer compactly and clearly. Prefer <= 900 characters." },
+        { role: "user", content: q },
+      ],
+      temperature: 0.7,
+      max_tokens: 240,
+      timeout: 12000,
+      retries: 1,
+    });
+  
+    const answer = (out || "I couldn't generate a response.").slice(0, 2000);
+  
+    // Store for Reply/Regen/Shorter/Longer/Continue buttons
+    inlineCache.set(quickKey, {
+      prompt: q,
+      answer,
+      userId: String(userId),
+      model,
+      mode: "quick",
+      createdAt: Date.now(),
+    });
+  
+    // Schedule cleanup
+    setTimeout(() => inlineCache.delete(quickKey), 30 * 60 * 1000);
+  
+    // Track in history
+    addToHistory(userId, q, "default");
+  
+    // Convert AI answer to Telegram HTML format
+    const formattedAnswer = convertToTelegramHTML(answer);
+    const escapedQ = escapeHTML(q);
+  
+    await safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `answer_${quickKey}`,
+        title: `⚡ ${q.slice(0, 40)}`,
+        description: answer.slice(0, 80),
+        thumbnail_url: "https://img.icons8.com/fluency/96/lightning-bolt.png",
+        input_message_content: {
+          message_text: `❓ <b>${escapedQ}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • ${quickShortModel}</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: inlineAnswerKeyboard(quickKey),
+      },
+    ], { cache_time: 0, is_personal: true });
+  
+  } catch (e) {
+    console.error("Quick answer error:", e.message);
+    const escapedQ = escapeHTML(q);
+    await safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `error_${quickKey}`,
+        title: `⚡ ${q.slice(0, 40)}`,
+        description: "⚠️ Model is slow. Try again.",
+        thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+        input_message_content: {
+          message_text: `❓ <b>${escapedQ}</b>\n\n⚠️ <i>Model is slow right now. Please try again.</i>\n\n<i>via StarzAI</i>`,
+          parse_mode: "HTML",
+        },
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  trackUsage(userId, "inline");
+});
+
 // =====================
 // CHOSEN INLINE RESULT - Store inlineMessageId when Yap is first sent
 // =====================
@@ -400,1284 +1680,4 @@ bot.on("chosen_inline_result", async (ctx) => {
       try {
         await bot.api.editMessageTextInline(
           inlineMessageId,
-          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Session expired. Start a new Blackhole analysis.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      return;
-    }
-
-    if (String(ctx.from?.id || "") !== String(ownerId)) {
-      console.log(`Blackhole continuation denied: not owner`);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Only the original requester can continue this analysis.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      return;
-    }
-
-    const prompt = baseItem.prompt || "";
-    console.log(`Processing Blackhole continuation for prompt: ${prompt}`);
-
-    try {
-      const MAX_DISPLAY = 3500;
-      const CONTEXT_LEN = 900;
-
-      let fullAnswer = baseItem.fullAnswer || baseItem.answer || "";
-      fullAnswer = trimIncompleteTail(fullAnswer);
-      const context = fullAnswer.slice(-CONTEXT_LEN);
-
-      const out = await llmText({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Keep the same structure and style as earlier sections: use headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
-          },
-          {
-            role: "user",
-            content: `TEXT SO FAR:\n${context}`,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: 700,
-      });
-
-      const END_MARK = "END_OF_BLACKHOLE";
-      let continuation = (out || "").trim();
-      let completed = false;
-
-      if (continuation.includes(END_MARK)) {
-        completed = true;
-        continuation = continuation.replace(END_MARK, "").trim();
-        // Nicely formatted closing marker for Telegram (horizontal rule + bold text)
-        continuation += "\n\n---\n**End of Blackhole analysis.**";
-      }
-
-      // Clean tail of continuation to avoid ending mid-word/mid-sentence when possible.
-      continuation = trimIncompleteTail(continuation);
-
-      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
-
-      const newKey = makeId(6);
-      const part = (baseItem.part || 1) + 1;
-
-      inlineCache.set(newKey, {
-        prompt,
-        answer: continuation.slice(0, MAX_DISPLAY),
-        fullAnswer: newFull,
-        userId: ownerId,
-        model,
-        mode: "blackhole",
-        completed,
-        part,
-        // Carry forward any searchResult from the base item so final part can show sources
-        searchResult: baseItem.searchResult || null,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-
-      // Update base item as well so future continues from any chunk share history
-      baseItem.fullAnswer = newFull;
-      baseItem.part = part;
-      if (completed) baseItem.completed = true;
-      inlineCache.set(baseKey, baseItem);
-
-      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
-      const escapedPrompt = escapeHTML(prompt);
-      const partLabel = completed ? `Part ${part} – final` : `Part ${part}`;
-      const sourcesHtml =
-        completed && baseItem.searchResult
-          ? buildWebsearchSourcesInlineHtml(baseItem.searchResult, ownerId)
-          : "";
-
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey),
-        }
-      );
-      console.log(`Blackhole continuation updated with AI response`);
-    } catch (e) {
-      console.error("Failed to get Blackhole continuation response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-
-    inlineCache.delete(`bh_cont_pending_${contId}`);
-    return;
-  }
-
-  // Handle Ultra Summary deferred response - ultrasum_start_KEY
-  if (resultId.startsWith("ultrasum_start_")) {
-    const sumId = resultId.replace("ultrasum_start_", "");
-    const pending = inlineCache.get(`ultrasum_pending_${sumId}`);
-
-    if (!pending || !inlineMessageId) {
-      console.log(`Ultra Summary pending not found or no inlineMessageId: sumId=${sumId}`);
-      return;
-    }
-
-    const { baseKey, mode, model, shortModel, userId: ownerId } = pending;
-    const ownerRec = getUserRecord(ownerId);
-    if (ownerRec?.tier !== "ultra") {
-      console.log("Ultra Summary denied: user not Ultra");
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>This feature is only available for Ultra users.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      inlineCache.delete(`ultrasum_pending_${sumId}`);
-      return;
-    }
-
-    const baseItem = inlineCache.get(baseKey);
-    if (!baseItem) {
-      console.log(`Base item missing for Ultra Summary: baseKey=${baseKey}`);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Session expired. Run the answer again.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      return;
-    }
-
-    if (String(ctx.from?.id || "") !== String(ownerId)) {
-      console.log(`Ultra Summary denied: not owner`);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Only the original requester can summarize this answer.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      return;
-    }
-
-    const full = (baseItem.fullAnswer || baseItem.answer || "").trim();
-    if (!full || full.length < 50) {
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Answer is too short to summarize.</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-      inlineCache.delete(`ultrasum_pending_${sumId}`);
-      return;
-    }
-
-    const summaryInput = full.slice(0, 12000);
-    let systemPrompt =
-      "Summarize the content below into a brief, well-structured overview. Use short bullet points and 1–3 very short paragraphs at most. Keep the whole summary compact (no more than a few hundred words).";
-    let titlePrefix = "Ultra Summary";
-    let icon = "🧾 ";
-    if (mode === "blackhole") {
-      const parts = baseItem.part || 1;
-      systemPrompt =
-        `You are summarizing a multi-part deep-dive answer (Parts 1–${parts}). ` +
-        "Provide 5–9 very short bullet points that capture the main arguments, key evidence, and final conclusions. " +
-        "Avoid long paragraphs, quotes, or code. Keep it tight and scan-friendly.";
-      titlePrefix = `Ultra Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
-      icon = "🗿🔬 ";
-    } else if (mode === "code") {
-      systemPrompt =
-        "Summarize the programming answer in 4–7 concise bullet points. Describe the purpose of the code, the main steps, and how to run/use it. Mention languages and key functions or modules, but do not repeat long code snippets. Keep it short.";
-      titlePrefix = "Ultra Summary of Code Answer";
-      icon = "💻 ";
-    } else if (mode === "explain") {
-      systemPrompt =
-        "Summarize the explanation in 3–6 very short bullet points so it's easy to scan. Each bullet should be 1 short sentence. Focus only on the core ideas.";
-      titlePrefix = "Ultra Summary of Explanation";
-      icon = "🧠 ";
-    }
-
-    try {
-      const summaryOut = await llmText({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
-        ],
-        temperature: 0.4,
-        max_tokens: 260,
-      });
-
-      // Base truncation limit
-      let summary = (summaryOut || "No summary available.").slice(0, 1200);
-
-      // Clean up incomplete tail (mid-word / mid-sentence)
-      summary = trimIncompleteTail(summary, 220);
-
-      // Drop any dangling heading/bullet line at the very end (like "• Recent Discoveries:")
-      const lines = summary.split("\n");
-      while (lines.length > 0) {
-        const last = lines[lines.length - 1].trim();
-        if (!last) {
-          // Drop empty trailing lines
-          lines.pop();
-          continue;
-        }
-        const isHeaderOnly =
-          // Ends with ":" and has no period/question/exclamation afterwards
-          (/[:：]\s*$/.test(last) && !/[.!?]\s*$/.test(last)) ||
-          // Bullet with very short content
-          (/^[•\-*]\s+.+$/.test(last) && last.length < 40);
-        if (isHeaderOnly) {
-          lines.pop();
-          continue;
-        }
-        break;
-      }
-      summary = lines.join("\n").trim();
-
-      const newKey = makeId(6);
-
-      inlineCache.set(newKey, {
-        prompt: baseItem.prompt || "",
-        answer: summary,
-        fullAnswer: summary,
-        userId: ownerId,
-        model,
-        mode: "summarize",
-        completed: true,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-
-      const formatted = convertToTelegramHTML(summary);
-      const escapedPrompt = escapeHTML(baseItem.prompt || "");
-      const title =
-        mode === "blackhole"
-          ? `${titlePrefix}: ${escapedPrompt}`
-          : escapedPrompt
-          ? `${titlePrefix}: ${escapedPrompt}`
-          : titlePrefix;
-
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `${icon} <b>${title}</b>\n\n${formatted}\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
-        {
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey),
-        }
-      );
-      console.log("Ultra Summary updated with AI response");
-    } catch (e) {
-      console.error("Failed to get Ultra Summary response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-
-    inlineCache.delete(`ultrasum_pending_${sumId}`);
-    return;
-  }
-  
-  // Handle Character intro - char_intro_KEY
-  if (resultId.startsWith("char_intro_")) {
-    const charKey = resultId.replace("char_intro_", "");
-    const cached = inlineCache.get(charKey);
-    
-    if (cached && cached.character && inlineMessageId) {
-      // Store the inline message ID so we can handle replies
-      inlineCache.set(`char_msg_${charKey}`, {
-        ...cached,
-        inlineMessageId,
-      });
-      console.log(`Stored character intro inlineMessageId for key=${charKey}, character=${cached.character}`);
-    }
-    return;
-  }
-  
-  // Handle Research deferred response - r_start_KEY
-  if (resultId.startsWith("r_start_")) {
-    const rKey = resultId.replace("r_start_", "");
-    const pending = inlineCache.get(`r_pending_${rKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Research pending not found or no inlineMessageId: rKey=${rKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel } = pending;
-    console.log(`Processing Research: ${prompt}`);
-    
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct, but use Markdown headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways so the answer is easy to scan.",
-          },
-          { role: "user", content: `Briefly explain: ${prompt}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 400,
-      });
-      
-      const answer = (out || "No results").slice(0, 2000);
-      const newKey = makeId(6);
-      
-      // Store for Regen/Shorter/Longer/Continue buttons
-      inlineCache.set(newKey, {
-        prompt,
-        answer,
-        userId: pending.userId,
-        model,
-        mode: "research",
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      // Track in history
-      addToHistory(pending.userId, prompt, "research");
-      
-      // Convert and update
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPrompt = escapeHTML(prompt);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `🔍 <b>Research: ${escapedPrompt}</b>\\n\\n${formattedAnswer}\\n\\n<i>via StarzAI • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey),
-        }
-      );
-      console.log("Research updated with AI response");
-    } catch (e) {
-      console.error("Failed to get Research response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🔍 <b>Research</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>\\n\\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`r_pending_${rKey}`);
-    return;
-  }
-
-  // Handle Websearch deferred response - w_start_KEY
-  if (resultId.startsWith("w_start_")) {
-    const wKey = resultId.replace("w_start_", "");
-    const pending = inlineCache.get(`w_pending_${wKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Websearch pending not found or no inlineMessageId: wKey=${wKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel, userId: ownerId } = pending;
-    console.log(`Processing Websearch: ${prompt}`);
-    
-    try {
-      const quota = consumeWebsearchQuota(ownerId);
-      const startTime = Date.now();
-      let answerRaw = "";
-      let footerHtml = "";
-      let sourcesHtml = "";
-      let formattedAnswer = "";
-
-      if (!quota.allowed) {
-        // Quota exhausted: answer without live websearch
-        console.log(
-          `Websearch quota exhausted for user ${ownerId} in inline mode: used=${quota.used}, limit=${quota.limit}`
-        );
-
-        const offline = await llmText({
-          model,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a helpful assistant. You currently do NOT have access to live web search for this request. " +
-                "Answer based on your existing knowledge only. If you are unsure or information may be outdated, say so clearly.",
-            },
-            {
-              role: "user",
-              content: `Question (no live websearch available): ${prompt}`,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 800,
-        });
-
-        answerRaw = offline || "No answer generated.";
-        const escapedPrompt = escapeHTML(prompt);
-        formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        footerHtml = `\\n\\n<i>⚠️ Daily websearch limit reached — answered without live web results • ${elapsed}s • ${shortModel}</i>`;
-        
-        const newKey = makeId(6);
-        inlineCache.set(newKey, {
-          prompt,
-          answer: answerRaw,
-          userId: String(ownerId),
-          model,
-          mode: "websearch",
-          createdAt: Date.now(),
-        });
-        setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${footerHtml}`,
-          {
-            parse_mode: "HTML",
-            reply_markup: inlineAnswerKeyboard(newKey),
-          }
-        );
-        console.log("Websearch (offline) updated with AI response");
-      } else {
-        // Quota available: run live web search
-        const searchResult = await webSearch(prompt, 5);
-        
-        if (!searchResult.success) {
-          const errMsg = `❌ Websearch failed: ${escapeHTML(searchResult.error || "Unknown error")}`;
-          await bot.api.editMessageTextInline(
-            inlineMessageId,
-            errMsg,
-            { parse_mode: "HTML" }
-          );
-          inlineCache.delete(`w_pending_${wKey}`);
-          return;
-        }
-        
-        const searchContext = formatSearchResultsForAI(searchResult);
-        
-        const aiResponse = await llmText({
-          model,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a helpful assistant with access to real-time web search results.\n" +
-                "\n" +
-                "CRITICAL CITATION INSTRUCTIONS:\n" +
-                "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
-                "• When you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
-                "• If you mention a specific number, date, name, or quote, always attach the source index.\n" +
-                "• Never invent citations; only use indices that exist in the search results.\n" +
-                "\n" +
-                "GENERAL STYLE:\n" +
-                "• Use short paragraphs and bullet points so the answer is easy to scan.\n" +
-                "• Make it clear which parts come from which sources via [index] references.\n" +
-                "• For short verbatim excerpts (1–2 sentences), use quote blocks (lines starting with '>').\n" +
-                "• If the search results don't contain relevant information, say so explicitly.",
-            },
-            {
-              role: "user",
-              content:
-                `${searchContext}\\n\\n` +
-                `User's question: ${prompt}\\n\\n` +
-                "The numbered search results above are your ONLY sources of truth. " +
-                "Write an answer that:\n" +
-                "1) Directly answers the user's question, and\n" +
-                "2) Explicitly cites sources using [1], [2], etc next to the claims.\n" +
-                "Do not cite sources that are not provided.",
-            },
-          ],
-          temperature: 0.6,
-          max_tokens: 800,
-        });
-        
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        answerRaw = aiResponse || "No answer generated.";
-        answerRaw = linkifyWebsearchCitations(answerRaw, searchResult);
-
-        const escapedPrompt = escapeHTML(prompt);
-        sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerId);
-        formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
-        footerHtml = `\\n\\n<i>🌐 ${searchResult.results.length} sources • ${elapsed}s • ${shortModel}</i>`;
-        
-        const newKey = makeId(6);
-        inlineCache.set(newKey, {
-          prompt,
-          answer: answerRaw,
-          userId: String(ownerId),
-          model,
-          mode: "websearch",
-          createdAt: Date.now(),
-        });
-        setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-        
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${sourcesHtml}${footerHtml}`,
-          { 
-            parse_mode: "HTML",
-            reply_markup: inlineAnswerKeyboard(newKey),
-          }
-        );
-        console.log("Websearch updated with AI response");
-      }
-    } catch (e) {
-      console.error("Failed to get Websearch response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🌐 <b>Websearch</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`w_pending_${wKey}`);
-    return;
-  }
-  
-  // Handle Quark deferred response - q_start_KEY
-  // Now optionally uses web search when Web mode is ON or the question looks time-sensitive.
-  if (resultId.startsWith("q_start_")) {
-    const qKey = resultId.replace("q_start_", "");
-    const pending = inlineCache.get(`q_pending_${qKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Quark pending not found or no inlineMessageId: qKey=${qKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel, userId: ownerId } = pending;
-    const ownerStr = String(ownerId || pending.userId || "");
-    console.log(`Processing Quark: ${prompt}`);
-    
-    try {
-      const userRec = ownerStr ? getUserRecord(ownerStr) : null;
-      const wantsWebsearch = (userRec?.webSearch || needsWebSearch(prompt));
-      
-      // Try websearch-backed Quark answer first if desired and quota available
-      if (wantsWebsearch && ownerStr) {
-        const quota = consumeWebsearchQuota(ownerId || ownerStr);
-        if (quota.allowed) {
-          try {
-            const searchResult = await webSearch(prompt, 5);
-            if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
-              const searchContext = formatSearchResultsForAI(searchResult);
-  
-              const aiResponse = await llmText({
-                model,
-                messages: [
-                  {
-                    role: "system",
-                    content:
-                      "You are a helpful assistant with access to real-time web search results.\n" +
-                      "Answer in at most 2 short sentences while staying accurate.\n" +
-                      "\n" +
-                      "CRITICAL CITATION INSTRUCTIONS:\n" +
-                      "• Every non-obvious factual claim should be backed by a source index like [1], [2], etc.\n" +
-                      "• If you summarize multiple sources, include multiple indices, e.g. [1][3].\n" +
-                      "• For concrete numbers, dates, or names, always attach the source index.\n" +
-                      "• Never invent citations; only use indices that exist in the search results."
-                  },
-                  {
-                    role: "user",
-                    content:
-                      `${searchContext}\n\n` +
-                      `User's question: ${prompt}\n\n` +
-                      "Write a direct, compact answer (1–2 sentences maximum) based ONLY on the search results above, and attach [n] citations to the key factual claims."
-                  }
-                ],
-                temperature: 0.5,
-                max_tokens: 220,
-              });
-  
-              let answer = aiResponse || "No answer";
-              answer = linkifyWebsearchCitations(answer, searchResult).slice(0, 600);
-  
-              const newKey = makeId(6);
-  
-              inlineCache.set(newKey, {
-                prompt,
-                answer,
-                userId: ownerStr,
-                model,
-                mode: "quark",
-                createdAt: Date.now(),
-              });
-              setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-  
-              addToHistory(ownerStr, prompt, "quark");
-  
-              const formattedAnswer = convertToTelegramHTML(answer);
-              const escapedPrompt = escapeHTML(prompt);
-              const sourcesHtml = buildWebsearchSourcesInlineHtml(searchResult, ownerStr);
-  
-              await bot.api.editMessageTextInline(
-                inlineMessageId,
-                `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
-                { 
-                  parse_mode: "HTML",
-                  // Quark intentionally has no Continue button
-                  reply_markup: inlineAnswerKeyboard(newKey)
-                }
-              );
-              console.log("Quark (websearch) updated with AI response");
-              inlineCache.delete(`q_pending_${qKey}`);
-              return;
-            }
-          } catch (webErr) {
-            console.log("Quark websearch failed:", webErr.message || webErr);
-            // Fall through to offline Quark
-          }
-        } else {
-          console.log(
-            `Quark websearch quota exhausted for user ${ownerStr}: used=${quota.used}, limit=${quota.limit}`
-          );
-        }
-      }
-    
-      // Offline Quark answer (fallback)
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Give extremely concise answers. 1-2 sentences max. Be direct and to the point. No fluff." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.5,
-        max_tokens: 100,
-      });
-      
-      const answer = (out || "No answer").slice(0, 500);
-      const newKey = makeId(6);
-      
-      inlineCache.set(newKey, {
-        prompt,
-        answer,
-        userId: pending.userId,
-        model,
-        mode: "quark",
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      addToHistory(pending.userId, prompt, "quark");
-      
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPrompt = escapeHTML(prompt);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `⭐ <b>${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Quark • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          // Quark intentionally has no Continue button
-          reply_markup: inlineAnswerKeyboard(newKey)
-        }
-      );
-      console.log(`Quark updated with AI response`);
-      
-    } catch (e) {
-      console.error("Failed to get Quark response:", e.message);
-      const escapedPrompt = escapeHTML(prompt);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `⭐ <b>${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`q_pending_${qKey}`);
-    return;
-  }
-  
-  // Helper to avoid cutting code blocks in the middle for Code mode answers.
-  // We try to cut AFTER the last complete fenced block (``` ... ```) that fits
-  // within maxLen. If none, we fall back to cutting at a newline near maxLen.
-  // Returns the visible chunk, remaining text, whether we're done, and the
-  // index in `full` where we cut.
-  function splitCodeAnswerForDisplay(full, maxLen = 3500) {
-    if (!full) return { visible: "", remaining: "", completed: true, cutIndex: 0 };
-    if (full.length <= maxLen) {
-      return { visible: full, remaining: "", completed: true, cutIndex: full.length };
-    }
-
-    const fence = "```";
-    const positions = [];
-    let idx = 0;
-    while (true) {
-      const found = full.indexOf(fence, idx);
-      if (found === -1) break;
-      positions.push(found);
-      idx = found + fence.length;
-    }
-
-    let cutoff = -1;
-
-    if (positions.length >= 2) {
-      // Pair fences as open/close in order and find the last complete block
-      // whose closing fence is within maxLen.
-      for (let i = 0; i + 1 < positions.length; i += 2) {
-        const openIdx = positions[i];
-        const closeIdx = positions[i + 1] + fence.length; // include closing fence
-        if (closeIdx <= maxLen) {
-          cutoff = closeIdx;
-        } else {
-          break;
-        }
-      }
-    }
-
-    // If we didn't find any complete fenced block within maxLen, fall back to
-    // cutting at a newline near maxLen so we don't split mid-line.
-    if (cutoff === -1) {
-      const fallback = full.lastIndexOf("\n", maxLen);
-      cutoff = fallback > 0 ? fallback : maxLen;
-    }
-
-    const visible = full.slice(0, cutoff).trimEnd();
-    const remaining = full.slice(cutoff).trimStart();
-    return { visible, remaining, completed: remaining.length === 0, cutIndex: cutoff };
-  }
-
-  // Handle Code deferred response - code_start_KEY
-  if (resultId.startsWith("code_start_")) {
-    const codeKey = resultId.replace("code_start_", "");
-    const pending = inlineCache.get(`code_pending_${codeKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Code pending not found or no inlineMessageId: codeKey=${codeKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel } = pending;
-    console.log(`Processing Code: ${prompt}`);
-    
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an expert programmer. Provide clear, working code with brief explanations. Always format code using fenced code blocks with language tags, like ```python ... ```. Focus on best practices and clean, idiomatic code. If the user is asking for multiple sizeable code snippets (e.g., in two different languages), prioritize the first main implementation and be willing to let additional full implementations be shown in a continuation.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.3,
-        max_tokens: 700,
-      });
-      
-      const raw = out || "No code";
-      const { visible, remaining, completed, cutIndex } = splitCodeAnswerForDisplay(raw, 3500);
-      const answer = visible;
-      const newKey = makeId(6);
-      
-      inlineCache.set(newKey, {
-        prompt,
-        answer,
-        fullAnswer: raw,
-        cursor: cutIndex,
-        userId: pending.userId,
-        model,
-        mode: "code",
-        completed,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      addToHistory(pending.userId, prompt, "code");
-      
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPrompt = escapeHTML(prompt);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `💻 <b>Code: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Code • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey)
-        }
-      );
-      console.log(`Code updated with AI response`);
-      
-    } catch (e) {
-      console.error("Failed to get Code response:", e.message);
-      const escapedPrompt = escapeHTML(prompt);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `💻 <b>Code: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`code_pending_${codeKey}`);
-    return;
-  }
-  
-  // Handle Explain deferred response - e_start_KEY
-  if (resultId.startsWith("e_start_")) {
-    const eKey = resultId.replace("e_start_", "");
-    const pending = inlineCache.get(`e_pending_${eKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Explain pending not found or no inlineMessageId: eKey=${eKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel } = pending;
-    console.log(`Processing Explain: ${prompt}`);
-    
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Explain concepts in the simplest possible way, like explaining to a 5-year-old (ELI5). Use analogies, simple words, and relatable examples. Avoid jargon. Make it fun and easy to understand." },
-          { role: "user", content: `Explain simply: ${prompt}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 400,
-      });
-      
-      const raw = out || "No explanation";
-      const maxLen = 1500;
-      let visible = raw;
-      let cursor = raw.length;
-      let completed = true;
-
-      if (raw.length > maxLen) {
-        // Prefer to cut at a sentence or word boundary near the limit
-        const slice = raw.slice(0, maxLen);
-        let cutoff = slice.length;
-
-        const windowSize = 200;
-        const windowStart = Math.max(0, cutoff - windowSize);
-        const windowText = slice.slice(windowStart, cutoff);
-
-        let rel = Math.max(
-          windowText.lastIndexOf(". "),
-          windowText.lastIndexOf("! "),
-          windowText.lastIndexOf("? ")
-        );
-        if (rel !== -1) {
-          cutoff = windowStart + rel + 2; // include punctuation + space
-        } else {
-          const spaceRel = windowText.lastIndexOf(" ");
-          if (spaceRel !== -1) {
-            cutoff = windowStart + spaceRel;
-          }
-        }
-
-        visible = slice.slice(0, cutoff).trimEnd();
-        cursor = visible.length;
-        completed = cursor >= raw.length;
-      }
-
-      const answer = visible;
-      const newKey = makeId(6);
-      const part = 1;
-      
-      inlineCache.set(newKey, {
-        prompt,
-        answer,
-        fullAnswer: raw,
-        cursor,
-        userId: pending.userId,
-        model,
-        shortModel,
-        mode: "explain",
-        part,
-        completed,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      addToHistory(pending.userId, prompt, "explain");
-      
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPrompt = escapeHTML(prompt);
-      const headerLabel = completed ? "Full Explanation" : "Explanation (Part 1)";
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `🧠 <b>${headerLabel}: ${escapedPrompt}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Explain • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey)
-        }
-      );
-      console.log(`Explain updated with AI response`);
-      
-    } catch (e) {
-      console.error("Failed to get Explain response:", e.message);
-      const escapedPrompt = escapeHTML(prompt);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🧠 <b>Explain: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`e_pending_${eKey}`);
-    return;
-  }
-  
-  // Handle Summarize deferred response - sum_start_KEY
-  if (resultId.startsWith("sum_start_")) {
-    const sumKey = resultId.replace("sum_start_", "");
-    const pending = inlineCache.get(`sum_pending_${sumKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Summarize pending not found or no inlineMessageId: sumKey=${sumKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel } = pending;
-    console.log(`Processing Summarize`);
-    
-    try {
-      const out = await llmText({
-        model,
-        messages: [
-          { role: "system", content: "Summarize the given text concisely. Extract key points and main ideas. Use bullet points if helpful. Keep it brief but comprehensive." },
-          { role: "user", content: `Summarize this:\n\n${prompt}` },
-        ],
-        temperature: 0.3,
-        max_tokens: 400,
-      });
-      
-      const answer = (out || "Could not summarize").slice(0, 1500);
-      const newKey = makeId(6);
-      
-      inlineCache.set(newKey, {
-        prompt: prompt.slice(0, 200) + "...",
-        answer,
-        userId: pending.userId,
-        model,
-        mode: "summarize",
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      addToHistory(pending.userId, prompt.slice(0, 50), "summarize");
-      
-      const formattedAnswer = convertToTelegramHTML(answer);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `📝 <b>Summary</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Summarize • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: inlineAnswerKeyboard(newKey)
-        }
-      );
-      console.log(`Summarize updated with AI response`);
-      
-    } catch (e) {
-      console.error("Failed to get Summarize response:", e.message);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `📝 <b>Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`sum_pending_${sumKey}`);
-    return;
-  }
-  
-  // Handle Partner deferred response - p_start_KEY
-  if (resultId.startsWith("p_start_")) {
-    const pKey = resultId.replace("p_start_", "");
-    const pending = inlineCache.get(`p_pending_${pKey}`);
-    
-    if (!pending || !inlineMessageId) {
-      console.log(`Partner pending not found or no inlineMessageId: pKey=${pKey}`);
-      return;
-    }
-    
-    const { prompt, model, shortModel, partner } = pending;
-    console.log(`Processing Partner: ${prompt}`);
-    
-    try {
-      const systemPrompt = buildPartnerSystemPrompt(partner);
-      const partnerHistory = getPartnerChatHistory(pending.userId);
-      
-      const messages = [
-        { role: "system", content: systemPrompt },
-        ...partnerHistory.slice(-6).map(m => ({ role: m.role, content: m.content })),
-        { role: "user", content: prompt },
-      ];
-      
-      const out = await llmText({
-        model,
-        messages,
-        temperature: 0.85,
-        max_tokens: 400,
-      });
-      
-      const answer = (out || "*stays silent*").slice(0, 1500);
-      const newKey = makeId(6);
-      
-      inlineCache.set(newKey, {
-        prompt,
-        answer,
-        userId: pending.userId,
-        model,
-        isPartner: true,
-        partnerName: partner.name,
-        createdAt: Date.now(),
-      });
-      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-      
-      addPartnerMessage(pending.userId, "user", prompt);
-      addPartnerMessage(pending.userId, "assistant", answer);
-      
-      const formattedAnswer = convertToTelegramHTML(answer);
-      const escapedPartnerName = escapeHTML(partner.name);
-      
-      await bot.api.editMessageTextInline(
-        inlineMessageId,
-        `🤝🏻 <b>${escapedPartnerName}</b>\n\n${formattedAnswer}\n\n<i>via StarzAI • Partner • ${shortModel}</i>`,
-        { 
-          parse_mode: "HTML",
-          reply_markup: new InlineKeyboard()
-            .switchInlineCurrent("💬 Reply", `p: `)
-            .text("🔁 Regen", `inl_regen:${newKey}`)
-        }
-      );
-      console.log(`Partner updated with AI response`);
-      
-    } catch (e) {
-      console.error("Failed to get Partner response:", e.message);
-      const escapedPartnerName = escapeHTML(partner.name);
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🤝🏻 <b>${escapedPartnerName}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
-          { parse_mode: "HTML" }
-        );
-      } catch {}
-    }
-    
-    inlineCache.delete(`p_pending_${pKey}`);
-    return;
-  }
-  
-  // Handle Starz Check - store the inline_message_id for later updates
-  if (resultId.startsWith("starz_check_")) {
-    const checkKey = resultId.replace("starz_check_", "");
-    const userId = String(ctx.from?.id || "");
-    
-    if (inlineMessageId && userId) {
-      // Store the inline message ID so we can update it when tasks change
-      inlineCache.set(`sc_msg_${userId}`, {
-        inlineMessageId,
-        timestamp: Date.now(),
-      });
-      console.log(`Stored Starz Check inlineMessageId for user ${userId}`);
-    }
-    return;
-  }
-  
-  // Handle t:add - add task, delete new message, update original
-  if (resultId.startsWith("tadd_")) {
-    const addKey = resultId.replace("tadd_", "");
-    const pending = inlineCache.get(`tadd_pending_${addKey}`);
-    
-    if (!pending) {
-      console.log(`Task add pending not found: addKey=${addKey}`);
-      return;
-    }
-    
-    const { userId, taskText, chatId } = pending;
-    console.log(`Processing task add: ${taskText} for user ${userId}`);
-    
-    // Parse and add the task
-    const parsed = parseTaskText(taskText);
-    const userTodos = getUserTodos(userId);
-    const newTask = {
-      id: makeId(8),
-      text: parsed.text || taskText,
-      completed: false,
-      priority: parsed.priority || 'low',
-      category: parsed.category || 'personal',
-      dueDate: parsed.dueDate || null,
-      createdAt: new Date().toISOString(),
-      completedAt: null,
-    };
-    userTodos.tasks.push(newTask);
-    saveTodos();
-    
-    // Try to delete the "Task Added" message we just sent
-    if (inlineMessageId) {
-      try {
-        // We can't delete inline messages, but we can edit them to be minimal
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `✅ Added: ${parsed.text || taskText}`,
-          { parse_mode: "HTML" }
-        );
-      } catch (e) {
-        console.log("Could not edit task added message:", e.message);
-      }
-    }
-    
-    // Try to update the original Starz Check message
-    const scMsg = inlineCache.get(`sc_msg_${userId}`);
-    if (scMsg && scMsg.inlineMessageId) {
-      try {
-        const tasks = userTodos.tasks || [];
-        const streak = getCompletionStreak(userId);
-        
-        // Build compact task list
-        let text = `✅ Starz Check`;
-        if (streak > 0) text += ` 🔥${streak}`;
-        
-        const keyboard = new InlineKeyboard();
-        
-        // Add task buttons (max 8 to fit)
-        const displayTasks = tasks.slice(0, 8);
-        displayTasks.forEach((task, idx) => {
-          if (!task || !task.text) return; // Skip invalid tasks
-          const check = task.completed ? '✅' : '⬜';
-          const cat = getCategoryEmoji(task.category);
-          const pri = task.priority === 'high' ? '🔴' : task.priority === 'medium' ? '🟡' : '';
-          const overdue = !task.completed && isOverdue(task.dueDate) ? '⚠️' : '';
-          const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
-          keyboard.text(label, `itodo_tap:${task.id}`).row();
-        });
-        
-        if (tasks.length > 8) {
-          keyboard.text(`... +${tasks.length - 8} more`, "itodo_back").row();
-        }
-        
-        // Action buttons
-        keyboard
-          .switchInlineCurrent("➕", "t:add ")
-          .text("🔍", "itodo_filter")
-          .text("👥", "itodo_collab")
-          .row()
-          .text("← Back", "inline_main_menu");
-        
-        await bot.api.editMessageTextInline(
-          scMsg.inlineMessageId,
-          text,
-          {
-            parse_mode: "HTML",
-            reply_markup: keyboard,
-          }
-        );
-        console.log(`Updated original Starz Check message for user ${userId}`);
-      } catch (e) {
-        console.log("Could not update original Starz Check message:", e.message);
-      }
-    }
-    
-    inlineCache.delete(`tadd_pending_${addKey}`);
-    return;
-  }
-  
-  // Handle tedit - edit task, update original message
-  if (resultId.startsWith("tedit_")) {
-    const editKey = resultId.replace("tedit_", "");
-    const pending = inlineCache.get(`tedit_pending_${editKey}`);
-    
-    if (!pending) {
-      console.log(`Task edit pending not found: editKey=${editKey}`);
-      return;
-    }
-    
-    const { userId, taskId, newText } = pending;
-    console.log(`Processing task edit: ${taskId} -> ${newText} for user ${userId}`);
-    
-    // Apply the edit
-    const userTodos = getUserTodos(userId);
-    const taskIndex = userTodos.tasks.findIndex(t => t.id === taskId);
-    if (taskIndex !== -1) {
-      userTodos.tasks[taskIndex].text = newText;
-      userTodos.tasks[taskIndex].updatedAt = new Date().toISOString();
-      saveTodos();
-    }
-    
-    // Try to update the original Starz Check message
-    const scMsg = inlineCache.get(`sc_msg_${userId}`);
-    if (scMsg && scMsg.inlineMessageId) {
-      try {
-        const tasks = userTodos.tasks || [];
-        const streak = getCompletionStreak(userId);
-        
-        // Build compact task list
-        let text = `\u2705 Starz Check`;
-        if (streak > 0) text += ` \ud83d\udd25${streak}`;
-        
-        const keyboard = new InlineKeyboard();
-        
-        // Add task buttons (max 8 to fit)
-        const displayTasks = tasks.slice(0, 8);
-        displayTasks.forEach((task, idx) => {
-          if (!task || !task.text) return;
-          const check = task.completed ? '\u2705' : '\u2b1c';
-          const cat = getCategoryEmoji(task.category);
-          const pri = task.priority === 'high' ? '\ud83d\udd34' : task.priority === 'medium' ? '\ud83d\udfe1' : '';
-          const overdue = !task.completed && isOverdue(task.dueDate) ? '\u26a0\ufe0f' : '';
-          const label = `${check} ${task.text.slice(0, 20)}${task.text.length > 20 ? '...' : ''} ${cat}${pri}${overdue}`.trim();
-          keyboard.text(label, `itodo_tap:${task.id}`).row();
-        });
-        
-        if (tasks.length > 8) {
-          keyboard.text(`... +${tasks.length - 8} more`, "itodo_back").row();
-        }
-        
-        // Action buttons
-        keyboard
-          .switchInlineCurrent("\u2795", "t:add ")
-          .text("\ud83d\udd0d", "itodo_filter")
-          .text("\ud83d\udc65", "itodo_collab")
-          .row()
-          .text("\u2190 Back", "inline_main_menu");
-        
-        await bot.api.editMessageTextInline(
-          scMsg.inlineMessageId,
-          text,
-          {
-            parse_mode: "HTML",
-            reply_markup: keyboard,
-          }
-        );
-        console.log(`Updated original Starz Check message after edit for user ${userId}`);
-      } catch (e) {
-        console.log("Could not update original Starz Check message:", e.message);
-      }
-    }
-    
-    inlineCache.delete(`tedit_pending_${editKey}`);
-    return;
-  }
-  
-});
-
 

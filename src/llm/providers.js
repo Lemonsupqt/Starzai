@@ -8,6 +8,131 @@
 // Lines 329-718 from original index.js
 // =====================
 
+      stats.consecutiveFailures++;
+      
+      // Disable key temporarily after 3 consecutive failures
+      if (stats.consecutiveFailures >= 3) {
+        stats.disabled = true;
+        stats.disabledUntil = Date.now() + (5 * 60 * 1000); // 5 minute cooldown
+        console.warn(`[DeAPI] Disabled key ${keyId} for 5 minutes after ${stats.consecutiveFailures} consecutive failures`);
+      }
+    }
+  },
+  
+  // Fetch balance for a specific key
+  async fetchBalance(key) {
+    try {
+      const response = await fetch('https://api.deapi.ai/api/v1/client/balance', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Accept': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        console.warn(`[DeAPI] Failed to fetch balance for key ${this.getKeyId(key)}: ${response.status}`);
+        return null;
+      }
+      
+      const data = await response.json();
+      // Handle various response formats
+      const balance = data?.data?.balance ?? data?.balance ?? data?.credits ?? data?.data?.credits ?? null;
+      return balance;
+    } catch (error) {
+      console.warn(`[DeAPI] Error fetching balance for key ${this.getKeyId(key)}:`, error.message);
+      return null;
+    }
+  },
+  
+  // Fetch balances for all keys
+  async fetchAllBalances() {
+    const balances = new Map();
+    
+    for (const key of DEAPI_KEYS) {
+      const keyId = this.getKeyId(key);
+      const balance = await this.fetchBalance(key);
+      balances.set(keyId, balance);
+      
+      // Update stats with balance
+      const stats = this.keyStats.get(keyId);
+      if (stats) {
+        stats.balance = balance;
+        stats.balanceUpdatedAt = Date.now();
+      }
+    }
+    
+    return balances;
+  },
+  
+  // Get stats for owner status command
+  getStats() {
+    const result = {
+      totalKeys: DEAPI_KEYS.length,
+      activeKeys: 0,
+      disabledKeys: 0,
+      totalCalls: 0,
+      totalSuccesses: 0,
+      totalFailures: 0,
+      keys: []
+    };
+    
+    for (const [keyId, stats] of this.keyStats.entries()) {
+      if (stats.disabled) {
+        result.disabledKeys++;
+      } else {
+        result.activeKeys++;
+      }
+      result.totalCalls += stats.calls;
+      result.totalSuccesses += stats.successes;
+      result.totalFailures += stats.failures;
+      
+      result.keys.push({
+        id: keyId,
+        ...stats,
+        successRate: stats.calls > 0 ? Math.round((stats.successes / stats.calls) * 100) : 100
+      });
+    }
+    
+    return result;
+  },
+  
+  // Get stats with fresh balances (async version)
+  async getStatsWithBalances() {
+    // Fetch fresh balances
+    await this.fetchAllBalances();
+    return this.getStats();
+  },
+  
+  // Check if any keys are available
+  hasKeys() {
+    return DEAPI_KEYS.length > 0;
+  }
+};
+
+// Initialize the key manager
+deapiKeyManager.init();
+
+// Legacy compatibility - returns first key or empty string
+const DEAPI_KEY = DEAPI_KEYS[0] || "";
+
+if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
+if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
+if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GitHub Models will be unavailable");
+
+// =====================
+// BOT + LLM
+// =====================
+const bot = new Bot(BOT_TOKEN);
+
+let BOT_ID = null;
+let BOT_USERNAME = "";
+
+const openai = new OpenAI({
+  baseURL: "https://ai.megallm.io/v1",
+  apiKey: MEGALLM_API_KEY,
+});
+
 // =====================
 // MULTI-PROVIDER LLM SYSTEM
 // =====================
@@ -273,129 +398,4 @@ async function callMegaLLM({ model, messages, temperature = 0.7, max_tokens = 35
 // Provider call wrapper with timeout
 async function callProviderWithTimeout(providerKey, options, timeout) {
   const provider = LLM_PROVIDERS[providerKey];
-  
-  let callFunction;
-  if (providerKey === 'github') {
-    callFunction = callGitHubModels(options);
-  } else if (providerKey === 'megallm') {
-    callFunction = callMegaLLM(options);
-  } else {
-    throw new Error(`Unknown provider: ${providerKey}`);
-  }
-
-  return withTimeout(
-    callFunction,
-    timeout,
-    `${provider.name} timed out after ${timeout/1000}s`
-  );
-}
-
-// Fallback models for MegaLLM (DeepSeek/Qwen - unlimited usage)
-const MEGALLM_FALLBACK_MODELS = {
-  fast: 'deepseek-ai/deepseek-v3.1',               // Fast responses
-  balanced: 'qwen/qwen3-next-80b-a3b-instruct',    // Good balance
-  quality: 'deepseek-ai/deepseek-v3.1'             // Best quality
-};
-
-// Get appropriate fallback model based on the original model tier
-function getFallbackModel(originalModel) {
-  // Map original models to fallback tiers
-  if (originalModel?.includes('nano') || originalModel?.includes('mini')) {
-    return MEGALLM_FALLBACK_MODELS.fast;
-  } else if (originalModel?.includes('chat') || originalModel?.includes('gpt-5-mini')) {
-    return MEGALLM_FALLBACK_MODELS.balanced;
-  } else {
-    return MEGALLM_FALLBACK_MODELS.quality;
-  }
-}
-
-// Main LLM call - uses intended provider with MegaLLM fallback on rate limit/errors
-async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 15000, preferredProvider = null }) {
-  const providers = getEnabledProviders();
-  
-  if (providers.length === 0) {
-    throw new Error('No LLM providers available');
-  }
-
-  // Auto-detect provider from model name
-  const targetProvider = preferredProvider || getProviderForModel(model);
-  console.log(`[LLM] Using provider: ${targetProvider} for model: ${model}`);
-  
-  // Find the target provider
-  const provider = providers.find(p => p.key === targetProvider);
-  
-  if (!provider) {
-    throw new Error(`Provider '${targetProvider}' is not available or not configured`);
-  }
-
-  // Try the intended provider with retries
-  let lastError = null;
-  
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    providerStats[provider.key].calls++;
-    
-    try {
-      console.log(`[LLM] ${provider.name} attempt ${attempt + 1}/${retries + 1} with model: ${model}...`);
-      
-      const result = await callProviderWithTimeout(
-        provider.key,
-        { model, messages, temperature, max_tokens },
-        timeout
-      );
-      
-      providerStats[provider.key].successes++;
-      console.log(`[LLM] ✅ Success with ${provider.name}`);
-      
-      return { content: result, provider: provider.key };
-    } catch (error) {
-      providerStats[provider.key].failures++;
-      lastError = error;
-      console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
-      
-      // Only retry on timeout errors within the same provider
-      if (!error.message?.includes('timed out') && !error.message?.includes('timeout')) {
-        break; // Don't retry on non-timeout errors, go to fallback
-      }
-      
-      if (attempt < retries) {
-        await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
-      }
-    }
-  }
-
-  // Primary provider failed - try MegaLLM fallback with DeepSeek/Qwen (unlimited usage)
-  const megallmProvider = providers.find(p => p.key === 'megallm');
-  
-  if (megallmProvider && targetProvider !== 'megallm') {
-    const fallbackModel = getFallbackModel(model);
-    console.log(`[LLM] ⚡ Falling back to MegaLLM with ${fallbackModel}...`);
-    
-    // Cap max_tokens at 400 for nano/mini models to keep responses concise
-    const fallbackMaxTokens = (model?.toLowerCase().includes('nano') || model?.toLowerCase().includes('mini')) 
-      ? Math.min(max_tokens, 400) 
-      : max_tokens;
-    
-    providerStats.megallm.calls++;
-    
-    try {
-      const result = await callProviderWithTimeout(
-        'megallm',
-        { model: fallbackModel, messages, temperature, max_tokens: fallbackMaxTokens },
-        timeout
-      );
-      
-      providerStats.megallm.successes++;
-      console.log(`[LLM] ✅ Fallback success with MegaLLM (${fallbackModel})`);
-      
-      return { content: result, provider: 'megallm', fallback: true, fallbackModel };
-    } catch (fallbackError) {
-      providerStats.megallm.failures++;
-      console.error(`[LLM] ❌ MegaLLM fallback also failed:`, fallbackError.message);
-    }
-  }
-
-  // All providers failed
-  throw lastError || new Error(`All providers failed for model: ${model}`);
-}
-
 

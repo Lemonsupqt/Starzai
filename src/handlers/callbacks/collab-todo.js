@@ -8,6 +8,131 @@
 // Lines 9834-11091 from original index.js
 // =====================
 
+    const catEmoji = getCategoryEmoji(task.category);
+    const priInd = task.priority === "high" ? "🔴" : task.priority === "medium" ? "🟡" : "";
+    const dueInd = task.dueDate && isOverdue(task.dueDate) && !task.completed ? "⚠️" : "";
+    keyboard.text(`${icon} ${text} ${catEmoji}${priInd}${dueInd}`, `itodo_tap:${task.id}`);
+    keyboard.row();
+  });
+  
+  keyboard
+    .switchInlineCurrent("➕", "t:add ")
+    .text("🔍", "itodo_filter")
+    .text("👥", "itodo_collab")
+    .row()
+    .text("← Back", "inline_main_menu");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_clear_done", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const cleared = clearCompletedTasks(userId);
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
+  
+  // Go back to stats
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_collab", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const userLists = getCollabListsForUser(userId);
+  
+  let collabText = `👥 <b>Collab Lists</b>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  if (userLists.length === 0) {
+    keyboard.text("📋 No lists yet", "ct_create").row();
+  } else {
+    userLists.slice(0, 5).forEach((list) => {
+      const doneCount = list.tasks.filter(t => t.completed).length;
+      const totalCount = list.tasks.length;
+      keyboard.text(`📋 ${list.name} (${doneCount}/${totalCount})`, `ct_open:${list.id}`).row();
+    });
+  }
+  
+  keyboard
+    .text("➕ Create", "ct_create")
+    .text("🔗 Join", "ct_join")
+    .row()
+    .text("← Back", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(collabText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
 // =====================
 // COLLABORATIVE TODO CALLBACKS HANDLERS
 // =====================
@@ -1141,129 +1266,4 @@ bot.callbackQuery("partner_set_name", async (ctx) => {
 bot.callbackQuery("partner_set_personality", async (ctx) => {
   await ctx.answerCallbackQuery();
   pendingPartnerInput.set(String(ctx.from.id), { field: "personality", timestamp: Date.now() });
-  await ctx.reply("🎭 *Enter personality traits:*\n\n_Example: cheerful, witty, caring, playful_", { parse_mode: "Markdown" });
-});
-
-bot.callbackQuery("partner_set_background", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  pendingPartnerInput.set(String(ctx.from.id), { field: "background", timestamp: Date.now() });
-  await ctx.reply("📖 *Enter background/backstory:*\n\n_Example: A mysterious traveler from another dimension who loves stargazing_", { parse_mode: "Markdown" });
-});
-
-bot.callbackQuery("partner_set_style", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  pendingPartnerInput.set(String(ctx.from.id), { field: "style", timestamp: Date.now() });
-  await ctx.reply("💬 *Enter speaking style:*\n\n_Example: speaks softly with poetic phrases, uses lots of emojis_", { parse_mode: "Markdown" });
-});
-
-bot.callbackQuery("open_partner", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const partner = getPartner(ctx.from.id);
-  try {
-    await ctx.editMessageText(
-      buildPartnerSetupMessage(partner),
-      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-    );
-  } catch (e) {
-    await ctx.reply(
-      buildPartnerSetupMessage(partner),
-      { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-    );
-  }
-});
-
-bot.callbackQuery("do_stats", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const u = ctx.from;
-  const userRecord = getUserRecord(u.id);
-  
-  if (!userRecord) {
-    return ctx.answerCallbackQuery({ text: "❌ Not registered yet!", show_alert: true });
-  }
-  
-  const model = ensureChosenModelValid(u.id);
-  const memberSince = userRecord.createdAt ? new Date(userRecord.createdAt).toLocaleDateString() : "Unknown";
-  const messages = userRecord.messageCount || 0;
-  const queries = userRecord.inlineQueryCount || 0;
-  
-  const stats = [
-    `📊 *Your Stats*`,
-    ``,
-    `👤 *User ID:* \`${u.id}\``,
-    `🌟 *Tier:* ${userRecord.tier?.toUpperCase() || "FREE"}`,
-    `🤖 *Model:* ${model.split("/").pop()}`,
-    ``,
-    `💬 *Messages:* ${messages}`,
-    `⌨️ *Inline queries:* ${queries}`,
-    `📅 *Member since:* ${memberSince}`,
-  ].join("\n");
-  
-  try {
-    await ctx.editMessageText(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
-  } catch (e) {
-    await ctx.reply(stats, { parse_mode: "Markdown", reply_markup: backToMainKeyboard() });
-  }
-});
-
-bot.callbackQuery("partner_chat", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const u = ctx.from;
-  const partner = getPartner(u.id);
-  
-  if (!partner?.name) {
-    return ctx.reply("❌ Please set a name first!", { parse_mode: "Markdown" });
-  }
-  
-  setPartner(u.id, { active: true });
-  const updatedPartner = getPartner(u.id);
-  await ctx.editMessageText(
-    buildPartnerSetupMessage(updatedPartner),
-    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(updatedPartner) }
-  );
-  await ctx.reply(`🤝🏻 *${partner.name} is ready!*\n\nJust send messages and they'll respond in character.`, { parse_mode: "Markdown" });
-});
-
-bot.callbackQuery("partner_stop", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  const u = ctx.from;
-  setPartner(u.id, { active: false });
-  const partner = getPartner(u.id);
-  
-  await ctx.editMessageText(
-    buildPartnerSetupMessage(partner),
-    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-  );
-});
-
-bot.callbackQuery("partner_clearchat", async (ctx) => {
-  await ctx.answerCallbackQuery({ text: "Chat history cleared!" });
-  clearPartnerChat(ctx.from.id);
-  const partner = getPartner(ctx.from.id);
-  await ctx.editMessageText(
-    buildPartnerSetupMessage(partner),
-    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(partner) }
-  );
-});
-
-bot.callbackQuery("partner_delete", async (ctx) => {
-  await ctx.answerCallbackQuery({ text: "Partner deleted" });
-  clearPartner(ctx.from.id);
-  await ctx.editMessageText(
-    buildPartnerSetupMessage(null),
-    { parse_mode: "Markdown", reply_markup: buildPartnerKeyboard(null) }
-  );
-});
-
-// Helper for time ago
-function getTimeAgo(timestamp) {
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 

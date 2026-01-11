@@ -8,6 +8,131 @@
 // Lines 3464-3667 from original index.js
 // =====================
 
+  return searchTriggers.some(trigger => lowerText.includes(trigger));
+}
+
+// Format search results for AI context
+function formatSearchResultsForAI(searchResult) {
+  if (!searchResult.success) {
+    return `[Web search failed: ${searchResult.error}]`;
+  }
+  
+  let context = `[Web Search Results for \"${searchResult.query}\"]:\\n\\n`;
+  searchResult.results.forEach((r, i) => {
+    context += `${i + 1}. ${r.title}\\n`;
+    context += `   URL: ${r.url}\\n`;
+    context += `   ${r.content}\\n\\n`;
+  });
+  
+  return context;
+}
+
+// Decide how many sources to show in websearch based on user tier / ownership
+function getWebsearchSourceLimit(userId, totalResults) {
+  const idStr = String(userId);
+  if (OWNER_IDS.has(idStr)) return totalResults; // owners see all sources
+  
+  const user = getUserRecord(idStr);
+  const tier = user?.tier || "free";
+  let limit = 2; // default for free
+  
+  if (tier === "premium") limit = 5;
+  else if (tier === "ultra") limit = 7;
+  
+  return Math.min(totalResults, limit);
+}
+
+// Build HTML-formatted sources list with clickable titles (one line, like: Sources: Title1, Title2)
+function buildWebsearchSourcesHtml(searchResult, userId) {
+  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return "";
+  }
+
+  const total = searchResult.results.length;
+  const limit = getWebsearchSourceLimit(userId, total);
+  if (!limit) return "";
+
+  const parts = [];
+  for (let i = 0; i < limit; i++) {
+    const r = searchResult.results[i];
+    const url = r.url || "";
+    const title = escapeHTML(r.title || url || `Source ${i + 1}`);
+
+    if (url) {
+      parts.push(`<a href="${url}">${title}</a>`);
+    } else {
+      parts.push(title);
+    }
+  }
+
+  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
+  const idStr = String(userId);
+  if (limit < total && !OWNER_IDS.has(idStr)) {
+    html += ` <i>(showing ${limit} of ${total})</i>`;
+  }
+  html += "\n";
+
+  return html;
+}
+
+// Build inline-specific sources list that uses [1], [2] style clickable indices
+function buildWebsearchSourcesInlineHtml(searchResult, userId) {
+  if (!searchResult || !searchResult.success || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return "";
+  }
+
+  const total = searchResult.results.length;
+  const limit = getWebsearchSourceLimit(userId, total);
+  if (!limit) return "";
+
+  const parts = [];
+  for (let i = 0; i < limit; i++) {
+    const r = searchResult.results[i];
+    const url = r.url || "";
+    const label = `[${i + 1}]`;
+
+    if (url) {
+      parts.push(`<a href="${url}">${label}</a>`);
+    } else {
+      parts.push(label);
+    }
+  }
+
+  let html = "\n\n<b>Sources:</b> " + parts.join(", ");
+  const idStr = String(userId);
+  if (limit < total && !OWNER_IDS.has(idStr)) {
+    html += ` <i>(showing ${limit} of ${total})</i>`;
+  }
+  html += "\n";
+
+  return html;
+}
+
+// Turn numeric citations into [1], [2] form and make them clickable links to result URLs.
+function linkifyWebsearchCitations(text, searchResult) {
+  if (!text || !searchResult || !Array.isArray(searchResult.results) || searchResult.results.length === 0) {
+    return text;
+  }
+
+  const total = searchResult.results.length;
+
+  // First, normalize bare numeric citations like " 1." or " 2" into "[1]" / "[2]"
+  text = text.replace(/(\s)(\d+)(?=(?:[)\].,!?;:]\s|[)\].,!?;:]?$|\s|$))/g, (match, space, numStr) => {
+    const idx = parseInt(numStr, 10);
+    if (!idx || idx < 1 || idx > total) return match;
+    return `${space}[${idx}]`;
+  });
+
+  // Then, convert [1], [2] into Markdown links so convertToTelegramHTML renders them as <a href="...">[1]</a>
+  return text.replace(/\[(\d+)\](?!\()/g, (match, numStr) => {
+    const idx = parseInt(numStr, 10);
+    if (!idx || idx < 1 || idx > total) return match;
+    const r = searchResult.results[idx - 1];
+    if (!r || !r.url) return match;
+    return `[${idx}](${r.url})`;
+  });
+}
+
 // =====================
 // MARKDOWN CONVERTER - AI output to Telegram HTML format
 // =====================
@@ -87,129 +212,4 @@ function convertToTelegramHTML(text) {
     if (/^\d+$/.test(trimmed)) {
       return `<a href="${url}">[${trimmed}]</a>`;
     }
-    return `<a href="${url}">${trimmed}</a>`;
-  });
-
-  // Horizontal rules (--- or ***)
-  result = result.replace(/^(---|\*\*\*|___)$/gm, '──────────');
-
-  // Bullet points (- item or * item)
-  result = result.replace(/^[-*]\s+(.+)$/gm, '• $1');
-
-  // Numbered lists (1. item)
-  result = result.replace(/^(\d+)\.\s+(.+)$/gm, '$1. $2');
-
-  // Step 6: Restore code blocks and inline code
-  inlineCode.forEach((code, i) => {
-    result = result.replace(`@@INLINECODE_${i}@@`, code);
-  });
-
-  codeBlocks.forEach((code, i) => {
-    result = result.replace(`@@CODEBLOCK_${i}@@`, code);
-  });
-
-  codeBlocksWithLang.forEach((code, i) => {
-    result = result.replace(`@@CODEBLOCK_LANG_${i}@@`, code);
-  });
-
-  return result;
-}
-
-// Helper function to escape HTML special characters
-function escapeHTML(text) {
-  if (!text) return text;
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-// Split long DM/GC answers into a visible chunk and remaining text,
-// avoiding cutting mid-word or mid-sentence where possible.
-// We keep maxLen fairly conservative so that after Markdown -> HTML
-// conversion we stay under Telegram's ~4096 character hard limit.
-function splitAnswerForDM(full, maxLen = 2400) {
-  if (!full) {
-    return { visible: "", remaining: "", completed: true };
-  }
-
-  const trimmed = full.trim();
-  if (trimmed.length <= maxLen) {
-    return { visible: trimmed, remaining: "", completed: true };
-  }
-
-  let slice = trimmed.slice(0, maxLen);
-  // Reuse tail trimming helper to avoid ugly mid-sentence endings
-  const cleaned = trimIncompleteTail(slice);
-  const visible = cleaned;
-  const remaining = trimmed.slice(visible.length).trimStart();
-
-  return {
-    visible,
-    remaining,
-    completed: remaining.length === 0,
-  };
-}
-
-// Escape special Markdown characters (for Telegram Markdown)
-// NOTE: This is only used in a few legacy paths; most new flows use HTML via convertToTelegramHTML.
-function escapeMarkdown(text) {
-  if (!text) return text;
-  return String(text)
-    .replace(/\\/g, '\\\\')
-    .replace(/\*/g, '\\*')
-    .replace(/_/g, '\\_')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)')
-    .replace(/~/g, '\\~')
-    .replace(/`/g, '\\`')
-    .replace(/>/g, '\\>')
-    .replace(/#/g, '\\#')
-    .replace(/\+/g, '\\+')
-    .replace(/-/g, '\\-')
-    .replace(/=/g, '\\=')
-    .replace(/\|/g, '\\|')
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\./g, '\\.')
-    .replace(/!/g, '\\!/'); 
-}
-
-// Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
-// Used for Blackhole continuation so we don't leave broken endings like "so it me"
-function trimIncompleteTail(text, maxTail = 220) {
-  if (!text) return text;
-  const trimmed = text.trimEnd();
-  if (!trimmed) return trimmed;
-
-  const lastChar = trimmed[trimmed.length - 1];
-  // If it already ends with sensible punctuation, leave it
-  if (".?!)]\"'".includes(lastChar)) {
-    return trimmed;
-  }
-
-  const start = Math.max(0, trimmed.length - maxTail);
-  const tail = trimmed.slice(start);
-
-  // Prefer to cut at a sentence boundary within the tail
-  const lastDot = tail.lastIndexOf(".");
-  const lastQ = tail.lastIndexOf("?");
-  const lastEx = tail.lastIndexOf("!");
-  const lastSentenceEnd = Math.max(lastDot, lastQ, lastEx);
-
-  if (lastSentenceEnd !== -1) {
-    return trimmed.slice(0, start + lastSentenceEnd + 1);
-  }
-
-  // Otherwise cut at last space to avoid half-words
-  const lastSpace = tail.lastIndexOf(" ");
-  if (lastSpace !== -1) {
-    return trimmed.slice(0, start + lastSpace);
-  }
-
-  return trimmed;
-}
-
 

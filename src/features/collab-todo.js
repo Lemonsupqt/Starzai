@@ -8,6 +8,131 @@
 // Lines 7483-8905 from original index.js
 // =====================
 
+
+function getTodoFilters(userId) {
+  return todoFilters.get(String(userId)) || {};
+}
+
+function setTodoFilters(userId, filters) {
+  todoFilters.set(String(userId), filters);
+}
+
+function clearTodoFilters(userId) {
+  todoFilters.delete(String(userId));
+}
+
+// Filter todos based on filters
+function filterTodos(tasks, filters) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  if (!filters || Object.keys(filters).length === 0) return tasks;
+  
+  return tasks.filter(task => {
+    if (filters.priority && task.priority !== filters.priority) return false;
+    if (filters.category && task.category !== filters.category) return false;
+    if (filters.completed !== undefined && task.completed !== filters.completed) return false;
+    if (filters.hasDueDate && !task.dueDate) return false;
+    return true;
+  });
+}
+
+// Sort todos based on sort option
+function sortTodos(tasks, sortBy) {
+  if (!tasks || !Array.isArray(tasks)) return [];
+  
+  const sorted = [...tasks];
+  
+  switch (sortBy) {
+    case 'priority':
+      const priorityOrder = { high: 0, medium: 1, low: 2, null: 3 };
+      sorted.sort((a, b) => (priorityOrder[a.priority] || 3) - (priorityOrder[b.priority] || 3));
+      break;
+    case 'dueDate':
+      sorted.sort((a, b) => {
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
+      });
+      break;
+    case 'category':
+      sorted.sort((a, b) => (a.category || 'zzz').localeCompare(b.category || 'zzz'));
+      break;
+    case 'created':
+    default:
+      sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      break;
+  }
+  
+  return sorted;
+}
+
+// Parse due date from natural language
+function parseTodoDueDate(input) {
+  const lower = input.toLowerCase().trim();
+  const today = new Date();
+  
+  if (lower === 'today') {
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'tomorrow') {
+    today.setDate(today.getDate() + 1);
+    return today.toISOString().slice(0, 10);
+  }
+  if (lower === 'nextweek' || lower === 'next week') {
+    today.setDate(today.getDate() + 7);
+    return today.toISOString().slice(0, 10);
+  }
+  
+  const dateMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    return input;
+  }
+  
+  const shortMatch = input.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (shortMatch) {
+    const month = parseInt(shortMatch[1]);
+    const day = parseInt(shortMatch[2]);
+    const year = today.getFullYear();
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  
+  return null;
+}
+
+// Parse task from text (supports inline options)
+// Format: task text #category !priority @date
+function parseTaskText(text) {
+  const result = {
+    text: text,
+    category: null,
+    priority: null,
+    dueDate: null
+  };
+  
+  const categoryMatch = text.match(/#(\w+)/);
+  if (categoryMatch) {
+    result.category = categoryMatch[1].toLowerCase();
+    result.text = result.text.replace(/#\w+/, '').trim();
+  }
+  
+  const priorityMatch = text.match(/!(high|med|medium|low|h|m|l)/i);
+  if (priorityMatch) {
+    const p = priorityMatch[1].toLowerCase();
+    if (p === 'h' || p === 'high') result.priority = 'high';
+    else if (p === 'm' || p === 'med' || p === 'medium') result.priority = 'medium';
+    else if (p === 'l' || p === 'low') result.priority = 'low';
+    result.text = result.text.replace(/!(high|med|medium|low|h|m|l)/i, '').trim();
+  }
+  
+  const dateMatch = text.match(/@(\S+)/);
+  if (dateMatch) {
+    result.dueDate = parseTodoDueDate(dateMatch[1]);
+    result.text = result.text.replace(/@\S+/, '').trim();
+  }
+  
+  return result;
+}
+
 // =====================
 // COLLABORATIVE TODO SYSTEM (Starz Check - Collab)
 // =====================
@@ -1306,129 +1431,4 @@ bot.callbackQuery("collab_list", async (ctx) => {
   userLists.slice(0, 8).forEach((list, i) => {
     const pendingCount = list.tasks.filter(t => !t.completed).length;
     const isOwner = list.ownerId === String(userId);
-    const ownerBadge = isOwner ? " 👑" : "";
-    message.push(`${i + 1}. *${list.name}*${ownerBadge} (${pendingCount} pending)`);
-    
-    kb.text(`${i + 1}. ${list.name.slice(0, 15)}`, `collab_open:${list.id}`);
-    if ((i + 1) % 2 === 0) kb.row();
-  });
-  
-  if (userLists.length % 2 !== 0) kb.row();
-  
-  kb.text("➕ Create", "collab_create")
-    .text("🔗 Join", "collab_join")
-    .row()
-    .text("« Back to Personal", "todo_list");
-  
-  try {
-    await ctx.editMessageText(message.join("\n"), {
-      parse_mode: "Markdown",
-      reply_markup: kb
-    });
-  } catch (e) {}
-});
-
-bot.callbackQuery(/^collab_open:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  const listId = ctx.match[1];
-  const list = getCollabList(listId);
-  
-  if (!list) {
-    try {
-      await ctx.editMessageText("⚠️ List not found.", {
-        reply_markup: new InlineKeyboard().text("« Back", "collab_list")
-      });
-    } catch (e) {}
-    return;
-  }
-  
-  const listText = buildCollabListMessage(list, 0);
-  const keyboard = buildCollabListKeyboard(list, 0);
-  
-  // Replace the inline switch button with a DM-friendly back button
-  // We need to rebuild the keyboard for DM context
-  const dmKeyboard = new InlineKeyboard();
-  
-  const pageSize = 8;
-  const pageTasks = list.tasks.slice(0, pageSize);
-  
-  for (let i = 0; i < pageTasks.length; i += 2) {
-    const task1 = pageTasks[i];
-    const icon1 = task1.completed ? "✅" : "⬜";
-    dmKeyboard.text(`${icon1} ${i + 1}`, `ct_tap:${list.id}:${task1.id}`);
-    
-    if (pageTasks[i + 1]) {
-      const task2 = pageTasks[i + 1];
-      const icon2 = task2.completed ? "✅" : "⬜";
-      dmKeyboard.text(`${icon2} ${i + 2}`, `ct_tap:${list.id}:${task2.id}`);
-    }
-    dmKeyboard.row();
-  }
-  
-  dmKeyboard
-    .text("➕ Add", `ct_add:${list.id}`)
-    .text("🗑️ Clear", `ct_clear:${list.id}`)
-    .row()
-    .text("👥 Members", `ct_members:${list.id}`)
-    .text("🔗 Share", `ct_share:${list.id}`)
-    .row()
-    .text("« My Lists", "collab_list");
-  
-  try {
-    await ctx.editMessageText(listText, {
-      parse_mode: "HTML",
-      reply_markup: dmKeyboard
-    });
-  } catch (e) {}
-});
-
-bot.callbackQuery("collab_create", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  pendingTodoInput.set(String(userId), { action: "collab_create", timestamp: Date.now() });
-  
-  try {
-    await ctx.editMessageText(
-      "➕ *Create Collaborative List*\n\n" +
-      "Type a name for your shared list:\n\n" +
-      "_Example: Party Planning_",
-      {
-        parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
-      }
-    );
-  } catch (e) {}
-});
-
-bot.callbackQuery("collab_join", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery();
-  
-  const userId = ctx.from?.id;
-  if (!userId) return;
-  
-  pendingTodoInput.set(String(userId), { action: "collab_join", timestamp: Date.now() });
-  
-  try {
-    await ctx.editMessageText(
-      "🔗 *Join Collaborative List*\n\n" +
-      "Enter the join code:\n\n" +
-      "_Example: ABC123_",
-      {
-        parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("❌ Cancel", "collab_list")
-      }
-    );
-  } catch (e) {}
-});
-
 

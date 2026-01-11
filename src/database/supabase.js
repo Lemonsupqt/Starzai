@@ -8,6 +8,131 @@
 // Lines 756-1066 from original index.js
 // =====================
 
+async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens = 350, retries = 2, timeout = 15000, preferredProvider = null }) {
+  const providers = getEnabledProviders();
+  
+  if (providers.length === 0) {
+    throw new Error('No LLM providers available');
+  }
+
+  // Auto-detect provider from model name
+  const targetProvider = preferredProvider || getProviderForModel(model);
+  console.log(`[LLM] Using provider: ${targetProvider} for model: ${model}`);
+  
+  // Find the target provider
+  const provider = providers.find(p => p.key === targetProvider);
+  
+  if (!provider) {
+    throw new Error(`Provider '${targetProvider}' is not available or not configured`);
+  }
+
+  // Try the intended provider with retries
+  let lastError = null;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    providerStats[provider.key].calls++;
+    
+    try {
+      console.log(`[LLM] ${provider.name} attempt ${attempt + 1}/${retries + 1} with model: ${model}...`);
+      
+      const result = await callProviderWithTimeout(
+        provider.key,
+        { model, messages, temperature, max_tokens },
+        timeout
+      );
+      
+      providerStats[provider.key].successes++;
+      console.log(`[LLM] ✅ Success with ${provider.name}`);
+      
+      return { content: result, provider: provider.key };
+    } catch (error) {
+      providerStats[provider.key].failures++;
+      lastError = error;
+      console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
+      
+      // Only retry on timeout errors within the same provider
+      if (!error.message?.includes('timed out') && !error.message?.includes('timeout')) {
+        break; // Don't retry on non-timeout errors, go to fallback
+      }
+      
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+      }
+    }
+  }
+
+  // Primary provider failed - try MegaLLM fallback with DeepSeek/Qwen (unlimited usage)
+  const megallmProvider = providers.find(p => p.key === 'megallm');
+  
+  if (megallmProvider && targetProvider !== 'megallm') {
+    const fallbackModel = getFallbackModel(model);
+    console.log(`[LLM] ⚡ Falling back to MegaLLM with ${fallbackModel}...`);
+    
+    // Cap max_tokens at 400 for nano/mini models to keep responses concise
+    const fallbackMaxTokens = (model?.toLowerCase().includes('nano') || model?.toLowerCase().includes('mini')) 
+      ? Math.min(max_tokens, 400) 
+      : max_tokens;
+    
+    providerStats.megallm.calls++;
+    
+    try {
+      const result = await callProviderWithTimeout(
+        'megallm',
+        { model: fallbackModel, messages, temperature, max_tokens: fallbackMaxTokens },
+        timeout
+      );
+      
+      providerStats.megallm.successes++;
+      console.log(`[LLM] ✅ Fallback success with MegaLLM (${fallbackModel})`);
+      
+      return { content: result, provider: 'megallm', fallback: true, fallbackModel };
+    } catch (fallbackError) {
+      providerStats.megallm.failures++;
+      console.error(`[LLM] ❌ MegaLLM fallback also failed:`, fallbackError.message);
+    }
+  }
+
+  // All providers failed
+  throw lastError || new Error(`All providers failed for model: ${model}`);
+}
+
+// =====================
+// TELEGRAM CHANNEL STORAGE
+// Persists data in a Telegram channel - survives redeployments!
+// =====================
+const DATA_DIR = process.env.DATA_DIR || ".data";
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
+const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
+const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
+const TODOS_FILE = path.join(DATA_DIR, "todos.json");
+const COLLAB_TODOS_FILE = path.join(DATA_DIR, "collab_todos.json");
+
+function ensureDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+ensureDir();
+
+function readJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(file, obj) {
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8");
+}
+
+// Initialize with local fallback (will be overwritten by Supabase/Telegram data on startup)
+let usersDb = readJson(USERS_FILE, { users: {} });
+let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
+let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
+let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
+let todosDb = readJson(TODOS_FILE, { todos: {} });
+let collabTodosDb = readJson(COLLAB_TODOS_FILE, { lists: {}, userLists: {} });
+
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
 // =====================
@@ -194,129 +319,4 @@ async function saveToTelegram(dataType) {
   
   try {
     let data, label;
-    if (dataType === "users") {
-      data = usersDb;
-      label = "📊 USERS_DATA";
-    } else if (dataType === "prefs") {
-      data = prefsDb;
-      label = "⚙️ PREFS_DATA";
-    } else if (dataType === "inlineSessions") {
-      data = inlineSessionsDb;
-      label = "💬 INLINE_SESSIONS";
-    } else if (dataType === "partners") {
-      data = partnersDb;
-      label = "🤝🏻 PARTNERS_DATA";
-    } else if (dataType === "todos") {
-      data = todosDb;
-      label = "📋 TODOS_DATA";
-    } else if (dataType === "collabTodos") {
-      data = collabTodosDb;
-      label = "👥 COLLAB_TODOS_DATA";
-    } else {
-      return;
-    }
-    
-    const jsonStr = JSON.stringify(data);
-    
-    // Always use document upload - more reliable and no size/formatting issues
-    const buffer = Buffer.from(jsonStr, "utf8");
-    const inputFile = new InputFile(buffer, `${dataType}.json`);
-    
-    if (storageMessageIds[dataType]) {
-      // Delete old message and send new one (can't edit documents)
-      try {
-        await bot.api.deleteMessage(STORAGE_CHANNEL_ID, storageMessageIds[dataType]);
-      } catch (e) {
-        // Ignore delete errors
-      }
-    }
-    
-    const msg = await bot.api.sendDocument(STORAGE_CHANNEL_ID, inputFile, {
-      caption: `${label} | Updated: ${new Date().toISOString()}`,
-    });
-    storageMessageIds[dataType] = msg.message_id;
-    saveStorageIds(); // Persist message ID so we can delete it after restart
-    console.log(`Saved ${dataType} to Telegram (msg_id: ${msg.message_id})`);
-    
-    // Also save locally as backup
-    if (dataType === "users") writeJson(USERS_FILE, usersDb);
-    if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
-    if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
-    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
-    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
-    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
-    
-  } catch (e) {
-    console.error(`Failed to save ${dataType} to Telegram:`, e.message);
-    // Fallback to local storage
-    if (dataType === "users") writeJson(USERS_FILE, usersDb);
-    if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
-    if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
-    if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
-    if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
-    if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
-  }
-}
-
-async function loadFromTelegram() {
-  if (!STORAGE_CHANNEL_ID) {
-    console.log("No STORAGE_CHANNEL_ID set, using local storage only.");
-    return;
-  }
-  
-  console.log("Loading data from Telegram storage channel...");
-  
-  try {
-    // Verify channel access
-    const chat = await bot.api.getChat(STORAGE_CHANNEL_ID);
-    console.log(`Storage channel verified: ${chat.title || chat.id}`);
-    
-    // Search for recent messages with our data files
-    // We need to find the most recent users.json, prefs.json, and inline_sessions.json
-    const dataTypes = ["users", "prefs", "inlineSessions"];
-    const labels = {
-      users: "📊 USERS_DATA",
-      prefs: "⚙️ PREFS_DATA",
-      inlineSessions: "💬 INLINE_SESSIONS"
-    };
-    
-    // Get recent messages from channel (search last 50 messages)
-    // Note: We can't search, so we'll rely on pinned messages or just use local + save
-    // For now, let's just verify and use local files, but ensure we save properly
-    
-    console.log("Telegram storage ready. Using local files as primary, syncing to Telegram.");
-    console.log(`Loaded users: ${Object.keys(usersDb.users || {}).length}`);
-    
-    // Log current user tiers for debugging
-    for (const [uid, user] of Object.entries(usersDb.users || {})) {
-      if (user.tier !== "free") {
-        console.log(`  User ${uid} (${user.first_name}): tier=${user.tier}, model=${user.model}`);
-      }
-    }
-    
-  } catch (e) {
-    console.error("Failed to access storage channel:", e.message);
-    console.log("Falling back to local storage only.");
-  }
-}
-
-function saveUsers(priority = 'normal') {
-  scheduleSave("users", priority);
-}
-function savePrefs() {
-  scheduleSave("prefs");
-}
-function saveInlineSessions() {
-  scheduleSave("inlineSessions");
-}
-function savePartners() {
-  scheduleSave("partners");
-}
-function saveTodos() {
-  scheduleSave("todos");
-}
-function saveCollabTodos() {
-  scheduleSave("collabTodos");
-}
-
 

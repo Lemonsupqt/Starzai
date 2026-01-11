@@ -8,41 +8,41 @@
 // Lines 719-755 from original index.js
 // =====================
 
-// =====================
-// TELEGRAM CHANNEL STORAGE
-// Persists data in a Telegram channel - survives redeployments!
-// =====================
-const DATA_DIR = process.env.DATA_DIR || ".data";
-const USERS_FILE = path.join(DATA_DIR, "users.json");
-const PREFS_FILE = path.join(DATA_DIR, "prefs.json");
-const INLINE_SESSIONS_FILE = path.join(DATA_DIR, "inline_sessions.json");
-const PARTNERS_FILE = path.join(DATA_DIR, "partners.json");
-const TODOS_FILE = path.join(DATA_DIR, "todos.json");
-const COLLAB_TODOS_FILE = path.join(DATA_DIR, "collab_todos.json");
+  
+  let callFunction;
+  if (providerKey === 'github') {
+    callFunction = callGitHubModels(options);
+  } else if (providerKey === 'megallm') {
+    callFunction = callMegaLLM(options);
+  } else {
+    throw new Error(`Unknown provider: ${providerKey}`);
+  }
 
-function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  return withTimeout(
+    callFunction,
+    timeout,
+    `${provider.name} timed out after ${timeout/1000}s`
+  );
 }
-ensureDir();
 
-function readJson(file, fallback) {
-  try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
+// Fallback models for MegaLLM (DeepSeek/Qwen - unlimited usage)
+const MEGALLM_FALLBACK_MODELS = {
+  fast: 'deepseek-ai/deepseek-v3.1',               // Fast responses
+  balanced: 'qwen/qwen3-next-80b-a3b-instruct',    // Good balance
+  quality: 'deepseek-ai/deepseek-v3.1'             // Best quality
+};
+
+// Get appropriate fallback model based on the original model tier
+function getFallbackModel(originalModel) {
+  // Map original models to fallback tiers
+  if (originalModel?.includes('nano') || originalModel?.includes('mini')) {
+    return MEGALLM_FALLBACK_MODELS.fast;
+  } else if (originalModel?.includes('chat') || originalModel?.includes('gpt-5-mini')) {
+    return MEGALLM_FALLBACK_MODELS.balanced;
+  } else {
+    return MEGALLM_FALLBACK_MODELS.quality;
   }
 }
-function writeJson(file, obj) {
-  fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8");
-}
 
-// Initialize with local fallback (will be overwritten by Supabase/Telegram data on startup)
-let usersDb = readJson(USERS_FILE, { users: {} });
-let prefsDb = readJson(PREFS_FILE, { userModel: {}, groups: {} });
-let inlineSessionsDb = readJson(INLINE_SESSIONS_FILE, { sessions: {} });
-let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
-let todosDb = readJson(TODOS_FILE, { todos: {} });
-let collabTodosDb = readJson(COLLAB_TODOS_FILE, { lists: {}, userLists: {} });
-
+// Main LLM call - uses intended provider with MegaLLM fallback on rate limit/errors
 

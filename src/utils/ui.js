@@ -8,6 +8,131 @@
 // Lines 3751-4155 from original index.js
 // =====================
 
+    .replace(/\|/g, '\\|')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/\./g, '\\.')
+    .replace(/!/g, '\\!/'); 
+}
+
+// Trim incomplete tail of a long answer (avoid cutting mid-word or mid-sentence)
+// Used for Blackhole continuation so we don't leave broken endings like "so it me"
+function trimIncompleteTail(text, maxTail = 220) {
+  if (!text) return text;
+  const trimmed = text.trimEnd();
+  if (!trimmed) return trimmed;
+
+  const lastChar = trimmed[trimmed.length - 1];
+  // If it already ends with sensible punctuation, leave it
+  if (".?!)]\"'".includes(lastChar)) {
+    return trimmed;
+  }
+
+  const start = Math.max(0, trimmed.length - maxTail);
+  const tail = trimmed.slice(start);
+
+  // Prefer to cut at a sentence boundary within the tail
+  const lastDot = tail.lastIndexOf(".");
+  const lastQ = tail.lastIndexOf("?");
+  const lastEx = tail.lastIndexOf("!");
+  const lastSentenceEnd = Math.max(lastDot, lastQ, lastEx);
+
+  if (lastSentenceEnd !== -1) {
+    return trimmed.slice(0, start + lastSentenceEnd + 1);
+  }
+
+  // Otherwise cut at last space to avoid half-words
+  const lastSpace = tail.lastIndexOf(" ");
+  if (lastSpace !== -1) {
+    return trimmed.slice(0, start + lastSpace);
+  }
+
+  return trimmed;
+}
+
+// =====================
+// PARALLEL EXTRACT API
+// Extract and clean content from specific URLs using an external Extract API.
+// NOTE: We intentionally avoid naming the provider in user-visible text for privacy.
+async function parallelExtractUrls(urls) {
+  if (!PARALLEL_API_KEY) {
+    return {
+      success: false,
+      error: "Parallel API key not configured",
+      urls,
+    };
+  }
+
+  const urlList = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
+  if (!urlList.length) {
+    return {
+      success: false,
+      error: "No URLs provided",
+      urls: [],
+    };
+  }
+
+  try {
+    const res = await fetch("https://api.parallel.ai/v1beta/extract", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": PARALLEL_API_KEY,
+        // Official beta header for Extract API as per docs:
+        // "valid values are: search-extract-2025-10-10"
+        "parallel-beta": "search-extract-2025-10-10",
+      },
+      // Match the minimal shape shown in the official Python example:
+      // urls + simple boolean excerpts/full_content flags.
+      body: JSON.stringify({
+        urls: urlList,
+        excerpts: true,
+        full_content: true,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.log("Parallel extract HTTP error:", res.status, text.slice(0, 500));
+      return {
+        success: false,
+        error: `HTTP ${res.status}: ${text.slice(0, 200) || "Unknown error from Parallel Extract API"}`,
+        urls: urlList,
+        status: res.status,
+      };
+    }
+
+    const data = await res.json();
+    const results = Array.isArray(data.results) ? data.results : [];
+
+    const mapped = results.map((r) => {
+      const excerpts =
+        Array.isArray(r.excerpts)
+          ? r.excerpts.join("\n\n")
+          : (typeof r.excerpts === "string" ? r.excerpts : "");
+      const content = excerpts || r.full_content || "";
+      return {
+        url: r.url || "",
+        title: r.title || (r.url || "No title"),
+        content: content || "No content extracted",
+      };
+    });
+
+    return {
+      success: true,
+      results: mapped,
+      urls: urlList,
+    };
+  } catch (e) {
+    console.log("Parallel extract error:", e.message);
+    return {
+      success: false,
+      error: e.message || "Parallel extract failed",
+      urls: Array.isArray(urls) ? urls : [urls],
+    };
+  }
+}
+
 // =====================
 // UI HELPERS
 // =====================
@@ -288,129 +413,4 @@ function inlineAnswerKeyboard(key) {
     if (canLong) kb.text("📚 More detail", `inl_long:${key}`);
     if (showRevert) {
       if (!canShort && !canLong) kb.row();
-      kb.text("↩️ Revert", `inl_revert:${key}`);
-    }
-    return kb;
-  }
-
-  const kb = new InlineKeyboard().switchInlineCurrent("💬 Reply", `c:${key}: `);
-  if (canRegen) {
-    kb.text("🔁 Regen", `inl_regen:${key}`);
-  }
-
-  // Shorter/Longer + Revert row (all non-summary modes)
-  kb.row();
-  if (canShort) kb.text("✂️ Shorter", `inl_short:${key}`);
-  if (canLong) kb.text("📈 Longer", `inl_long:${key}`);
-  if (showRevert) {
-    if (!canShort && !canLong) kb.row();
-    kb.text("↩️ Revert", `inl_revert:${key}`);
-  }
-
-  // Quark: no Continue or Ultra Summary (already one-shot)
-  if (isQuark) {
-    return kb;
-  }
-
-  // Continue / Ultra Summary buttons (mode-dependent)
-  if (isBlackhole) {
-    // For Blackhole, use inline mode so continuation/summary become new messages.
-    if (!isCompleted) {
-      kb.row().switchInlineCurrent("➡️ Continue", `bhcont ${key}`);
-    } else if (isUltraUser) {
-      // Once full analysis is done, offer Ultra Summary as a new inline message for Ultra users.
-      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
-    }
-  } else if (isExplain || isCode) {
-    // Explain & Code: callback-based continuation while incomplete.
-    if (!isCompleted) {
-      kb.row().text("➡️ Continue", `inl_cont:${key}`);
-    } else if (isUltraUser) {
-      // When fully revealed, provide Ultra Summary as a new inline message for Ultra users.
-      kb.row().switchInlineCurrent("🧾 Ultra Summary", `ultrasum ${key}`);
-    }
-  } else {
-    // Other modes (quick, research, chat, etc.): standard Continue while available.
-    if (!isCompleted) {
-      kb.row().text("➡️ Continue", `inl_cont:${key}`);
-    }
-  }
-
-  return kb;
-}
-
-// =====================
-// INLINE CHAT UI
-// =====================
-function formatInlineChatDisplay(session, userId) {
-  const u = ensureUser(userId);
-  const history = session.history || [];
-  const model = session.model || ensureChosenModelValid(userId);
-  
-  let display = `🤖 *StarzAI Chat*\n`;
-  display += `📊 Model: \`${model}\`\n`;
-  display += `━━━━━━━━━━━━━━━\n\n`;
-  
-  if (history.length === 0) {
-    display += `_No messages yet._\n_Type your message to start chatting!_`;
-  } else {
-    // Show last 4 exchanges (8 messages)
-    const recentHistory = history.slice(-8);
-    for (const msg of recentHistory) {
-      if (msg.role === "user") {
-        display += `👤 *You:* ${msg.content.slice(0, 200)}${msg.content.length > 200 ? "..." : ""}\n\n`;
-      } else {
-        display += `🤖 *AI:* ${msg.content.slice(0, 400)}${msg.content.length > 400 ? "..." : ""}\n\n`;
-      }
-    }
-  }
-  
-  display += `\n━━━━━━━━━━━━━━━`;
-  return display.slice(0, 3800);
-}
-
-function inlineChatKeyboard(sessionKey, hasHistory = false) {
-  const kb = new InlineKeyboard();
-  
-  // Main action row
-  kb.text("💬 Reply", `ichat_reply:${sessionKey}`)
-    .text("🔄 Regen", `ichat_regen:${sessionKey}`);
-  kb.row();
-  
-  // Secondary actions
-  kb.text("🗑️ Clear", `ichat_clear:${sessionKey}`)
-    .text("⚙️ Model", `ichat_model:${sessionKey}`);
-  kb.row();
-  
-  // Switch inline to continue conversation
-  kb.switchInlineCurrentChat("✏️ Type message...", "chat:");
-  
-  return kb;
-}
-
-function inlineModelSelectKeyboard(sessionKey, userId) {
-  const u = ensureUser(userId);
-  const session = getInlineSession(userId);
-  const currentModel = session.model;
-  const allowed = allModelsForTier(u.tier);
-  
-  const kb = new InlineKeyboard();
-  
-  // Show up to 6 models
-  const models = allowed.slice(0, 6);
-  for (let i = 0; i < models.length; i++) {
-    const m = models[i];
-    const isSelected = m === currentModel;
-    kb.text(`${isSelected ? "✅ " : ""}${m.split("/").pop()}`, `ichat_setmodel:${sessionKey}:${m}`);
-    if (i % 2 === 1) kb.row();
-  }
-  if (models.length % 2 === 1) kb.row();
-  
-  kb.text("« Back", `ichat_back:${sessionKey}`);
-  
-  return kb;
-}
-
-
-
 

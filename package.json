@@ -10,7 +10,10 @@
     "node": ">=18"
   },
   "dependencies": {
+    "canvas": "^3.2.1",
     "grammy": "^1.35.0",
-    "openai": "^4.60.0"
+    "node-fetch": "^2.7.0",
+    "openai": "^4.60.0",
+    "qrcode": "^1.5.4"
   }
 }

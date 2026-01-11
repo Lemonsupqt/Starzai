@@ -8,470 +8,470 @@
 // Lines 19866-20331 from original index.js
 // =====================
 
-// =====================
-// INLINE BUTTON ACTIONS (Legacy)
-// =====================
-async function editInlineMessage(ctx, newText, key) {
-  const htmlText = convertToTelegramHTML(newText.slice(0, 3500));
-  await ctx.editMessageText(htmlText, {
-    parse_mode: "HTML",
-    reply_markup: inlineAnswerKeyboard(key),
-  });
-}
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Session expired. Start a new Blackhole analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
 
-async function doInlineTransform(ctx, mode) {
-  if (!(await enforceRateLimit(ctx))) return;
+    if (String(ctx.from?.id || "") !== String(ownerId)) {
+      console.log(`Blackhole continuation denied: not owner`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Only the original requester can continue this analysis.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
 
-  const data = ctx.callbackQuery.data;
-  const key = data.split(":")[1];
-  const item = inlineCache.get(key);
+    const prompt = baseItem.prompt || "";
+    console.log(`Processing Blackhole continuation for prompt: ${prompt}`);
 
-  if (!item) {
-    return ctx.answerCallbackQuery({
-      text: "This inline result expired. Ask again inline.",
-      show_alert: true,
-    });
-  }
+    try {
+      const MAX_DISPLAY = 3500;
+      const CONTEXT_LEN = 900;
 
-  const actor = ctx.from?.id ? String(ctx.from.id) : "";
-  if (actor !== item.userId) {
-    return ctx.answerCallbackQuery({
-      text: "Only the original requester can use these buttons.",
-      show_alert: true,
-    });
-  }
+      let fullAnswer = baseItem.fullAnswer || baseItem.answer || "";
+      fullAnswer = trimIncompleteTail(fullAnswer);
+      const context = fullAnswer.slice(-CONTEXT_LEN);
 
-  // Revert: restore original answer (if available) without changing tier counts
-  if (mode === "revert") {
-    if (!item.originalAnswer) {
-      return ctx.answerCallbackQuery({
-        text: "Nothing to revert.",
-        show_alert: true,
+      const out = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research expert continuing a long, structured deep-dive (Blackhole mode). The text below may end mid-sentence; rewrite the ending smoothly and then continue the analysis. Keep the same structure and style as earlier sections: use headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways. Do not reprint earlier sections verbatim; only extend from the end. When there is nothing important left to add, end your answer with a line containing only END_OF_BLACKHOLE.",
+          },
+          {
+            role: "user",
+            content: `TEXT SO FAR:\n${context}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 700,
       });
+
+      const END_MARK = "END_OF_BLACKHOLE";
+      let continuation = (out || "").trim();
+      let completed = false;
+
+      if (continuation.includes(END_MARK)) {
+        completed = true;
+        continuation = continuation.replace(END_MARK, "").trim();
+        // Nicely formatted closing marker for Telegram (horizontal rule + bold text)
+        continuation += "\n\n---\n**End of Blackhole analysis.**";
+      }
+
+      // Clean tail of continuation to avoid ending mid-word/mid-sentence when possible.
+      continuation = trimIncompleteTail(continuation);
+
+      const newFull = (fullAnswer + (continuation ? "\n\n" + continuation : "")).trim();
+
+      const newKey = makeId(6);
+      const part = (baseItem.part || 1) + 1;
+
+      inlineCache.set(newKey, {
+        prompt,
+        answer: continuation.slice(0, MAX_DISPLAY),
+        fullAnswer: newFull,
+        userId: ownerId,
+        model,
+        mode: "blackhole",
+        completed,
+        part,
+        // Carry forward any searchResult from the base item so final part can show sources
+        searchResult: baseItem.searchResult || null,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+
+      // Update base item as well so future continues from any chunk share history
+      baseItem.fullAnswer = newFull;
+      baseItem.part = part;
+      if (completed) baseItem.completed = true;
+      inlineCache.set(baseKey, baseItem);
+
+      const formattedAnswer = convertToTelegramHTML(continuation.slice(0, MAX_DISPLAY));
+      const escapedPrompt = escapeHTML(prompt);
+      const partLabel = completed ? `Part ${part} – final` : `Part ${part}`;
+      const sourcesHtml =
+        completed && baseItem.searchResult
+          ? buildWebsearchSourcesInlineHtml(baseItem.searchResult, ownerId)
+          : "";
+
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🗿🔬 <b>Blackhole Analysis (${partLabel}): ${escapedPrompt}</b>\n\n${formattedAnswer}${sourcesHtml}\n\n<i>via StarzAI • Blackhole • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log(`Blackhole continuation updated with AI response`);
+    } catch (e) {
+      console.error("Failed to get Blackhole continuation response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
     }
 
-    item.answer = item.originalAnswer;
-    if (item.fullAnswer) {
-      item.fullAnswer = item.originalAnswer;
-    }
-
-    inlineCache.set(key, item);
-    await editInlineMessage(ctx, item.answer, key);
-    await ctx.answerCallbackQuery({ text: "Reverted.", show_alert: false });
+    inlineCache.delete(`bh_cont_pending_${contId}`);
     return;
   }
 
-  // Regen limit check per tier (per answer)
-  if (mode === "regen") {
-    const userRec = getUserRecord(item.userId);
-    const tier = userRec?.tier || "free";
-    if (typeof item.regenCount !== "number") item.regenCount = 0;
+  // Handle Ultra Summary deferred response - ultrasum_start_KEY
+  if (resultId.startsWith("ultrasum_start_")) {
+    const sumId = resultId.replace("ultrasum_start_", "");
+    const pending = inlineCache.get(`ultrasum_pending_${sumId}`);
 
-    let maxRegen = 1;
-    if (tier === "ultra") maxRegen = 3;
-    else if (tier === "premium") maxRegen = 2;
-
-    if (item.regenCount >= maxRegen) {
-      return ctx.answerCallbackQuery({
-        text: "Regen limit reached for this answer.",
-        show_alert: true,
-      });
+    if (!pending || !inlineMessageId) {
+      console.log(`Ultra Summary pending not found or no inlineMessageId: sumId=${sumId}`);
+      return;
     }
-  }
 
-  await ctx.answerCallbackQuery({ text: "Working..." });
+    const { baseKey, mode, model, shortModel, userId: ownerId } = pending;
+    const ownerRec = getUserRecord(ownerId);
+    if (ownerRec?.tier !== "ultra") {
+      console.log("Ultra Summary denied: user not Ultra");
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>This feature is only available for Ultra users.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      inlineCache.delete(`ultrasum_pending_${sumId}`);
+      return;
+    }
 
-  try {
-    let newAnswer = item.answer;
+    const baseItem = inlineCache.get(baseKey);
+    if (!baseItem) {
+      console.log(`Base item missing for Ultra Summary: baseKey=${baseKey}`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Session expired. Run the answer again.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
 
-    if (mode === "regen") {
-      newAnswer = await llmText({
-        model: item.model,
+    if (String(ctx.from?.id || "") !== String(ownerId)) {
+      console.log(`Ultra Summary denied: not owner`);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Only the original requester can summarize this answer.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      return;
+    }
+
+    const full = (baseItem.fullAnswer || baseItem.answer || "").trim();
+    if (!full || full.length < 50) {
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Answer is too short to summarize.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+      inlineCache.delete(`ultrasum_pending_${sumId}`);
+      return;
+    }
+
+    const summaryInput = full.slice(0, 12000);
+    let systemPrompt =
+      "Summarize the content below into a brief, well-structured overview. Use short bullet points and 1–3 very short paragraphs at most. Keep the whole summary compact (no more than a few hundred words).";
+    let titlePrefix = "Ultra Summary";
+    let icon = "🧾 ";
+    if (mode === "blackhole") {
+      const parts = baseItem.part || 1;
+      systemPrompt =
+        `You are summarizing a multi-part deep-dive answer (Parts 1–${parts}). ` +
+        "Provide 5–9 very short bullet points that capture the main arguments, key evidence, and final conclusions. " +
+        "Avoid long paragraphs, quotes, or code. Keep it tight and scan-friendly.";
+      titlePrefix = `Ultra Summary of Blackhole (${parts} part${parts > 1 ? "s" : ""})`;
+      icon = "🗿🔬 ";
+    } else if (mode === "code") {
+      systemPrompt =
+        "Summarize the programming answer in 4–7 concise bullet points. Describe the purpose of the code, the main steps, and how to run/use it. Mention languages and key functions or modules, but do not repeat long code snippets. Keep it short.";
+      titlePrefix = "Ultra Summary of Code Answer";
+      icon = "💻 ";
+    } else if (mode === "explain") {
+      systemPrompt =
+        "Summarize the explanation in 3–6 very short bullet points so it's easy to scan. Each bullet should be 1 short sentence. Focus only on the core ideas.";
+      titlePrefix = "Ultra Summary of Explanation";
+      icon = "🧠 ";
+    }
+
+    try {
+      const summaryOut = await llmText({
+        model,
         messages: [
-          { role: "system", content: "Answer clearly. Don't mention system messages." },
-          { role: "user", content: item.prompt },
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `TEXT TO SUMMARIZE:\n\n${summaryInput}` },
         ],
-        temperature: 0.9,
+        temperature: 0.4,
         max_tokens: 260,
       });
 
-      // Reset transform metadata on regen
-      delete item.originalAnswer;
-      item.shortCount = 0;
-      item.longCount = 0;
-      item.transformsUsed = 0;
-      item.shortLongLocked = false;
+      // Base truncation limit
+      let summary = (summaryOut || "No summary available.").slice(0, 1200);
 
-      item.regenCount = (item.regenCount || 0) + 1;
-    }
+      // Clean up incomplete tail (mid-word / mid-sentence)
+      summary = trimIncompleteTail(summary, 220);
 
-    if (mode === "short" || mode === "long") {
-      const userRec = getUserRecord(item.userId);
-      const tier = userRec?.tier || "free";
-
-      // Initialize transform metadata if missing
-      if (!item.originalAnswer) item.originalAnswer = item.answer;
-      if (typeof item.shortCount !== "number") item.shortCount = 0;
-      if (typeof item.longCount !== "number") item.longCount = 0;
-      if (typeof item.transformsUsed !== "number") item.transformsUsed = 0;
-      if (typeof item.shortLongLocked !== "boolean") item.shortLongLocked = false;
-
-      const isShort = mode === "short";
-      let allowed = true;
-
-      if (tier === "ultra") {
-        if (isShort && item.shortCount >= 2) allowed = false;
-        if (!isShort && item.longCount >= 2) allowed = false;
-      } else if (tier === "premium") {
-        if (item.transformsUsed >= 2) allowed = false;
-      } else {
-        // free
-        if (item.shortLongLocked || item.transformsUsed >= 1) allowed = false;
+      // Drop any dangling heading/bullet line at the very end (like "• Recent Discoveries:")
+      const lines = summary.split("\n");
+      while (lines.length > 0) {
+        const last = lines[lines.length - 1].trim();
+        if (!last) {
+          // Drop empty trailing lines
+          lines.pop();
+          continue;
+        }
+        const isHeaderOnly =
+          // Ends with ":" and has no period/question/exclamation afterwards
+          (/[:：]\s*$/.test(last) && !/[.!?]\s*$/.test(last)) ||
+          // Bullet with very short content
+          (/^[•\-*]\s+.+$/.test(last) && last.length < 40);
+        if (isHeaderOnly) {
+          lines.pop();
+          continue;
+        }
+        break;
       }
+      summary = lines.join("\n").trim();
 
-      if (!allowed) {
-        // Buttons should already be hidden when limits are reached; this is a safeguard.
-        return ctx.answerCallbackQuery({
-          text: "Shorter/Longer limit reached for this answer.",
-          show_alert: true,
-        });
-      }
+      const newKey = makeId(6);
 
-      if (isShort) {
-        newAnswer = await llmText({
-          model: item.model,
-          messages: [
-            { role: "system", content: "Rewrite the answer to be shorter while keeping key details." },
-            { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
-          ],
-          temperature: 0.5,
-          max_tokens: 200,
-        });
-        item.shortCount = (item.shortCount || 0) + 1;
-      } else {
-        newAnswer = await llmText({
-          model: item.model,
-          messages: [
-            { role: "system", content: "Expand the answer with more detail, structure, and examples if useful." },
-            { role: "user", content: `PROMPT:\n${item.prompt}\n\nANSWER:\n${item.answer}` },
-          ],
-          temperature: 0.7,
-          max_tokens: 420,
-        });
-        item.longCount = (item.longCount || 0) + 1;
-      }
+      inlineCache.set(newKey, {
+        prompt: baseItem.prompt || "",
+        answer: summary,
+        fullAnswer: summary,
+        userId: ownerId,
+        model,
+        mode: "summarize",
+        completed: true,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
-      item.transformsUsed = (item.transformsUsed || 0) + 1;
-      if (tier === "free") {
-        item.shortLongLocked = true;
-      }
-    }
+      const formatted = convertToTelegramHTML(summary);
+      const escapedPrompt = escapeHTML(baseItem.prompt || "");
+      const title =
+        mode === "blackhole"
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : escapedPrompt
+          ? `${titlePrefix}: ${escapedPrompt}`
+          : titlePrefix;
 
-    if (mode === "cont") {
-      const itemMode = item.mode || "default";
-      const isBlackhole = itemMode === "blackhole";
-      const isCode = itemMode === "code";
-      const isExplain = itemMode === "explain";
-
-      // Blackhole uses its own inline-based continuation (bhcont), so we do nothing here.
-      if (isBlackhole) {
-        await ctx.answerCallbackQuery({ text: "Use the inline Continue button for Blackhole.", show_alert: true });
-        return;
-      }
-
-      // Quark never shows Continue, but if somehow triggered, just ignore.
-      if (itemMode === "quark") {
-        await ctx.answerCallbackQuery({ text: "Quark answers are already complete.", show_alert: true });
-        return;
-      }
-
-      if (isCode) {
-        // For Code mode, we don't ask the model to "continue" the answer.
-        // Instead, we reveal the remaining part of the original fullAnswer in
-        // safe chunks, avoiding cuts inside fenced code blocks.
-        const full = item.fullAnswer || item.answer || "";
-        if (!full) {
-          await ctx.answerCallbackQuery({ text: "No more code to show.", show_alert: true });
-          return;
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `${icon} <b>${title}</b>\n\n${formatted}\n\n<i>via StarzAI • Ultra Summary • ${shortModel}</i>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
         }
-
-        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
-        if (cursor >= full.length) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
-          return;
-        }
-
-        const remaining = full.slice(cursor);
-        if (!remaining.trim()) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "Full code already shown.", show_alert: true });
-          return;
-        }
-
-        // Local splitter: same logic as in the initial Code handler but applied
-        // to the remaining text only.
-        const maxLen = 3500;
-        const fence = "```";
-        const positions = [];
-        let idxPos = 0;
-        while (true) {
-          const found = remaining.indexOf(fence, idxPos);
-          if (found === -1) break;
-          positions.push(found);
-          idxPos = found + fence.length;
-        }
-
-        let cutoff = -1;
-        if (positions.length >= 2) {
-          for (let i = 0; i + 1 < positions.length; i += 2) {
-            const closeIdx = positions[i + 1] + fence.length;
-            if (closeIdx <= maxLen) {
-              cutoff = closeIdx;
-            } else {
-              break;
-            }
-          }
-        }
-
-        if (cutoff === -1) {
-          const fallback = remaining.lastIndexOf("\n", maxLen);
-          cutoff = fallback > 0 ? fallback : Math.min(maxLen, remaining.length);
-        }
-
-        const addition = remaining.slice(0, cutoff).trimEnd();
-        const leftover = remaining.slice(cutoff).trimStart();
-
-        if (!addition) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "No further code to show.", show_alert: true });
-          return;
-        }
-
-        newAnswer = `${item.answer}\n\n${addition}`.trim();
-        item.cursor = cursor + cutoff;
-        if (!leftover.length || item.cursor >= full.length) {
-          item.completed = true;
-        }
-      } else if (isExplain) {
-        // For Explain mode, reveal the rest of the original explanation without
-        // asking the model to rewrite it, cutting at sentence/word boundaries.
-        const full = item.fullAnswer || item.answer || "";
-        if (!full) {
-          await ctx.answerCallbackQuery({ text: "No more explanation to show.", show_alert: true });
-          return;
-        }
-
-        let cursor = typeof item.cursor === "number" ? item.cursor : item.answer.length;
-        if (cursor >= full.length) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
-          return;
-        }
-
-        const remaining = full.slice(cursor);
-        if (!remaining.trim()) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "Explanation already complete.", show_alert: true });
-          return;
-        }
-
-        const maxLen = 3500;
-        let cutoff = Math.min(maxLen, remaining.length);
-
-        if (cutoff < remaining.length) {
-          const windowSize = 200;
-          const windowStart = Math.max(0, cutoff - windowSize);
-          const windowText = remaining.slice(windowStart, cutoff);
-
-          let rel = Math.max(
-            windowText.lastIndexOf(". "),
-            windowText.lastIndexOf("! "),
-            windowText.lastIndexOf("? ")
-          );
-          if (rel !== -1) {
-            cutoff = windowStart + rel + 2; // include punctuation + space
-          } else {
-            const spaceRel = windowText.lastIndexOf(" ");
-            if (spaceRel !== -1) {
-              cutoff = windowStart + spaceRel;
-            }
-          }
-        }
-
-        const addition = remaining.slice(0, cutoff).trimEnd();
-        const leftover = remaining.slice(cutoff).trimStart();
-
-        if (!addition) {
-          item.completed = true;
-          inlineCache.set(key, item);
-          await ctx.answerCallbackQuery({ text: "No further explanation to show.", show_alert: true });
-          return;
-        }
-
-        newAnswer = `${item.answer}\n\n${addition}`.trim();
-        item.cursor = cursor + cutoff;
-        if (!leftover.length || item.cursor >= full.length) {
-          item.completed = true;
-        }
-
-        const finalTextExplain = (newAnswer || "(no output)").trim();
-        item.answer = finalTextExplain.slice(0, 3500);
-        const part = (item.part || 1) + 1;
-        item.part = part;
-        inlineCache.set(key, item);
-
-        const formattedExplain = convertToTelegramHTML(item.answer);
-        const escapedPromptExplain = escapeHTML(item.prompt || "");
-        const shortModelExplain = item.shortModel || (item.model || "").split("/").pop() || "";
-        let title;
-        if (item.completed && part === 1) {
-          title = `Full Explanation: ${escapedPromptExplain}`;
-        } else if (item.completed) {
-          title = `Explanation (Part ${part} – final): ${escapedPromptExplain}`;
-        } else {
-          title = `Explanation (Part ${part}): ${escapedPromptExplain}`;
-        }
-
-        await ctx.editMessageText(
-          `🧠 <b>${title}</b>\n\n${formattedExplain}\n\n<i>via StarzAI • Explain${shortModelExplain ? ` • ${shortModelExplain}` : ""}</i>`,
-          {
-            parse_mode: "HTML",
-            reply_markup: inlineAnswerKeyboard(key),
-          }
+      );
+      console.log("Ultra Summary updated with AI response");
+    } catch (e) {
+      console.error("Failed to get Ultra Summary response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
         );
-        return;
-      } else {
-        // Default (quick, research, summarize, chat, etc.)
-        const systemPrompt =
-          "Continue the previous answer from where it stopped. Do not repeat large sections; just keep going in the same style and format. If it ended mid-sentence, finish that sentence and continue. When there is nothing important left to add, end your answer with a line containing only END_OF_INLINE.";
-        const maxTokens = 450;
-        const END_MARK = "END_OF_INLINE";
+      } catch {}
+    }
 
-        const continuation = await llmText({
-          model: item.model,
+    inlineCache.delete(`ultrasum_pending_${sumId}`);
+    return;
+  }
+  
+  // Handle Character intro - char_intro_KEY
+  if (resultId.startsWith("char_intro_")) {
+    const charKey = resultId.replace("char_intro_", "");
+    const cached = inlineCache.get(charKey);
+    
+    if (cached && cached.character && inlineMessageId) {
+      // Store the inline message ID so we can handle replies
+      inlineCache.set(`char_msg_${charKey}`, {
+        ...cached,
+        inlineMessageId,
+      });
+      console.log(`Stored character intro inlineMessageId for key=${charKey}, character=${cached.character}`);
+    }
+    return;
+  }
+  
+  // Handle Research deferred response - r_start_KEY
+  if (resultId.startsWith("r_start_")) {
+    const rKey = resultId.replace("r_start_", "");
+    const pending = inlineCache.get(`r_pending_${rKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Research pending not found or no inlineMessageId: rKey=${rKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel } = pending;
+    console.log(`Processing Research: ${prompt}`);
+    
+    try {
+      const out = await llmText({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a research assistant. Give a concise but informative answer in 2-3 paragraphs. Be direct, but use Markdown headings, bullet points, and occasional quote blocks (lines starting with '>') for key takeaways so the answer is easy to scan.",
+          },
+          { role: "user", content: `Briefly explain: ${prompt}` },
+        ],
+        temperature: 0.7,
+        max_tokens: 400,
+      });
+      
+      const answer = (out || "No results").slice(0, 2000);
+      const newKey = makeId(6);
+      
+      // Store for Regen/Shorter/Longer/Continue buttons
+      inlineCache.set(newKey, {
+        prompt,
+        answer,
+        userId: pending.userId,
+        model,
+        mode: "research",
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
+      
+      // Track in history
+      addToHistory(pending.userId, prompt, "research");
+      
+      // Convert and update
+      const formattedAnswer = convertToTelegramHTML(answer);
+      const escapedPrompt = escapeHTML(prompt);
+      
+      await bot.api.editMessageTextInline(
+        inlineMessageId,
+        `🔍 <b>Research: ${escapedPrompt}</b>\\n\\n${formattedAnswer}\\n\\n<i>via StarzAI • ${shortModel}</i>`,
+        { 
+          parse_mode: "HTML",
+          reply_markup: inlineAnswerKeyboard(newKey),
+        }
+      );
+      console.log("Research updated with AI response");
+    } catch (e) {
+      console.error("Failed to get Research response:", e.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🔍 <b>Research</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>\\n\\n<i>via StarzAI</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+    }
+    
+    inlineCache.delete(`r_pending_${rKey}`);
+    return;
+  }
+
+  // Handle Websearch deferred response - w_start_KEY
+  if (resultId.startsWith("w_start_")) {
+    const wKey = resultId.replace("w_start_", "");
+    const pending = inlineCache.get(`w_pending_${wKey}`);
+    
+    if (!pending || !inlineMessageId) {
+      console.log(`Websearch pending not found or no inlineMessageId: wKey=${wKey}`);
+      return;
+    }
+    
+    const { prompt, model, shortModel, userId: ownerId } = pending;
+    console.log(`Processing Websearch: ${prompt}`);
+    
+    try {
+      const quota = consumeWebsearchQuota(ownerId);
+      const startTime = Date.now();
+      let answerRaw = "";
+      let footerHtml = "";
+      let sourcesHtml = "";
+      let formattedAnswer = "";
+
+      if (!quota.allowed) {
+        // Quota exhausted: answer without live websearch
+        console.log(
+          `Websearch quota exhausted for user ${ownerId} in inline mode: used=${quota.used}, limit=${quota.limit}`
+        );
+
+        const offline = await llmText({
+          model,
           messages: [
-            { role: "system", content: systemPrompt },
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant. You currently do NOT have access to live web search for this request. " +
+                "Answer based on your existing knowledge only. If you are unsure or information may be outdated, say so clearly.",
+            },
             {
               role: "user",
-              content: `PROMPT:\n${item.prompt}\n\nANSWER SO FAR:\n${item.answer}`,
+              content: `Question (no live websearch available): ${prompt}`,
             },
           ],
           temperature: 0.7,
-          max_tokens: maxTokens,
+          max_tokens: 800,
         });
 
-        let contText = (continuation || "").trim();
-        let completed = false;
-        if (contText.includes(END_MARK)) {
-          completed = true;
-          contText = contText.replace(END_MARK, "").trim();
-          contText += "\n\n---\n_End of answer._";
-        }
+        answerRaw = offline || "No answer generated.";
+        const escapedPrompt = escapeHTML(prompt);
+        formattedAnswer = convertToTelegramHTML(answerRaw.slice(0, 3500));
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        footerHtml = `\\n\\n<i>⚠️ Daily websearch limit reached — answered without live web results • ${elapsed}s • ${shortModel}</i>`;
+        
+        const newKey = makeId(6);
+        inlineCache.set(newKey, {
+          prompt,
+          answer: answerRaw,
+          userId: String(ownerId),
+          model,
+          mode: "websearch",
+          createdAt: Date.now(),
+        });
+        setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
-        newAnswer = `${item.answer}\n\n${contText || ""}`.trim();
-        if (completed) {
-          item.completed = true;
-        }
-      }
-    }
-
-    const finalText = (newAnswer || "(no output)").trim();
-    item.answer = finalText.slice(0, 3500);
-    inlineCache.set(key, item);
-
-    await editInlineMessage(ctx, item.answer, key);
-  } catch (e) {
-    console.error(e);
-    await ctx.answerCallbackQuery({ text: "Failed. Try again.", show_alert: true });
-  }
-}
-
-bot.callbackQuery(/^inl_regen:/, async (ctx) => doInlineTransform(ctx, "regen"));
-bot.callbackQuery(/^inl_short:/, async (ctx) => doInlineTransform(ctx, "short"));
-bot.callbackQuery(/^inl_long:/, async (ctx) => doInlineTransform(ctx, "long"));
-bot.callbackQuery(/^inl_cont:/, async (ctx) => doInlineTransform(ctx, "cont"));
-bot.callbackQuery(/^inl_revert:/, async (ctx) => doInlineTransform(ctx, "revert"));
-
-// Character new intro button
-bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
-  const character = ctx.match[1];
-  const userId = ctx.from?.id;
-  const model = ensureChosenModelValid(userId);
-  const shortModel = model.split("/").pop();
-  
-  await ctx.answerCallbackQuery({ text: `Generating new ${character} intro...` });
-  
-  try {
-    const introOut = await llmText({
-      model,
-      messages: [
-        { role: "system", content: `You are ${character}. Introduce yourself in 1-2 sentences in your unique style, personality, and speech patterns. Be creative and stay completely in character. Don't say "I am [name]" directly - show your personality through how you speak. Make this introduction different from previous ones.` },
-        { role: "user", content: "Introduce yourself briefly." },
-      ],
-      temperature: 1.0,
-      max_tokens: 150,
-    });
-    
-    const intro = (introOut || `*${character} appears*`).slice(0, 500);
-    const newKey = makeId(6);
-    
-    // Cache the new intro
-    inlineCache.set(newKey, {
-      prompt: "[Character Introduction]",
-      answer: intro,
-      userId: String(userId),
-      model,
-      character,
-      isIntro: true,
-      createdAt: Date.now(),
-    });
-    setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
-    
-    const formattedIntro = convertToTelegramHTML(intro);
-    const escapedCharacter = escapeHTML(character);
-    
-    await ctx.editMessageText(
-      `🎭 <b>${escapedCharacter}</b>\n\n${formattedIntro}\n\n<i>Reply to continue chatting! • via StarzAI</i>`,
-      {
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard()
-          .text("🔄 New Intro", `char_new_intro:${character}`)
-          .switchInlineCurrent(`✉️ Ask ${character.slice(0, 10)}`, `as ${character}: `),
-      }
-    );
-  } catch (e) {
-    console.error("Failed to generate new intro:", e);
-    await ctx.answerCallbackQuery({ text: "Failed to generate intro. Try again!", show_alert: true });
-  }
-});
-
-// =====================
-// INLINE CACHE TTL CLEANUP
-// =====================
-setInterval(() => {
-  const t = nowMs();
-  const ttl = 30 * 60_000; // 30 min
-  for (const [k, v] of inlineCache.entries()) {
-    if (t - v.createdAt > ttl) inlineCache.delete(k);
-  }
-}, 5 * 60_000);
-
-// Cleanup old inline sessions (older than 7 days)
-setInterval(() => {
-  const t = nowMs();
-  const ttl = 7 * 24 * 60 * 60_000; // 7 days
-  for (const [userId, session] of Object.entries(inlineSessionsDb.sessions)) {
-    if (t - session.lastActive > ttl) {
-      delete inlineSessionsDb.sessions[userId];
-    }
-  }
-  saveInlineSessions();
-}, 60 * 60_000); // Check every hour
-
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🌐 <b>Websearch</b>\\n\\n<b>Query:</b> <i>${escapedPrompt}</i>\\n\\n${formattedAnswer}${footerHtml}`,
+          {
+            parse_mode: "HTML",
+            reply_markup: inlineAnswerKeyboard(newKey),
+          }
+        );
+        console.log("Websearch (offline) updated with AI response");
+      } else {
+        // Quota available: run live web search
+        const searchResult = await webSearch(prompt, 5);
+        
+        if (!searchResult.success) {
+          const errMsg = `❌ Websearch failed: ${escapeHTML(searchResult.error || "Unknown error")}`;
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            errMsg,
+            { parse_mode: "HTML" }
+          );
+          inlineCache.delete(`w_pending_${wKey}`);
+          return;
 

@@ -8,39 +8,39 @@
 // Lines 1546-1580 from original index.js
 // =====================
 
-// =====================
-// GROUP ACTIVATION SYSTEM
-// =====================
-// Bot is dormant by default in groups. Activates for 2 minutes after command/mention.
-// During active window, responds to all messages. Goes dormant after inactivity.
-
-function activateGroup(chatId) {
-  const id = String(chatId);
-  groupActiveUntil.set(id, Date.now() + GROUP_ACTIVE_DURATION);
-}
-
-function deactivateGroup(chatId) {
-  const id = String(chatId);
-  groupActiveUntil.delete(id);
-}
-
-function isGroupActive(chatId) {
-  const id = String(chatId);
-  const until = groupActiveUntil.get(id);
-  if (!until) return false;
-  if (Date.now() > until) {
-    groupActiveUntil.delete(id); // Clean up expired
-    return false;
+  
+  // Check 5: Suspicious patterns (URLs, mentions, etc.)
+  if (messageText) {
+    const urlCount = (messageText.match(/https?:\/\//gi) || []).length;
+    const mentionCount = (messageText.match(/@\w+/g) || []).length;
+    
+    if (urlCount > 3 || mentionCount > 5) {
+      return {
+        isSpam: true,
+        reason: "Suspicious content pattern",
+        severity: "low"
+      };
+    }
   }
-  return true;
+  
+  return { isSpam: false };
 }
 
-function getGroupActiveRemaining(chatId) {
-  const id = String(chatId);
-  const until = groupActiveUntil.get(id);
-  if (!until) return 0;
-  const remaining = until - Date.now();
-  return remaining > 0 ? Math.ceil(remaining / 1000) : 0;
+function trackMessage(userId, messageText) {
+  const record = getSpamRecord(userId);
+  const nowMs = Date.now();
+  
+  record.messages.push({
+    text: messageText || "",
+    timestamp: nowMs
+  });
+  
+  cleanOldMessages(record, nowMs);
 }
 
+async function handleSpamDetection(ctx, spamResult, userId) {
+  const record = getSpamRecord(userId);
+  const nowMs = Date.now();
+  
+  record.spamCount = (record.spamCount || 0) + 1;
 

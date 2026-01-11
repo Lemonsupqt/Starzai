@@ -8,151 +8,151 @@
 // Lines 13695-13841 from original index.js
 // =====================
 
-// =====================
-// INLINE SETTINGS CALLBACKS
-// =====================
+  
+  const line = lines[Math.floor(Math.random() * lines.length)];
+  
+  await ctx.reply(
+    `💕 <b>Pickup Line</b>\n\n<i>${escapeHTML(line)}</i>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+});
 
-// Category selection - show models for that category
-bot.callbackQuery(/^iset_cat:(.+):(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
+// Callback for media info
+bot.callbackQuery(/^media_info:/, async (ctx) => {
+  const [, type, id] = ctx.callbackQuery.data.split(':');
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  await ctx.answerCallbackQuery({ text: 'Loading details...' });
   
-  const parts = ctx.callbackQuery.data.split(":");
-  const category = parts[1];
-  const sessionKey = parts[2];
+  const result = await getMediaDetails(id, type);
   
-  const user = getUserRecord(userId);
-  const tier = user?.tier || "free";
-  
-  // Check if user has access to this category
-  if (category === "premium" && tier === "free") {
-    return ctx.answerCallbackQuery({ text: "🔒 Premium required!", show_alert: true });
-  }
-  if (category === "ultra" && tier !== "ultra") {
-    return ctx.answerCallbackQuery({ text: "🔒 Ultra required!", show_alert: true });
+  if (!result.success) {
+    await ctx.answerCallbackQuery({ text: result.error, show_alert: true });
+    return;
   }
   
-  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
-  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+  const d = result.details;
+  const title = d.title || d.name;
+  const year = (d.release_date || d.first_air_date || '').slice(0, 4);
+  const rating = d.vote_average ? `⭐ ${d.vote_average.toFixed(1)}/10` : '';
+  const runtime = d.runtime ? `${d.runtime} min` : d.episode_run_time?.[0] ? `${d.episode_run_time[0]} min/ep` : '';
+  const genres = d.genres?.map(g => g.name).join(', ') || '';
   
-  await ctx.answerCallbackQuery({ text: `${categoryEmoji} ${categoryName} Models` });
+  let response = `🎬 <b>${escapeHTML(title)}</b> ${year ? `(${year})` : ''}\n\n`;
+  response += `${rating} ${runtime ? `• ${runtime}` : ''}\n`;
+  if (genres) response += `📎 ${escapeHTML(genres)}\n`;
+  response += `\n${escapeHTML(d.overview?.slice(0, 500) || 'No description available.')}\n`;
   
-  try {
-    await ctx.editMessageText(
-      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId)
-      }
-    );
-  } catch (e) {
-    console.error("Edit message error:", e.message);
+  if (result.recommendations && result.recommendations.length > 0) {
+    response += `\n<b>Similar:</b> `;
+    response += result.recommendations.slice(0, 3).map(r => escapeHTML(r.title || r.name)).join(', ');
+  }
+  
+  const kb = new InlineKeyboard();
+  
+  const trailers = await getTrailers(id, type);
+  if (trailers.success && trailers.trailers.length > 0) {
+    const trailer = trailers.trailers[0];
+    kb.url('🎬 Watch Trailer', `https://youtube.com/watch?v=${trailer.key}`);
+  }
+  
+  kb.url('📖 More Info', `https://themoviedb.org/${type}/${id}`);
+  
+  if (d.poster_path) {
+    try {
+      await ctx.editMessageMedia({
+        type: 'photo',
+        media: `https://image.tmdb.org/t/p/w500${d.poster_path}`,
+        caption: response.slice(0, 1024),
+        parse_mode: 'HTML'
+      }, { reply_markup: kb });
+    } catch (e) {
+      await ctx.editMessageText(response, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+    }
+  } else {
+    await ctx.editMessageText(response, {
+      parse_mode: 'HTML',
+      reply_markup: kb
+    });
   }
 });
 
-// Model selection - set the model
-bot.callbackQuery(/^iset_model:(.+):(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const data = ctx.callbackQuery.data;
-  // Parse: iset_model:model_name:sessionKey
-  const firstColon = data.indexOf(":");
-  const lastColon = data.lastIndexOf(":");
-  const model = data.slice(firstColon + 1, lastColon);
-  const sessionKey = data.slice(lastColon + 1);
-  
-  const user = getUserRecord(userId);
-  if (!user) {
-    return ctx.answerCallbackQuery({ text: "User not found. Use /start first!", show_alert: true });
-  }
-  
-  // Check if user can use this model
-  const allowed = allModelsForTier(user.tier);
-  if (!allowed.includes(model)) {
-    return ctx.answerCallbackQuery({ text: "🔒 You don't have access to this model!", show_alert: true });
-  }
-  
-  // Set the model
-  user.model = model;
-  saveUsers();
-  
-  // Also update inline session
-  updateInlineSession(userId, { model });
-  
-  const shortName = model.split("/").pop();
-  await ctx.answerCallbackQuery({ text: `✅ Switched to ${shortName}!` });
-  
-  try {
-    await ctx.editMessageText(
-      `✅ *Model Changed!*\n\n🤖 Now using: \`${model}\`\n\n_Your new model is ready to use!_`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("← Back to Categories", `iset_back:${sessionKey}`)
-      }
-    );
-  } catch (e) {
-    console.error("Edit message error:", e.message);
-  }
-});
-
-// Back to categories
-bot.callbackQuery(/^iset_back:(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
-  
-  const sessionKey = ctx.callbackQuery.data.split(":")[1];
-  const user = getUserRecord(userId);
-  const model = user?.model || "gpt-4o-mini";
+// Callback for wallpaper navigation
+bot.callbackQuery(/^wp_next:/, async (ctx) => {
+  const [, query, indexStr] = ctx.callbackQuery.data.split(':');
+  const index = parseInt(indexStr);
   
   await ctx.answerCallbackQuery();
   
+  const result = await searchWallpapers(decodeURIComponent(query));
+  
+  if (!result.success || index >= result.wallpapers.length) {
+    await ctx.answerCallbackQuery({ text: 'No more wallpapers', show_alert: true });
+    return;
+  }
+  
+  const wallpaper = result.wallpapers[index];
+  
+  const kb = new InlineKeyboard();
+  if (index > 0) {
+    kb.text('← Prev', `wp_next:${query}:${index - 1}`);
+  }
+  if (index < result.wallpapers.length - 1) {
+    kb.text('Next →', `wp_next:${query}:${index + 1}`);
+  }
+  kb.row().url('🔗 Full Resolution', wallpaper.url);
+  
   try {
-    await ctx.editMessageText(
-      `⚙️ *Model Settings*\n\n🤖 Current: \`${model}\`\n\nSelect a category to change model:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineSettingsCategoryKeyboard(sessionKey, userId)
-      }
-    );
+    await ctx.editMessageMedia({
+      type: 'photo',
+      media: wallpaper.thumbnail,
+      caption: `🖼️ <b>Wallpaper</b> (${index + 1}/${result.wallpapers.length})\n\nResolution: ${wallpaper.resolution}`,
+      parse_mode: 'HTML'
+    }, { reply_markup: kb });
   } catch (e) {
-    console.error("Edit message error:", e.message);
+    // Ignore edit errors
   }
 });
 
-// Handle pagination for inline model selection
-bot.callbackQuery(/^iset_page:(.+):(\d+):(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
+// Callback for auto-detected media download
+bot.callbackQuery(/^auto_dl:/, async (ctx) => {
+  const [, mode, encodedUrl] = ctx.callbackQuery.data.split(':');
+  const url = decodeURIComponent(encodedUrl);
+  const audioOnly = mode === 'audio';
   
-  const userId = ctx.from?.id;
-  if (!userId) return ctx.answerCallbackQuery({ text: "Error", show_alert: true });
+  await ctx.answerCallbackQuery({ text: 'Starting download...' });
   
-  const [, category, pageStr, sessionKey] = ctx.callbackQuery.data.match(/^iset_page:(.+):(\d+):(.+)$/);
-  const page = parseInt(pageStr, 10);
-  const user = getUserRecord(userId);
-  
-  const categoryEmoji = category === "free" ? "🆓" : category === "premium" ? "⭐" : "💎";
-  const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
-  
-  await ctx.answerCallbackQuery();
+  const platform = detectPlatform(url);
+  const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
   
   try {
     await ctx.editMessageText(
-      `⚙️ *${categoryEmoji} ${categoryName} Models*\n\n🤖 Current: \`${user?.model || "none"}\`\n\nSelect a model:`,
-      { 
-        parse_mode: "Markdown",
-        reply_markup: inlineSettingsModelKeyboard(category, sessionKey, userId, page)
-      }
+      `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\nThis may take a moment...`,
+      { parse_mode: 'HTML' }
     );
-  } catch (e) {
-    console.error("Edit message error:", e.message);
-  }
-});
-
+    
+    const result = await downloadMedia(url, audioOnly);
+    
+    if (!result.success) {
+      await ctx.editMessageText(
+        `❌ Download failed: ${escapeHTML(result.error)}`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    await ctx.editMessageText(
+      `${emoji} <b>Uploading to Telegram...</b>`,
+      { parse_mode: 'HTML' }
+    );
+    
+    if (audioOnly) {
+      await ctx.replyWithAudio(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`
+      });
+    } else {
+      await ctx.replyWithVideo(result.url, {
+        caption: `${emoji} Downloaded via StarzAI`
 

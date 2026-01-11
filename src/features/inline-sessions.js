@@ -8,52 +8,52 @@
 // Lines 2239-2286 from original index.js
 // =====================
 
-// =====================
-// INLINE SESSION MANAGEMENT
-// =====================
-function getInlineSession(userId) {
-  const id = String(userId);
-  if (!inlineSessionsDb.sessions[id]) {
-    inlineSessionsDb.sessions[id] = {
-      history: [],
-      model: ensureChosenModelValid(userId),
-      lastActive: nowMs(),
-      state: "idle", // idle, chatting
-    };
-    saveInlineSessions();
   }
-  return inlineSessionsDb.sessions[id];
+  
+  // Max 10 saved characters
+  if (u.savedCharacters.length >= 10) {
+    return { success: false, message: "Max 10 characters! Remove one first." };
+  }
+  
+  u.savedCharacters.push(characterName.trim());
+  saveUsers();
+  return { success: true, message: `Saved ${characterName}!` };
 }
 
-function updateInlineSession(userId, updates) {
-  const id = String(userId);
-  const session = getInlineSession(userId);
-  Object.assign(session, updates, { lastActive: nowMs() });
-  inlineSessionsDb.sessions[id] = session;
-  saveInlineSessions();
-  return session;
+function removeCharacter(userId, characterName) {
+  const u = ensureUser(userId);
+  if (!u.savedCharacters) return { success: false, message: "No saved characters!" };
+  
+  const normalizedName = characterName.trim().toLowerCase();
+  const index = u.savedCharacters.findIndex(c => c.toLowerCase() === normalizedName);
+  
+  if (index === -1) {
+    return { success: false, message: "Character not found!" };
+  }
+  
+  u.savedCharacters.splice(index, 1);
+  saveUsers();
+  return { success: true, message: `Removed ${characterName}!` };
 }
 
-function clearInlineSession(userId) {
-  const id = String(userId);
-  inlineSessionsDb.sessions[id] = {
-    history: [],
-    model: ensureChosenModelValid(userId),
-    lastActive: nowMs(),
-    state: "idle",
-  };
-  saveInlineSessions();
-  return inlineSessionsDb.sessions[id];
+function setActiveCharacter(userId, chatId, characterName) {
+  const u = ensureUser(userId);
+  const chatKey = String(chatId);
+  
+  if (!u.activeCharacter) u.activeCharacter = {};
+  
+  if (characterName) {
+    u.activeCharacter[chatKey] = {
+      name: characterName,
+      activatedAt: Date.now(),
+    };
+  } else {
+    delete u.activeCharacter[chatKey];
+  }
+  saveUsers();
 }
 
-function addToInlineHistory(userId, role, content) {
-  const session = getInlineSession(userId);
-  session.history.push({ role, content });
-  // Keep last 20 messages
-  while (session.history.length > 20) session.history.shift();
-  session.lastActive = nowMs();
-  saveInlineSessions();
-  return session;
-}
-
+function getActiveCharacter(userId, chatId) {
+  const u = ensureUser(userId);
+  if (!u.activeCharacter) return null;
 
