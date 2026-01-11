@@ -2096,8 +2096,11 @@ function isThinkingModel(model) {
          m.includes('thinking') || 
          m.includes('reasoning') ||
          m.includes('kimi-k2-thinking') ||
-         m.includes('o1-') ||  // OpenAI o1 models
-         m.includes('o3-');    // OpenAI o3 models
+         m.includes('o1-') ||           // OpenAI o1 models
+         m.includes('o3-') ||           // OpenAI o3 models
+         m.includes('gpt-5') ||         // GPT-5 models
+         m.includes('grok-4.1-fast-reasoning') ||  // Grok reasoning
+         m.includes('claude-opus-4-1'); // Claude Opus 4.1
 }
 
 // Get appropriate max_tokens based on model type
