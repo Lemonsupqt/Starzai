@@ -14,6 +14,7 @@
     "grammy": "^1.35.0",
     "node-fetch": "^2.7.0",
     "openai": "^4.60.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "ytdl-core": "^4.11.5"
   }
 }

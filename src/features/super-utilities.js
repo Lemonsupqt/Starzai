@@ -23,6 +23,7 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import ytdl from 'ytdl-core';
 
 const execAsync = promisify(exec);
 
@@ -83,142 +84,58 @@ const URL_PATTERNS = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIDEO/SOCIAL MEDIA DOWNLOADS (Cobalt API based)
+// VIDEO/SOCIAL MEDIA DOWNLOADS (YouTube-only, no external binary)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download video/audio from various platforms using a Cobalt-compatible API.
- * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, etc.
+ * Download video/audio for supported platforms.
  *
- * NOTE: The default public api.cobalt.tools instance has bot protection and is
- * not intended for heavy use in third-party projects. For production, you
- * should host your own instance and point CONFIG.cobalt.api to it.
+ * Current implementation:
+ * - YouTube: uses ytdl-core to resolve a direct media URL (no local files)
+ * - Other platforms: not supported on this host
  */
 async function downloadMedia(url, audioOnly = false) {
   try {
-    if (!CONFIG.cobalt?.api) {
-      return { success: false, error: 'Download server not configured' };
+    const platform = detectPlatform(url);
+
+    if (!platform) {
+      return { success: false, error: 'Unsupported or unrecognized media link.' };
     }
 
-    const endpoint = `${CONFIG.cobalt.api.replace(/\/$/, '')}/`;
-    const timeout = CONFIG.cobalt.timeout || 60000;
-
-    const body = {
-      url,
-      downloadMode: audioOnly ? 'audio' : 'auto',
-      audioFormat: audioOnly ? 'mp3' : 'best',
-      audioBitrate: '320',
-      videoQuality: '1080',
-      filenameStyle: 'basic',
-      disableMetadata: false,
-      // We do not support client-side remuxing/transcoding, so ask the server
-      // to handle everything it can.
-      localProcessing: 'disabled'
-    };
-
-    const headers = {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    };
-    if (CONFIG.cobalt.authHeader) {
-      headers.Authorization = CONFIG.cobalt.authHeader;
-    }
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      timeout
-    });
-
-    if (!response.ok) {
-      const raw = await response.text().catch(() => '');
-      let friendlyError = '';
-
-      try {
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          const code = parsed?.error?.code || parsed?.code || '';
-          if (code === 'error.api.auth.jwt.missing') {
-            friendlyError =
-              'Download server requires authentication. The bot owner must configure a Cobalt API instance and auth token.';
-          }
-        }
-      } catch (_) {}
-
-      if (friendlyError) {
-        return { success: false, error: friendlyError };
-      }
-
+    if (platform !== 'youtube') {
       return {
         success: false,
-        error: `Download server error (${response.status}): ${raw.slice(0, 200) || response.statusText}`
+        error: `Direct downloads for ${platform} links are not available on this bot.`
       };
     }
 
-    const data = await response.json();
-    const status = data.status;
-
-    if (!status) {
-      return { success: false, error: 'Invalid response from download server' };
+    if (!ytdl.validateURL(url)) {
+      return { success: false, error: 'Invalid YouTube link.' };
     }
 
-    if (status === 'error') {
-      const code = data.error?.code || 'unknown_error';
+    const info = await ytdl.getInfo(url);
 
-      // Map a few common cases to more user-friendly messages
-      if (code.includes('unsupported') || code.includes('service')) {
-        return { success: false, error: 'This link is not supported by the download server.' };
-      }
-      if (code.includes('length') || code.includes('duration')) {
-        return { success: false, error: 'Video is too long for the download server.' };
-      }
-
-      return { success: false, error: `Download failed (${code})` };
+    let format;
+    if (audioOnly) {
+      format = ytdl.chooseFormat(info.formats, {
+        quality: 'highestaudio'
+      });
+    } else {
+      format = ytdl.chooseFormat(info.formats, {
+        quality: 'highest',
+        filter: 'audioandvideo'
+      });
     }
 
-    if (status === 'picker') {
-      const options = (data.picker || [])
-        .map(item => ({
-          type: item.type || 'video',
-          url: item.url,
-          thumb: item.thumb || null
-        }))
-        .filter(o => !!o.url);
-
-      if (!options.length) {
-        return { success: false, error: 'No downloadable items found for this link.' };
-      }
-
-      return {
-        success: true,
-        picker: true,
-        options
-      };
+    if (!format || !format.url) {
+      return { success: false, error: 'Could not find a suitable format for this video.' };
     }
 
-    if (status === 'tunnel' || status === 'redirect') {
-      if (!data.url) {
-        return { success: false, error: 'Download server did not provide a file URL.' };
-      }
-
-      return {
-        success: true,
-        url: data.url,
-        filename: data.filename || null
-      };
-    }
-
-    if (status === 'local-processing') {
-      // Instance expects the client to handle remuxing/transcoding locally.
-      // We don't support this in the bot environment.
-      return {
-        success: false,
-        error: 'Download server requested local processing, which is not supported.'
-      };
-    }
-
-    return { success: false, error: `Unsupported response from download server (${status})` };
+    return {
+      success: true,
+      url: format.url,
+      filename: info.videoDetails?.title || null
+    };
   } catch (error) {
     return { success: false, error: error.message || 'Download failed' };
   }
