@@ -7882,6 +7882,1018 @@ bot.callbackQuery("todo_noop", async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
+// =====================
+// INLINE TODO CALLBACK HANDLERS
+// Double-tap pattern: first tap toggles, second tap within 3s opens action menu
+// =====================
+
+// Track last tap for double-tap detection
+const inlineTodoLastTap = new Map(); // oduserId -> { taskId, timestamp }
+
+bot.callbackQuery(/^itodo_tap:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const now = Date.now();
+  const lastTap = inlineTodoLastTap.get(userId);
+  
+  // Check for double-tap (same task within 3 seconds)
+  if (lastTap && lastTap.taskId === taskId && (now - lastTap.timestamp) < 3000) {
+    // Double-tap detected - show action menu
+    inlineTodoLastTap.delete(userId);
+    await ctx.answerCallbackQuery({ text: "⚙️ Opening options..." });
+    
+    const task = getTaskById(userId, taskId);
+    if (!task) {
+      return ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    }
+    
+    const checkbox = task.completed ? "✅" : "⬜";
+    const categoryEmoji = getCategoryEmoji(task.category);
+    const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+    const dueText = task.dueDate ? `\n📅 Due: ${task.dueDate}` : "";
+    
+    const menuText = [
+      `⚙️ <b>Task Options</b>`,
+      ``,
+      `${checkbox} ${escapeHTML(task.text)}`,
+      ``,
+      `${categoryEmoji} ${escapeHTML(task.category || "personal")} • ${priorityText}${dueText}`,
+      ``,
+      `<i>Choose an action:</i>`,
+    ].join("\n");
+    
+    const keyboard = new InlineKeyboard()
+      .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+      .text("🗑️ Delete", `itodo_delete:${taskId}`)
+      .row()
+      .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+      .row()
+      .text("🔴 High", `itodo_priority:${taskId}:high`)
+      .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+      .text("🟢 Low", `itodo_priority:${taskId}:low`)
+      .row()
+      .text("📅 Today", `itodo_due:${taskId}:today`)
+      .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+      .row()
+      .text("← Back to List", "itodo_back");
+    
+    try {
+      await ctx.editMessageText(menuText, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  // First tap - toggle the task
+  inlineTodoLastTap.set(userId, { taskId, timestamp: now });
+  
+  // Auto-clear after 3 seconds
+  setTimeout(() => {
+    const current = inlineTodoLastTap.get(userId);
+    if (current && current.taskId === taskId && current.timestamp === now) {
+      inlineTodoLastTap.delete(userId);
+    }
+  }, 3000);
+  
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    const status = task.completed ? "✅ Done! Tap again for options" : "⬜ Unchecked! Tap again for options";
+    await ctx.answerCallbackQuery({ text: status });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the task list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  
+  displayTodos.forEach((t, idx) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const categoryEmoji = getCategoryEmoji(t.category);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
+    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+  });
+  
+  if (sortedTodos.length > 8) {
+    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
+  }
+  
+  const streak = getCompletionStreak(userId);
+  if (streak > 0) {
+    taskListText += `\n🔥 ${streak} day streak!`;
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_toggle:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = toggleTaskCompletion(userId, taskId);
+  
+  if (task) {
+    await ctx.answerCallbackQuery({ text: task.completed ? "✅ Completed!" : "⬜ Unchecked!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  
+  displayTodos.forEach((t, idx) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const categoryEmoji = getCategoryEmoji(t.category);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
+    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+  });
+  
+  if (sortedTodos.length > 8) {
+    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
+  }
+  
+  const streak = getCompletionStreak(userId);
+  if (streak > 0) {
+    taskListText += `\n🔥 ${streak} day streak!`;
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_delete:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const deleted = deleteTask(userId, taskId);
+  
+  if (deleted) {
+    await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  if (taskCount === 0) {
+    try {
+      await ctx.editMessageText("📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Tasks</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Add Task", "itodo_add")
+          .row()
+          .switchInlineCurrent("← Back", ""),
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  
+  displayTodos.forEach((t, idx) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const categoryEmoji = getCategoryEmoji(t.category);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
+    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+  });
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_priority:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const priority = ctx.match[2];
+  
+  const task = updateTask(userId, taskId, { priority });
+  
+  if (task) {
+    const emoji = priority === "high" ? "🔴" : priority === "medium" ? "🟡" : "🟢";
+    await ctx.answerCallbackQuery({ text: `${emoji} Priority set to ${priority}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the action menu
+  const updatedTask = getTaskById(userId, taskId);
+  if (!updatedTask) return;
+  
+  const checkbox = updatedTask.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(updatedTask.category);
+  const priorityText = updatedTask.priority === "high" ? "🔴 High" : updatedTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = updatedTask.dueDate ? `\n📅 Due: ${updatedTask.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(updatedTask.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(updatedTask.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(updatedTask.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_due:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const dueOption = ctx.match[2];
+  
+  let dueDate;
+  const today = new Date();
+  if (dueOption === "today") {
+    dueDate = today.toISOString().split("T")[0];
+  } else if (dueOption === "tomorrow") {
+    today.setDate(today.getDate() + 1);
+    dueDate = today.toISOString().split("T")[0];
+  } else {
+    dueDate = dueOption;
+  }
+  
+  const task = updateTask(userId, taskId, { dueDate });
+  
+  if (task) {
+    await ctx.answerCallbackQuery({ text: `📅 Due date set to ${dueDate}!` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  // Refresh the action menu
+  const updatedTask = getTaskById(userId, taskId);
+  if (!updatedTask) return;
+  
+  const checkbox = updatedTask.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(updatedTask.category);
+  const priorityText = updatedTask.priority === "high" ? "🔴 High" : updatedTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = updatedTask.dueDate ? `\n📅 Due: ${updatedTask.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(updatedTask.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(updatedTask.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(updatedTask.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_edit:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = getTaskById(userId, taskId);
+  
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery({ text: "✏️ Use inline to edit" });
+  
+  // Show edit instructions
+  const editText = [
+    `✏️ <b>Edit Task</b>`,
+    ``,
+    `Current: ${escapeHTML(task.text)}`,
+    ``,
+    `To edit, type in inline mode:`,
+    `<code>t:edit ${taskId} New task text</code>`,
+    ``,
+    `Or use the DM command:`,
+    `<code>/todo edit ${taskId} New text</code>`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(editText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("← Back to Task", `itodo_view:${taskId}`)
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_view:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = getTaskById(userId, taskId);
+  
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  const checkbox = task.completed ? "✅" : "⬜";
+  const categoryEmoji = getCategoryEmoji(task.category);
+  const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+  const dueText = task.dueDate ? `\n📅 Due: ${task.dueDate}` : "";
+  
+  const menuText = [
+    `⚙️ <b>Task Options</b>`,
+    ``,
+    `${checkbox} ${escapeHTML(task.text)}`,
+    ``,
+    `${categoryEmoji} ${escapeHTML(task.category || "personal")} • ${priorityText}${dueText}`,
+    ``,
+    `<i>Choose an action:</i>`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${taskId}`)
+    .text("🗑️ Delete", `itodo_delete:${taskId}`)
+    .row()
+    .text("✏️ Edit Text", `itodo_edit:${taskId}`)
+    .row()
+    .text("🔴 High", `itodo_priority:${taskId}:high`)
+    .text("🟡 Med", `itodo_priority:${taskId}:medium`)
+    .text("🟢 Low", `itodo_priority:${taskId}:low`)
+    .row()
+    .text("📅 Today", `itodo_due:${taskId}:today`)
+    .text("📅 Tomorrow", `itodo_due:${taskId}:tomorrow`)
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(menuText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_back", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  if (taskCount === 0) {
+    try {
+      await ctx.editMessageText("📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\n<i>via StarzAI • Tasks</i>", {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("➕ Add Task", "itodo_add")
+          .row()
+          .switchInlineCurrent("← Back", ""),
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  
+  displayTodos.forEach((t, idx) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const categoryEmoji = getCategoryEmoji(t.category);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
+    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+  });
+  
+  if (sortedTodos.length > 8) {
+    taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
+  }
+  
+  const streak = getCompletionStreak(userId);
+  if (streak > 0) {
+    taskListText += `\n🔥 ${streak} day streak!`;
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_add", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery({ text: "➕ Use inline to add task" });
+  
+  const addText = [
+    `➕ <b>Add Task</b>`,
+    ``,
+    `Type in inline mode:`,
+    `<code>t:add Buy groceries</code>`,
+    ``,
+    `Quick add with options:`,
+    `<code>t:add Task #work !high @tomorrow</code>`,
+    ``,
+    `Or use the DM command:`,
+    `<code>/todo add Your task here</code>`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(addText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .switchInlineCurrent("➕ Add Task", "t:add ")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_filter", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const filters = getTodoFilters(userId);
+  
+  const filterText = [
+    `🔍 <b>Filter Tasks</b>`,
+    ``,
+    `Current filters:`,
+    `• Priority: ${filters.priority || "All"}`,
+    `• Category: ${filters.category || "All"}`,
+    `• Sort by: ${filters.sortBy || "created"}`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔴 High", "itodo_fpri:high")
+    .text("🟡 Med", "itodo_fpri:medium")
+    .text("🟢 Low", "itodo_fpri:low")
+    .row()
+    .text("💼 Work", "itodo_fcat:work")
+    .text("👤 Personal", "itodo_fcat:personal")
+    .text("🛒 Shop", "itodo_fcat:shopping")
+    .row()
+    .text("📅 By Date", "itodo_sort:dueDate")
+    .text("🔴 By Priority", "itodo_sort:priority")
+    .row()
+    .text("❌ Clear Filters", "itodo_fclear")
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(filterText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_fpri:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const priority = ctx.match[1];
+  setTodoFilter(userId, "priority", priority);
+  await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${priority} priority` });
+  
+  // Go back to list with filter applied
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  const taskCount = filteredTodos.length;
+  const doneCount = filteredTodos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n`;
+  taskListText += `<i>🔍 Filtered: ${priority} priority</i>\n\n`;
+  
+  if (displayTodos.length === 0) {
+    taskListText += `<i>No tasks match this filter</i>`;
+  } else {
+    displayTodos.forEach((t, idx) => {
+      const checkbox = t.completed ? "✅" : "⬜";
+      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+      const categoryEmoji = getCategoryEmoji(t.category);
+      taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}\n`;
+    });
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("❌ Clear", "itodo_fclear")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_fcat:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const category = ctx.match[1];
+  setTodoFilter(userId, "category", category);
+  await ctx.answerCallbackQuery({ text: `🔍 Filtering by ${category}` });
+  
+  // Go back to list with filter applied
+  const todos = getUserTodos(userId);
+  const filters = getTodoFilters(userId);
+  const filteredTodos = filterTodos(todos, filters);
+  const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  const taskCount = filteredTodos.length;
+  const doneCount = filteredTodos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n`;
+  taskListText += `<i>🔍 Filtered: ${category}</i>\n\n`;
+  
+  if (displayTodos.length === 0) {
+    taskListText += `<i>No tasks match this filter</i>`;
+  } else {
+    displayTodos.forEach((t, idx) => {
+      const checkbox = t.completed ? "✅" : "⬜";
+      const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+      const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+      taskListText += `${checkbox} ${idx + 1}. ${text}${priorityIndicator}\n`;
+    });
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("❌ Clear", "itodo_fclear")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery(/^itodo_sort:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const sortBy = ctx.match[1];
+  setTodoFilter(userId, "sortBy", sortBy);
+  await ctx.answerCallbackQuery({ text: `📊 Sorting by ${sortBy}` });
+  
+  // Go back to filter menu
+  const filters = getTodoFilters(userId);
+  
+  const filterText = [
+    `🔍 <b>Filter Tasks</b>`,
+    ``,
+    `Current filters:`,
+    `• Priority: ${filters.priority || "All"}`,
+    `• Category: ${filters.category || "All"}`,
+    `• Sort by: ${filters.sortBy || "created"}`,
+  ].join("\n");
+  
+  const keyboard = new InlineKeyboard()
+    .text("🔴 High", "itodo_fpri:high")
+    .text("🟡 Med", "itodo_fpri:medium")
+    .text("🟢 Low", "itodo_fpri:low")
+    .row()
+    .text("💼 Work", "itodo_fcat:work")
+    .text("👤 Personal", "itodo_fcat:personal")
+    .text("🛒 Shop", "itodo_fcat:shopping")
+    .row()
+    .text("📅 By Date", "itodo_sort:dueDate")
+    .text("🔴 By Priority", "itodo_sort:priority")
+    .row()
+    .text("❌ Clear Filters", "itodo_fclear")
+    .row()
+    .text("← Back to List", "itodo_back");
+  
+  try {
+    await ctx.editMessageText(filterText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_fclear", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  clearTodoFilters(userId);
+  await ctx.answerCallbackQuery({ text: "❌ Filters cleared" });
+  
+  // Go back to list
+  const todos = getUserTodos(userId);
+  const taskCount = todos.length;
+  const doneCount = todos.filter(t => t.completed).length;
+  const pendingCount = taskCount - doneCount;
+  
+  const sortedTodos = sortTodos(todos, "created");
+  const displayTodos = sortedTodos.slice(0, 8);
+  
+  let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+  
+  displayTodos.forEach((t, idx) => {
+    const checkbox = t.completed ? "✅" : "⬜";
+    const text = t.completed ? `<s>${escapeHTML(t.text)}</s>` : escapeHTML(t.text);
+    const categoryEmoji = getCategoryEmoji(t.category);
+    const priorityIndicator = t.priority === "high" ? " 🔴" : t.priority === "medium" ? " 🟡" : "";
+    const dueIndicator = t.dueDate && isOverdue(t.dueDate) && !t.completed ? " ⚠️" : "";
+    taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+  });
+  
+  const streak = getCompletionStreak(userId);
+  if (streak > 0) {
+    taskListText += `\n🔥 ${streak} day streak!`;
+  }
+  
+  taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+  
+  const keyboard = new InlineKeyboard();
+  
+  for (let i = 0; i < displayTodos.length; i += 2) {
+    const task1 = displayTodos[i];
+    const icon1 = task1.completed ? "✅" : "⬜";
+    keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+    
+    if (displayTodos[i + 1]) {
+      const task2 = displayTodos[i + 1];
+      const icon2 = task2.completed ? "✅" : "⬜";
+      keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+    }
+    keyboard.row();
+  }
+  
+  keyboard
+    .text("➕ Add", "itodo_add")
+    .text("🔍 Filter", "itodo_filter")
+    .text("📊 Stats", "itodo_stats")
+    .row()
+    .switchInlineCurrent("🔄 Refresh", "t: ")
+    .switchInlineCurrent("← Back", "");
+  
+  try {
+    await ctx.editMessageText(taskListText, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_stats", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
+bot.callbackQuery("itodo_clear_done", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const cleared = clearCompletedTasks(userId);
+  await ctx.answerCallbackQuery({ text: `🗑️ Cleared ${cleared} completed tasks!` });
+  
+  // Go back to stats
+  const stats = getTodoStats(userId);
+  
+  const statsText = [
+    `📊 <b>Task Statistics</b>`,
+    ``,
+    `📋 Total tasks: ${stats.total}`,
+    `✅ Completed: ${stats.completed}`,
+    `⬜ Pending: ${stats.pending}`,
+    `📈 Completion rate: ${stats.completionRate}%`,
+    ``,
+    `🔥 Current streak: ${stats.streak} days`,
+    `🏆 Best streak: ${stats.bestStreak} days`,
+  ].join("\n");
+  
+  try {
+    await ctx.editMessageText(statsText, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard()
+        .text("🗑️ Clear Completed", "itodo_clear_done")
+        .row()
+        .text("← Back to List", "itodo_back"),
+    });
+  } catch (e) {}
+});
+
 // /persona - Set custom AI personality
 bot.command("persona", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -12839,7 +13851,7 @@ bot.on("inline_query", async (ctx) => {
         },
         reply_markup: new InlineKeyboard()
           .switchInlineCurrent("⭐ Quark", "q: ")
-          .switchInlineCurrent("🗿 Blackhole", "b: ")
+          .switchInlineCurrent("🗿🔬 Blackhole", "b: ")
           .row()
           .switchInlineCurrent("💻 Code", "code: ")
           .switchInlineCurrent("🧠 Explain", "e: ")
@@ -12848,7 +13860,9 @@ bot.on("inline_query", async (ctx) => {
           .switchInlineCurrent("📝 Summarize", "sum: ")
           .row()
           .switchInlineCurrent("🎭 Character", "as ")
-          .switchInlineCurrent("🤝🏻 Partner", "p: "),
+          .switchInlineCurrent("🤝🏻 Partner", "p: ")
+          .row()
+          .switchInlineCurrent("📋 Tasks", "t: "),
       },
       {
         type: "article",
@@ -13371,6 +14385,305 @@ bot.on("inline_query", async (ctx) => {
         },
         // IMPORTANT: Must include reply_markup to receive inline_message_id
         reply_markup: new InlineKeyboard().text("⏳ Loading...", "noop"),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // "t:" or "t " - Tasks/Todo mode (manage your tasks inline)
+  // Uses double-tap pattern: first tap toggles, second tap within 3s opens action menu
+  if (qLower.startsWith("t:") || qLower.startsWith("t ")) {
+    const subCommand = q.slice(2).trim();
+    const todos = getUserTodos(userId);
+    const filters = getTodoFilters(userId);
+    
+    // t: or t (empty) - show task list
+    if (!subCommand) {
+      const taskCount = todos.length;
+      const doneCount = todos.filter(t => t.completed).length;
+      const pendingCount = taskCount - doneCount;
+      
+      if (taskCount === 0) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_empty_${sessionKey}`,
+            title: "📋 No Tasks Yet",
+            description: "Type t:add <task> to create your first task",
+            thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+            input_message_content: {
+              message_text: "📋 <b>My Tasks</b>\n\n<i>No tasks yet!</i>\n\nAdd your first task:\n<code>t:add Buy groceries</code>\n\n<i>via StarzAI • Tasks</i>",
+              parse_mode: "HTML",
+            },
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("➕ Add Task", "t:add ")
+              .row()
+              .switchInlineCurrent("← Back", ""),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Build task list with toggle buttons
+      const filteredTodos = filterTodos(todos, filters);
+      const sortedTodos = sortTodos(filteredTodos, filters.sortBy || "created");
+      const displayTodos = sortedTodos.slice(0, 8); // Show max 8 tasks inline
+      
+      // Build task list text
+      let taskListText = `📋 <b>My Tasks</b> (${pendingCount} pending • ${doneCount} done)\n\n`;
+      
+      displayTodos.forEach((task, idx) => {
+        const checkbox = task.completed ? "✅" : "⬜";
+        const text = task.completed ? `<s>${escapeHTML(task.text)}</s>` : escapeHTML(task.text);
+        const categoryEmoji = getCategoryEmoji(task.category);
+        const priorityIndicator = task.priority === "high" ? " 🔴" : task.priority === "medium" ? " 🟡" : "";
+        const dueIndicator = task.dueDate && isOverdue(task.dueDate) && !task.completed ? " ⚠️" : "";
+        taskListText += `${checkbox} ${idx + 1}. ${text} ${categoryEmoji}${priorityIndicator}${dueIndicator}\n`;
+      });
+      
+      if (sortedTodos.length > 8) {
+        taskListText += `\n<i>+${sortedTodos.length - 8} more tasks...</i>\n`;
+      }
+      
+      // Get streak info
+      const streak = getCompletionStreak(userId);
+      if (streak > 0) {
+        taskListText += `\n🔥 ${streak} day streak!`;
+      }
+      
+      taskListText += `\n\n<i>Tap task to toggle • Tap again for options</i>`;
+      
+      // Build keyboard with task toggle buttons
+      const keyboard = new InlineKeyboard();
+      
+      // Add task buttons in rows of 2
+      for (let i = 0; i < displayTodos.length; i += 2) {
+        const task1 = displayTodos[i];
+        const icon1 = task1.completed ? "✅" : "⬜";
+        keyboard.text(`${icon1} ${i + 1}`, `itodo_tap:${task1.id}`);
+        
+        if (displayTodos[i + 1]) {
+          const task2 = displayTodos[i + 1];
+          const icon2 = task2.completed ? "✅" : "⬜";
+          keyboard.text(`${icon2} ${i + 2}`, `itodo_tap:${task2.id}`);
+        }
+        keyboard.row();
+      }
+      
+      // Action buttons
+      keyboard
+        .text("➕ Add", "itodo_add")
+        .text("🔍 Filter", "itodo_filter")
+        .text("📊 Stats", "itodo_stats")
+        .row()
+        .switchInlineCurrent("🔄 Refresh", "t: ")
+        .switchInlineCurrent("← Back", "");
+      
+      // Store session for double-tap detection
+      const tKey = makeId(6);
+      inlineCache.set(`t_session_${tKey}`, {
+        userId: String(userId),
+        lastTap: null,
+        lastTaskId: null,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => inlineCache.delete(`t_session_${tKey}`), 30 * 60 * 1000);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_list_${tKey}`,
+          title: `📋 Tasks (${pendingCount} pending)`,
+          description: displayTodos.slice(0, 3).map(t => (t.completed ? "✓ " : "○ ") + t.text.slice(0, 20)).join(" • "),
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: taskListText,
+            parse_mode: "HTML",
+          },
+          reply_markup: keyboard,
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:add <task> - quick add task
+    if (subCommand.toLowerCase().startsWith("add ") || subCommand.toLowerCase() === "add") {
+      const taskText = subCommand.slice(4).trim();
+      
+      if (!taskText) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_add_hint_${sessionKey}`,
+            title: "➕ Add Task",
+            description: "Type your task after t:add",
+            thumbnail_url: "https://img.icons8.com/fluency/96/plus.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("← Back to Tasks", "t: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Parse quick add syntax: #category !priority @date
+      const parsed = parseQuickAddSyntax(taskText);
+      const newTask = createTask(userId, parsed.text, {
+        category: parsed.category,
+        priority: parsed.priority,
+        dueDate: parsed.dueDate,
+      });
+      
+      if (!newTask) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_add_err_${sessionKey}`,
+            title: "⚠️ Failed to add task",
+            description: "Try again",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("🔄 Try Again", `t:add ${taskText}`),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      const categoryEmoji = getCategoryEmoji(newTask.category);
+      const priorityText = newTask.priority === "high" ? "🔴 High" : newTask.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+      const dueText = newTask.dueDate ? `📅 ${newTask.dueDate}` : "";
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_added_${makeId(6)}`,
+          title: `✅ Task Added: ${parsed.text.slice(0, 30)}`,
+          description: `${categoryEmoji} ${priorityText} ${dueText}`.trim(),
+          thumbnail_url: "https://img.icons8.com/fluency/96/checkmark.png",
+          input_message_content: {
+            message_text: `✅ <b>Task Added!</b>\n\n⬜ ${escapeHTML(newTask.text)}\n\n${categoryEmoji} ${escapeHTML(newTask.category || "personal")} • ${priorityText}${dueText ? "\n" + dueText : ""}\n\n<i>via StarzAI • Tasks</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "t: ")
+            .switchInlineCurrent("➕ Add Another", "t:add "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:stats - show statistics
+    if (subCommand.toLowerCase() === "stats") {
+      const stats = getTodoStats(userId);
+      
+      const statsText = [
+        `📊 <b>Task Statistics</b>`,
+        ``,
+        `📋 Total tasks: ${stats.total}`,
+        `✅ Completed: ${stats.completed}`,
+        `⬜ Pending: ${stats.pending}`,
+        `📈 Completion rate: ${stats.completionRate}%`,
+        ``,
+        `🔥 Current streak: ${stats.streak} days`,
+        `🏆 Best streak: ${stats.bestStreak} days`,
+        ``,
+        `<i>via StarzAI • Tasks</i>`,
+      ].join("\n");
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_stats_${sessionKey}`,
+          title: `📊 Stats: ${stats.completed}/${stats.total} done`,
+          description: `${stats.completionRate}% complete • ${stats.streak} day streak`,
+          thumbnail_url: "https://img.icons8.com/fluency/96/statistics.png",
+          input_message_content: {
+            message_text: statsText,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "t: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:done or t:clear - clear completed tasks
+    if (subCommand.toLowerCase() === "done" || subCommand.toLowerCase() === "clear") {
+      const cleared = clearCompletedTasks(userId);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_cleared_${sessionKey}`,
+          title: `🗑️ Cleared ${cleared} completed tasks`,
+          description: "Completed tasks removed",
+          thumbnail_url: "https://img.icons8.com/fluency/96/trash.png",
+          input_message_content: {
+            message_text: `🗑️ <b>Cleared ${cleared} completed task${cleared !== 1 ? "s" : ""}!</b>\n\n<i>via StarzAI • Tasks</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .switchInlineCurrent("📋 View Tasks", "t: ")
+            .switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // t:<number> - toggle specific task by number
+    const taskNum = parseInt(subCommand);
+    if (!isNaN(taskNum) && taskNum > 0) {
+      const sortedTodos = sortTodos(todos, filters.sortBy || "created");
+      const task = sortedTodos[taskNum - 1];
+      
+      if (!task) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `t_notfound_${sessionKey}`,
+            title: `⚠️ Task #${taskNum} not found`,
+            description: "Invalid task number",
+            thumbnail_url: "https://img.icons8.com/fluency/96/error.png",
+            input_message_content: { message_text: "_" },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("📋 View Tasks", "t: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+      
+      // Show task action menu
+      const checkbox = task.completed ? "✅" : "⬜";
+      const categoryEmoji = getCategoryEmoji(task.category);
+      
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `t_task_${makeId(6)}`,
+          title: `${checkbox} ${task.text.slice(0, 35)}`,
+          description: "Tap to send task with action buttons",
+          thumbnail_url: "https://img.icons8.com/fluency/96/todo-list.png",
+          input_message_content: {
+            message_text: `${checkbox} <b>Task #${taskNum}</b>\n\n${escapeHTML(task.text)}\n\n${categoryEmoji} ${escapeHTML(task.category || "personal")}\n\n<i>via StarzAI • Tasks</i>`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard()
+            .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `itodo_toggle:${task.id}`)
+            .text("🗑️ Delete", `itodo_delete:${task.id}`)
+            .row()
+            .text("✏️ Edit", `itodo_edit:${task.id}`)
+            .row()
+            .switchInlineCurrent("📋 Back to Tasks", "t: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+    
+    // Unknown subcommand - show help
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `t_help_${sessionKey}`,
+        title: "📋 Tasks Help",
+        description: "t: list • t:add <task> • t:stats • t:<#>",
+        thumbnail_url: "https://img.icons8.com/fluency/96/help.png",
+        input_message_content: {
+          message_text: `📋 <b>Tasks Help</b>\n\n<code>t:</code> - View task list\n<code>t:add Buy milk</code> - Add task\n<code>t:add Task #work !high @tomorrow</code> - Quick add with options\n<code>t:1</code> - View/edit task #1\n<code>t:stats</code> - View statistics\n<code>t:clear</code> - Clear completed\n\n<i>via StarzAI • Tasks</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("📋 View Tasks", "t: ")
+          .switchInlineCurrent("← Back", ""),
       },
     ], { cache_time: 0, is_personal: true });
   }
