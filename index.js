@@ -4553,7 +4553,117 @@ bot.command("imagine", async (ctx) => {
   }
 });
 
-// /img - AI image generation using DeAPI ZImageTurbo (fast, high quality)
+// =====================
+// IMAGE GENERATION (DeAPI ZImageTurbo)
+// =====================
+
+// Aspect ratio configurations
+const IMG_ASPECT_RATIOS = {
+  "1:1": { width: 768, height: 768, icon: "⬜", label: "Square" },
+  "4:3": { width: 896, height: 672, icon: "🖼️", label: "Landscape" },
+  "3:4": { width: 672, height: 896, icon: "📱", label: "Portrait" },
+  "16:9": { width: 1024, height: 576, icon: "🎬", label: "Widescreen" },
+  "9:16": { width: 576, height: 1024, icon: "📲", label: "Story" },
+  "3:2": { width: 864, height: 576, icon: "📷", label: "Photo" }
+};
+
+// Store pending image prompts (userId -> { prompt, messageId, chatId })
+const pendingImagePrompts = new Map();
+
+// Helper function to generate image with DeAPI
+async function generateDeAPIImage(prompt, aspectRatio, userId) {
+  const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
+  
+  // Step 1: Submit image generation request
+  const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${DEAPI_KEY}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      model: "ZImageTurbo_INT8",
+      width: config.width,
+      height: config.height,
+      steps: 8,
+      seed: Math.floor(Math.random() * 4294967295),
+      negative_prompt: "blur, low quality, distorted, ugly, deformed"
+    })
+  });
+  
+  if (!submitResponse.ok) {
+    const errorText = await submitResponse.text();
+    throw new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
+  }
+  
+  const submitData = await submitResponse.json();
+  const requestId = submitData?.data?.request_id;
+  
+  if (!requestId) {
+    throw new Error("No request_id returned from DeAPI");
+  }
+  
+  console.log(`[IMG] Submitted request ${requestId} for user ${userId} (${aspectRatio})`);
+  
+  // Step 2: Poll for result
+  let imageUrl = null;
+  let attempts = 0;
+  const maxAttempts = 30;
+  
+  while (attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const statusResponse = await fetch(
+      `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
+      {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${DEAPI_KEY}`,
+          "Accept": "application/json"
+        }
+      }
+    );
+    
+    if (!statusResponse.ok) {
+      attempts++;
+      continue;
+    }
+    
+    const statusData = await statusResponse.json();
+    const status = statusData?.data?.status || statusData?.status;
+    
+    if (status === "done" || status === "completed") {
+      imageUrl = statusData?.data?.result?.url ||
+                 statusData?.data?.result?.image_url ||
+                 statusData?.data?.url ||
+                 statusData?.data?.image_url ||
+                 statusData?.result?.url ||
+                 (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
+                 (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
+      break;
+    } else if (status === "error" || status === "failed") {
+      throw new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
+    }
+    
+    attempts++;
+  }
+  
+  if (!imageUrl) {
+    throw new Error("Timeout waiting for image generation");
+  }
+  
+  // Step 3: Download the image
+  const imageResponse = await fetch(imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to download image: ${imageResponse.status}`);
+  }
+  
+  return Buffer.from(await imageResponse.arrayBuffer());
+}
+
+// /img - AI image generation with aspect ratio selection
 bot.command("img", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -4562,12 +4672,10 @@ bot.command("img", async (ctx) => {
   
   ensureUser(u.id, u);
   
-  // Activate group if used in group chat
   if (ctx.chat.type !== "private") {
     activateGroup(ctx.chat.id);
   }
   
-  // Check if DeAPI is configured
   if (!DEAPI_KEY) {
     await ctx.reply(
       "⚠️ DeAPI is not configured. Use /imagine instead for free image generation.",
@@ -4581,137 +4689,141 @@ bot.command("img", async (ctx) => {
   
   if (!prompt) {
     await ctx.reply(
-      "🎨 *AI Image Generator (Turbo)*\n\n" +
-      "Generate stunning images with ZImageTurbo!\n\n" +
+      "🎨 *AI Image Generator*\n\n" +
+      "Create stunning images with AI!\n\n" +
       "*Usage:*\n" +
-      "`/img a cute cat in space`\n" +
-      "`/img fantasy landscape with mountains`\n" +
-      "`/img cyberpunk city at night`\n\n" +
-      "_Powered by DeAPI ZImageTurbo - Fast & High Quality_",
+      "`/img a cute cat in space`\n\n" +
+      "*Aspect Ratios:*\n" +
+      "⬜ Square • 🖼️ Landscape • 📱 Portrait\n" +
+      "🎬 Widescreen • 📲 Story • 📷 Photo\n\n" +
+      "_Powered by DeAPI ZImageTurbo_",
       { parse_mode: "Markdown" }
     );
     return;
   }
   
-  // Check if prompt is too long
   if (prompt.length > 500) {
     await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
     return;
   }
   
-  // Send generating message
-  const statusMsg = await ctx.reply(
-    "🎨 *Generating image...*\n\n" +
-    `Prompt: _${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_\n\n` +
-    "⏳ This may take 5-15 seconds...",
-    { parse_mode: "Markdown" }
+  // Store the prompt and show aspect ratio selection
+  const aspectButtons = [
+    [
+      { text: "⬜ Square", callback_data: `img_ar:1:1` },
+      { text: "🖼️ Landscape", callback_data: `img_ar:4:3` },
+      { text: "📱 Portrait", callback_data: `img_ar:3:4` }
+    ],
+    [
+      { text: "🎬 Widescreen", callback_data: `img_ar:16:9` },
+      { text: "📲 Story", callback_data: `img_ar:9:16` },
+      { text: "📷 Photo", callback_data: `img_ar:3:2` }
+    ],
+    [
+      { text: "❌ Cancel", callback_data: "img_cancel" }
+    ]
+  ];
+  
+  const msg = await ctx.reply(
+    "🎨 *Select Aspect Ratio*\n\n" +
+    `📝 _${prompt.slice(0, 150)}${prompt.length > 150 ? '...' : ''}_\n\n` +
+    "Choose the format for your image:",
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: aspectButtons }
+    }
   );
   
+  // Store pending prompt
+  pendingImagePrompts.set(u.id, {
+    prompt: prompt,
+    messageId: msg.message_id,
+    chatId: ctx.chat.id
+  });
+  
+  // Auto-expire after 5 minutes
+  setTimeout(() => {
+    if (pendingImagePrompts.get(u.id)?.messageId === msg.message_id) {
+      pendingImagePrompts.delete(u.id);
+    }
+  }, 5 * 60 * 1000);
+});
+
+// Handle aspect ratio selection
+bot.callbackQuery(/^img_ar:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img again.", show_alert: true });
+    return;
+  }
+  
+  const match = ctx.callbackQuery.data.match(/^img_ar:(.+):(.+)$/);
+  const aspectRatio = match ? `${match[1]}:${match[2]}` : "1:1";
+  const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
+  
+  await ctx.answerCallbackQuery();
+  
+  // Update message to show generating status
   try {
-    // Step 1: Submit image generation request
-    const submitResponse = await fetch("https://api.deapi.ai/api/v1/client/txt2img", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${DEAPI_KEY}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      },
-      body: JSON.stringify({
-        prompt: prompt,
-        model: "ZImageTurbo_INT8",
-        width: 768,
-        height: 768,
-        steps: 8,
-        seed: Math.floor(Math.random() * 4294967295),
-        negative_prompt: "blur, low quality, distorted, ugly"
-      })
-    });
+    await ctx.api.editMessageText(
+      pending.chatId,
+      pending.messageId,
+      "🎨 *Generating your image...*\n\n" +
+      `📝 _${pending.prompt.slice(0, 100)}${pending.prompt.length > 100 ? '...' : ''}_\n\n` +
+      `📐 ${config.icon} ${config.label} (${aspectRatio})\n\n` +
+      "⏳ Please wait 5-15 seconds...",
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {
+    // Ignore edit errors
+  }
+  
+  try {
+    const imageBuffer = await generateDeAPIImage(pending.prompt, aspectRatio, u.id);
     
-    if (!submitResponse.ok) {
-      const errorText = await submitResponse.text();
-      throw new Error(`DeAPI submit error (${submitResponse.status}): ${errorText}`);
-    }
-    
-    const submitData = await submitResponse.json();
-    const requestId = submitData?.data?.request_id;
-    
-    if (!requestId) {
-      throw new Error("No request_id returned from DeAPI");
-    }
-    
-    console.log(`[IMG] Submitted request ${requestId} for user ${u.id}`);
-    
-    // Step 2: Poll for result
-    let imageUrl = null;
-    let attempts = 0;
-    const maxAttempts = 30; // 30 seconds max
-    
-    while (attempts < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-      
-      const statusResponse = await fetch(
-        `https://api.deapi.ai/api/v1/client/request-status/${requestId}`,
-        {
-          method: "GET",
-          headers: {
-            "Authorization": `Bearer ${DEAPI_KEY}`,
-            "Accept": "application/json"
-          }
-        }
-      );
-      
-      if (!statusResponse.ok) {
-        attempts++;
-        continue;
-      }
-      
-      const statusData = await statusResponse.json();
-      const status = statusData?.data?.status || statusData?.status;
-      
-      if (status === "done" || status === "completed") {
-        // Try to find the image URL in various possible locations
-        imageUrl = statusData?.data?.result?.url ||
-                   statusData?.data?.result?.image_url ||
-                   statusData?.data?.url ||
-                   statusData?.data?.image_url ||
-                   statusData?.result?.url ||
-                   (Array.isArray(statusData?.data?.result) ? statusData.data.result[0]?.url : null) ||
-                   (Array.isArray(statusData?.data?.images) ? statusData.data.images[0] : null);
-        break;
-      } else if (status === "error" || status === "failed") {
-        throw new Error(statusData?.data?.error || statusData?.error || "Image generation failed");
-      }
-      
-      attempts++;
-    }
-    
-    if (!imageUrl) {
-      throw new Error("Timeout waiting for image generation");
-    }
-    
-    // Step 3: Download and send the image
-    const imageResponse = await fetch(imageUrl);
-    if (!imageResponse.ok) {
-      throw new Error(`Failed to download image: ${imageResponse.status}`);
-    }
-    
-    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    // Create action buttons for the generated image
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img_regen:${aspectRatio}` },
+        { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img_new" }
+      ]
+    ];
     
     // Send the image
-    await ctx.replyWithPhoto(
+    await ctx.api.sendPhoto(
+      pending.chatId,
       new InputFile(imageBuffer, "generated_image.jpg"),
       {
-        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n⚡ _Powered by DeAPI ZImageTurbo_`,
-        parse_mode: "Markdown"
+        caption: `🎨 *Generated Image*\n\n` +
+                 `📝 _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by DeAPI ZImageTurbo_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
       }
     );
     
-    // Delete the status message
+    // Delete the selection message
     try {
-      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+      await ctx.api.deleteMessage(pending.chatId, pending.messageId);
     } catch (e) {
-      // Ignore deletion errors
+      // Ignore
     }
+    
+    // Update pending with last used aspect ratio (for regenerate)
+    pendingImagePrompts.set(u.id, {
+      ...pending,
+      lastAspectRatio: aspectRatio,
+      messageId: null
+    });
     
     // Track usage
     const rec = getUserRecord(u.id);
@@ -4720,28 +4832,184 @@ bot.command("img", async (ctx) => {
       saveUsers();
     }
     
-    console.log(`[IMG] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
+    console.log(`[IMG] User ${u.id} generated image (${aspectRatio}): "${pending.prompt.slice(0, 50)}"`);
     
   } catch (error) {
     console.error("DeAPI image generation error:", error);
     
-    // Update status message with error
+    try {
+      await ctx.api.editMessageText(
+        pending.chatId,
+        pending.messageId,
+        "❌ *Image generation failed*\n\n" +
+        `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+        "Try again or use /imagine for free alternative.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔄 Try Again", callback_data: `img_ar:${aspectRatio.replace(':', ':')}` }],
+              [{ text: "❌ Cancel", callback_data: "img_cancel" }]
+            ]
+          }
+        }
+      );
+    } catch (e) {
+      await ctx.reply("❌ Image generation failed. Please try /imagine instead.");
+    }
+  }
+});
+
+// Handle regenerate with same settings
+bot.callbackQuery(/^img_regen:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending?.prompt) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img again.", show_alert: true });
+    return;
+  }
+  
+  const match = ctx.callbackQuery.data.match(/^img_regen:(.+):(.+)$/);
+  const aspectRatio = match ? `${match[1]}:${match[2]}` : pending.lastAspectRatio || "1:1";
+  const config = IMG_ASPECT_RATIOS[aspectRatio] || IMG_ASPECT_RATIOS["1:1"];
+  
+  await ctx.answerCallbackQuery({ text: "🔄 Regenerating..." });
+  
+  // Send a new generating message
+  const statusMsg = await ctx.reply(
+    "🔄 *Regenerating image...*\n\n" +
+    `📝 _${pending.prompt.slice(0, 100)}..._\n` +
+    `📐 ${config.icon} ${config.label}\n\n` +
+    "⏳ Please wait...",
+    { parse_mode: "Markdown" }
+  );
+  
+  try {
+    const imageBuffer = await generateDeAPIImage(pending.prompt, aspectRatio, u.id);
+    
+    const actionButtons = [
+      [
+        { text: "🔄 Regenerate", callback_data: `img_regen:${aspectRatio}` },
+        { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+      ],
+      [
+        { text: "✨ New Image", callback_data: "img_new" }
+      ]
+    ];
+    
+    await ctx.replyWithPhoto(
+      new InputFile(imageBuffer, "generated_image.jpg"),
+      {
+        caption: `🎨 *Regenerated Image*\n\n` +
+                 `📝 _${pending.prompt.slice(0, 200)}..._\n\n` +
+                 `📐 ${config.icon} ${config.label}\n` +
+                 `⚡ _Powered by DeAPI ZImageTurbo_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    } catch (e) {}
+    
+    const rec = getUserRecord(u.id);
+    if (rec) {
+      rec.messagesCount = (rec.messagesCount || 0) + 1;
+      saveUsers();
+    }
+    
+  } catch (error) {
+    console.error("DeAPI regenerate error:", error);
     try {
       await ctx.api.editMessageText(
         ctx.chat.id,
         statusMsg.message_id,
-        "❌ *Image generation failed*\n\n" +
-        "The service might be temporarily unavailable. Please try again or use /imagine for free alternative.\n\n" +
-        "_If the problem persists, use /feedback to report it._",
+        "❌ Regeneration failed. Please try again.",
         { parse_mode: "Markdown" }
       );
-    } catch (e) {
-      await ctx.reply(
-        "❌ *Image generation failed*\n\n" +
-        "Please try /imagine for free alternative.",
-        { parse_mode: "Markdown" }
-      );
+    } catch (e) {}
+  }
+});
+
+// Handle change aspect ratio
+bot.callbackQuery("img_change_ar", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingImagePrompts.get(u.id);
+  if (!pending?.prompt) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Please use /img again.", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  const aspectButtons = [
+    [
+      { text: "⬜ Square", callback_data: `img_ar:1:1` },
+      { text: "🖼️ Landscape", callback_data: `img_ar:4:3` },
+      { text: "📱 Portrait", callback_data: `img_ar:3:4` }
+    ],
+    [
+      { text: "🎬 Widescreen", callback_data: `img_ar:16:9` },
+      { text: "📲 Story", callback_data: `img_ar:9:16` },
+      { text: "📷 Photo", callback_data: `img_ar:3:2` }
+    ],
+    [
+      { text: "❌ Cancel", callback_data: "img_cancel" }
+    ]
+  ];
+  
+  const msg = await ctx.reply(
+    "📐 *Change Aspect Ratio*\n\n" +
+    `📝 _${pending.prompt.slice(0, 150)}..._\n\n` +
+    "Select a new format:",
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: aspectButtons }
     }
+  );
+  
+  pendingImagePrompts.set(u.id, {
+    ...pending,
+    messageId: msg.message_id,
+    chatId: ctx.chat.id
+  });
+});
+
+// Handle new image request
+bot.callbackQuery("img_new", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "✨ *New Image*\n\n" +
+    "Send a new prompt with:\n" +
+    "`/img your description here`",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Handle cancel
+bot.callbackQuery("img_cancel", async (ctx) => {
+  const u = ctx.from;
+  if (u?.id) {
+    pendingImagePrompts.delete(u.id);
+  }
+  
+  await ctx.answerCallbackQuery({ text: "Cancelled" });
+  
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {
+    try {
+      await ctx.editMessageText("❌ Cancelled");
+    } catch (e2) {}
   }
 });
 
