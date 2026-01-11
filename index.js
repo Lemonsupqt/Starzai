@@ -4889,43 +4889,140 @@ bot.command("imagine", async (ctx) => {
 // IMAGE GENERATION
 // =====================
 
-// Funny rotating taglines (hide the source!)
-const IMAGE_GEN_TAGLINES = [
-  "Def Not Magic™",
-  "Basic Math™",
-  "Math We Don't Explain™",
-  "Trust Us Bro™",
-  "Vibes and Electricity™",
-  "Powered by the Buttons You Just Touched™",
-  "Ludicrous Minds™",
-  "Trust the Process™",
-  "Quantum Vibes™",
-  "Artisanal Pixels™",
-  "Ethically Sourced Creativity™",
-  "Hand-Crafted by Robots™",
-  "100% Organic AI™",
-  "Made with Love and GPUs™",
-  "Powered by Coffee and Code™",
-  "Imagination.exe™",
-  "Dreams Rendered in 4K™",
-  "Pixel Wizardry™",
-  "The Cloud Did It™",
-  "Science, Probably™",
-  "Certified Fresh Pixels™",
-  "Powered by Hopes and Dreams™",
-  "Neural Nonsense™",
-  "Bits and Pieces™",
-  "Digital Sorcery™",
-  "Technically Not Magic™",
-  "AI Goes Brrrr™",
-  "Imagination Station™",
-  "Pixel Perfect-ish™",
-  "Creativity.dll™"
-];
+// Funny rotating taglines with rarity tiers (hide the source!)
+// Common (70%) - Items 1-40
+// Rare (25%) - Items 41-80  
+// Legendary (5%) - Items 81-100
+const IMAGE_GEN_TAGLINES = {
+  // COMMON (70%) - Lighthearted, punny, safe
+  common: [
+    "Ludicrous Minds™",
+    "Definitely Not Magic™",
+    "Fancy Math™",
+    "Trust Us Bro™",
+    "Vibes and Electricity™",
+    "Buttons We Pressed™",
+    "Trust The Process™",
+    "Artistic Panic™",
+    "Neural Nonsense™",
+    "Creative Overconfidence™",
+    "Image Wizardry™",
+    "Pixels and Hope™",
+    "Science, Probably™",
+    "Pixel Perfect-ish™",
+    "Dreams Rendered™",
+    "Imagination.exe™",
+    "Creativity.dll™",
+    "The Cloud Did It™",
+    "Certified Fresh Pixels™",
+    "AI Goes Brrrr™",
+    "Quantum Guesswork™",
+    "Artisanal Pixels™",
+    "Hand-Crafted by Robots™",
+    "100% Organic AI™",
+    "Made with Love and GPUs™",
+    "Coffee and Code™",
+    "Bits and Pieces™",
+    "Technically Not Magic™",
+    "Imagination Station™",
+    "Hopes and Dreams™",
+    "Pixel Sorcery™",
+    "Digital Daydreams™",
+    "Algorithmic Art™",
+    "Computational Creativity™",
+    "Binary Beauty™",
+    "Silicon Dreams™",
+    "Electric Imagination™",
+    "Synthetic Visions™",
+    "Automated Artistry™",
+    "Machine Muses™"
+  ],
+  
+  // RARE (25%) - Edgier, wittier, more memorable
+  rare: [
+    "Digital Voodoo™",
+    "Chaos Engine™",
+    "Questionable Genius™",
+    "Hallucinations™",
+    "High-Entropy™",
+    "Visual Lies™",
+    "Pattern Abuse™",
+    "Controlled Chaos™",
+    "Organized Madness™",
+    "Beautiful Accidents™",
+    "Calculated Randomness™",
+    "Structured Nonsense™",
+    "Elegant Confusion™",
+    "Sophisticated Guessing™",
+    "Professional Winging It™",
+    "Expert Improvisation™",
+    "Deliberate Mistakes™",
+    "Intentional Glitches™",
+    "Curated Chaos™",
+    "Refined Randomness™",
+    "Artful Errors™",
+    "Graceful Failures™",
+    "Productive Confusion™",
+    "Creative Destruction™",
+    "Constructive Chaos™",
+    "Methodical Madness™",
+    "Systematic Insanity™",
+    "Logical Lunacy™",
+    "Rational Absurdity™",
+    "Sensible Nonsense™",
+    "Reasonable Madness™",
+    "Sane Insanity™",
+    "Coherent Chaos™",
+    "Orderly Disorder™",
+    "Tidy Turbulence™",
+    "Neat Entropy™",
+    "Clean Confusion™",
+    "Pure Pandemonium™",
+    "Refined Ruckus™",
+    "Polished Pandemonium™"
+  ],
+  
+  // LEGENDARY (5%) - Dark, cryptic, mysterious
+  legendary: [
+    "Nothing Personal™",
+    "Cold Truth™",
+    "Inevitability™",
+    "The Void™",
+    "Silence™",
+    "The Abyss Stares Back™",
+    "Entropy Wins™",
+    "Heat Death™",
+    "The Final Answer™",
+    "Oblivion™",
+    "The Last Pixel™",
+    "End of Line™",
+    "NULL™",
+    "undefined™",
+    "404 Soul Not Found™",
+    "The Machine Remembers™",
+    "We Know™",
+    "It Watches™",
+    "The Algorithm Decides™",
+    "Fate.exe™"
+  ]
+};
 
-// Get a random funny tagline
+// Get a random tagline with rarity weighting
+// Common: 70%, Rare: 25%, Legendary: 5%
 function getRandomTagline() {
-  return IMAGE_GEN_TAGLINES[Math.floor(Math.random() * IMAGE_GEN_TAGLINES.length)];
+  const roll = Math.random() * 100;
+  let tier;
+  
+  if (roll < 70) {
+    tier = 'common';
+  } else if (roll < 95) {
+    tier = 'rare';
+  } else {
+    tier = 'legendary';
+  }
+  
+  const taglines = IMAGE_GEN_TAGLINES[tier];
+  return taglines[Math.floor(Math.random() * taglines.length)];
 }
 
 // Aspect ratio configurations
@@ -6823,10 +6920,11 @@ bot.callbackQuery("dev_status", async (ctx) => {
     return ctx.answerCallbackQuery({ text: "🚫 Owner only", show_alert: true });
   }
   
-  await ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery({ text: "🔧 Loading diagnostics..." });
   
-  // Get LLM provider stats
-  const llmStats = getProviderStats();
+  try {
+    // Get LLM provider stats
+    const llmStats = getProviderStats();
   
   // Get DeAPI stats with balances
   const deapiStats = deapiKeyManager.hasKeys() 
@@ -6952,6 +7050,19 @@ bot.callbackQuery("dev_status", async (ctx) => {
       parse_mode: "Markdown",
       reply_markup: keyboard
     });
+  }
+  } catch (error) {
+    console.error("Dev status error:", error);
+    try {
+      await ctx.reply(
+        "❌ *Error loading diagnostics*\n\n" +
+        `\`${error.message?.slice(0, 100) || 'Unknown error'}\`\n\n` +
+        "Please try again.",
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      // Ignore
+    }
   }
 });
 
@@ -9446,97 +9557,6 @@ bot.on("message:text", async (ctx) => {
   const feedbackHandled = await handleFeedbackIfActive(ctx);
   if (feedbackHandled) return;
   
-  // Smart image generation detection
-  // Patterns: "generate image of X", "create image of X", "make image of X", "draw X", etc.
-  const imageGenPatterns = [
-    /^(?:generate|create|make|draw|paint|render)\s+(?:an?\s+)?(?:image|picture|photo|art|artwork|illustration)\s+(?:of\s+)?(.+)/i,
-    /^(?:image|picture|photo)\s+(?:of\s+)?(.+)/i,
-  ];
-  
-  let imagePromptMatch = null;
-  for (const pattern of imageGenPatterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      imagePromptMatch = match[1].trim();
-      break;
-    }
-  }
-  
-  // If image generation detected and we have keys configured
-  if (imagePromptMatch && deapiKeyManager.hasKeys()) {
-    const user = ensureUser(u.id, u);
-    
-    // Check for ratio in the prompt
-    const detectedRatio = parseAspectRatioFromText(imagePromptMatch);
-    const cleanedPrompt = detectedRatio ? cleanPromptFromRatio(imagePromptMatch) : imagePromptMatch;
-    const finalPrompt = cleanedPrompt || imagePromptMatch;
-    const aspectRatio = detectedRatio || user.imagePrefs?.defaultRatio || "1:1";
-    const config = IMG_ASPECT_RATIOS[aspectRatio];
-    
-    console.log(`[IMG] Smart detection: "${finalPrompt}" in ${aspectRatio}`);
-    
-    const statusMsg = await ctx.reply(
-      "🎨 *Generating your image...*\n\n" +
-      `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
-      `📐 ${config.icon} ${config.label}\n\n` +
-      "⏳ Please wait 5-15 seconds...",
-      { parse_mode: "Markdown", reply_to_message_id: messageId }
-    );
-    
-    pendingImagePrompts.set(u.id, {
-      prompt: finalPrompt,
-      messageId: statusMsg.message_id,
-      chatId: chat.id,
-      lastAspectRatio: aspectRatio
-    });
-    
-    try {
-      const imageBuffer = await generateDeAPIImage(finalPrompt, aspectRatio, u.id);
-      
-      const actionButtons = [
-        [
-          { text: "🔄 Regenerate", callback_data: `img_regen:${aspectRatio}` },
-          { text: "📐 Change Ratio", callback_data: "img_change_ar" }
-        ],
-        [
-          { text: "✨ New Image", callback_data: "img_new" }
-        ]
-      ];
-      
-      await ctx.api.sendPhoto(
-        chat.id,
-        new InputFile(imageBuffer, "generated_image.jpg"),
-        {
-          caption: `🎨 *Generated Image*\n\n` +
-                   `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
-                   `📐 ${config.icon} ${config.label}\n` +
-                   `⚡ _${getRandomTagline()}_`,
-          parse_mode: "Markdown",
-          reply_markup: { inline_keyboard: actionButtons },
-          reply_to_message_id: messageId
-        }
-      );
-      
-      try { await ctx.api.deleteMessage(chat.id, statusMsg.message_id); } catch (e) {}
-      console.log(`[IMG] Smart gen success for user ${u.id}: "${finalPrompt.slice(0, 50)}"`);
-      return;
-      
-    } catch (error) {
-      console.error("Smart image generation error:", error);
-      try {
-        await ctx.api.editMessageText(
-          chat.id,
-          statusMsg.message_id,
-          "❌ *Image generation failed*\n\n" +
-          `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
-          "Try \`/img your prompt\` or /imagine for alternatives.",
-          { parse_mode: "Markdown" }
-        );
-      } catch (e) {}
-      return;
-    }
-  }
-
   const model = ensureChosenModelValid(u.id);
   const botUsername = BOT_USERNAME || "";
   const botId = BOT_ID;
@@ -9629,6 +9649,97 @@ bot.on("message:text", async (ctx) => {
     } else {
       // In forced-active mode (/talk), keep refreshing the timer on any message
       activateGroup(chat.id);
+    }
+  }
+  
+  // Smart image generation detection (works in both DM and GC)
+  // Patterns: "generate image of X", "create image of X", "make image of X", "draw X", etc.
+  const imageGenPatterns = [
+    /^(?:generate|create|make|draw|paint|render)\s+(?:an?\s+)?(?:image|picture|photo|art|artwork|illustration)\s+(?:of\s+)?(.+)/i,
+    /^(?:image|picture|photo)\s+(?:of\s+)?(.+)/i,
+  ];
+  
+  let imagePromptMatch = null;
+  for (const pattern of imageGenPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      imagePromptMatch = match[1].trim();
+      break;
+    }
+  }
+  
+  // If image generation detected and we have keys configured
+  if (imagePromptMatch && deapiKeyManager.hasKeys()) {
+    const user = ensureUser(u.id, u);
+    
+    // Check for ratio in the prompt
+    const detectedRatio = parseAspectRatioFromText(imagePromptMatch);
+    const cleanedPrompt = detectedRatio ? cleanPromptFromRatio(imagePromptMatch) : imagePromptMatch;
+    const finalPrompt = cleanedPrompt || imagePromptMatch;
+    const aspectRatio = detectedRatio || user.imagePrefs?.defaultRatio || "1:1";
+    const config = IMG_ASPECT_RATIOS[aspectRatio];
+    
+    console.log(`[IMG] Smart detection in ${chat.type}: "${finalPrompt}" in ${aspectRatio}`);
+    
+    const statusMsg = await ctx.reply(
+      "🎨 *Generating your image...*\n\n" +
+      `📝 _${finalPrompt.slice(0, 100)}${finalPrompt.length > 100 ? '...' : ''}_\n\n` +
+      `📐 ${config.icon} ${config.label}\n\n` +
+      "⏳ Please wait 5-15 seconds...",
+      { parse_mode: "Markdown", reply_to_message_id: messageId }
+    );
+    
+    pendingImagePrompts.set(u.id, {
+      prompt: finalPrompt,
+      messageId: statusMsg.message_id,
+      chatId: chat.id,
+      lastAspectRatio: aspectRatio
+    });
+    
+    try {
+      const imageBuffer = await generateDeAPIImage(finalPrompt, aspectRatio, u.id);
+      
+      const actionButtons = [
+        [
+          { text: "🔄 Regenerate", callback_data: `img_regen:${aspectRatio}` },
+          { text: "📐 Change Ratio", callback_data: "img_change_ar" }
+        ],
+        [
+          { text: "✨ New Image", callback_data: "img_new" }
+        ]
+      ];
+      
+      await ctx.api.sendPhoto(
+        chat.id,
+        new InputFile(imageBuffer, "generated_image.jpg"),
+        {
+          caption: `🎨 *Generated Image*\n\n` +
+                   `📝 _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                   `📐 ${config.icon} ${config.label}\n` +
+                   `⚡ _${getRandomTagline()}_`,
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: actionButtons },
+          reply_to_message_id: messageId
+        }
+      );
+      
+      try { await ctx.api.deleteMessage(chat.id, statusMsg.message_id); } catch (e) {}
+      console.log(`[IMG] Smart gen success for user ${u.id}: "${finalPrompt.slice(0, 50)}"`);
+      return;
+      
+    } catch (error) {
+      console.error("Smart image generation error:", error);
+      try {
+        await ctx.api.editMessageText(
+          chat.id,
+          statusMsg.message_id,
+          "❌ *Image generation failed*\n\n" +
+          `Error: ${error.message?.slice(0, 100) || 'Unknown error'}\n\n` +
+          "Try \`/img your prompt\` or /imagine for alternatives.",
+          { parse_mode: "Markdown" }
+        );
+      } catch (e) {}
+      return;
     }
   }
 
