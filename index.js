@@ -8438,8 +8438,10 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "",
     "🎨 *AI Image Generator*",
     "Create stunning images from text!",
-    "• `/imagine a cute cat in space`",
-    "• `/imagine fantasy landscape`",
+    "• `/img sunset over mountains` - Premium quality",
+    "• `/imagine fantasy landscape` - Free alternative",
+    "• Or just say: \"generate image of...\" or \"draw...\"",
+    "• `/imgset` - Set default ratio & safe mode",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
@@ -8863,6 +8865,13 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• `/char list` - View saved characters",
     "• `/char stop` - End character mode",
     "_Works in DM and group chats_",
+    "",
+    "🎨 *AI Image Generator*",
+    "Create stunning images from text!",
+    "• `/img sunset over mountains` - Premium quality",
+    "• `/imagine fantasy landscape` - Free alternative",
+    "• Or just say: \"generate image of...\" or \"draw...\"",
+    "• `/imgset` - Set default ratio & safe mode",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
@@ -9861,9 +9870,11 @@ bot.on("message:text", async (ctx) => {
   
   // Smart image generation detection (works in both DM and GC)
   // Patterns: "generate image of X", "create image of X", "make image of X", "draw X", etc.
+  // Also handles common typos like "genrate", "genarate"
   const imageGenPatterns = [
-    /^(?:generate|create|make|draw|paint|render)\s+(?:an?\s+)?(?:image|picture|photo|art|artwork|illustration)\s+(?:of\s+)?(.+)/i,
+    /^(?:gen[ea]?rate|create|make|draw|paint|render)\s+(?:an?\s+)?(?:image|picture|photo|art|artwork|illustration)\s+(?:of\s+)?(.+)/i,
     /^(?:image|picture|photo)\s+(?:of\s+)?(.+)/i,
+    /^draw\s+(?:me\s+)?(?:an?\s+)?(.+)/i,  // "draw me a cat", "draw a sunset"
   ];
   
   let imagePromptMatch = null;
@@ -10189,7 +10200,8 @@ bot.on("message:text", async (ctx) => {
       const identityBase =
         "You are StarzTechBot, a friendly AI assistant on Telegram. " +
         "Be concise and direct - give short, helpful answers without unnecessary preamble or tips. " +
-        "Don't advertise features or suggest commands unless specifically asked.";
+        "Don't advertise features or suggest commands unless specifically asked. " +
+        "NEVER generate fake image URLs or links - you cannot generate images. If asked to create/generate/draw an image, tell the user to use /img or /imagine commands instead.";
 
       if (persona) {
         systemPrompt =
