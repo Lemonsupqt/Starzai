@@ -6040,7 +6040,7 @@ bot.command("model", async (ctx) => {
   const current = ensureChosenModelValid(ctx.from.id);
 
   await ctx.reply(
-    `👤 Plan: *${u.tier.toUpperCase()}*\\n🤖 Current: \`${current}\`\\n\\nSelect a category:`,
+    `👤 Plan: *${u.tier.toUpperCase()}*\n🤖 Current: \`${current}\`\n\nSelect a category:`,
     {
       parse_mode: "Markdown",
       reply_markup: modelCategoryKeyboard(u.tier),
