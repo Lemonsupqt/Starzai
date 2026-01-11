@@ -272,7 +272,21 @@ async function callMegaLLM({ model, messages, temperature = 0.7, max_tokens = 35
     max_tokens,
   });
   const rawContent = (resp?.choices?.[0]?.message?.content || "").trim();
-  return cleanLLMResponse(rawContent);
+  
+  // Debug: Log raw response for thinking models
+  if (model.includes('gemini') || model.includes('thinking') || model.includes('deepseek-r1')) {
+    console.log(`[LLM DEBUG] Raw response (first 500 chars): ${rawContent.slice(0, 500)}`);
+  }
+  
+  const cleaned = cleanLLMResponse(rawContent);
+  
+  // Debug: Log if cleaning resulted in empty output
+  if (rawContent && !cleaned) {
+    console.log(`[LLM DEBUG] Cleaning removed all content! Raw length: ${rawContent.length}`);
+    console.log(`[LLM DEBUG] Raw content: ${rawContent.slice(0, 1000)}`);
+  }
+  
+  return cleaned;
 }
 
 // Provider call wrapper with timeout
