@@ -15872,7 +15872,7 @@ bot.on("inline_query", async (ctx) => {
       }
       
       // Parse quick add syntax: #category !priority @date
-      const parsed = parseQuickAddSyntax(taskText);
+      const parsed = parseTaskText(taskText);
       const newTask = createTask(userId, parsed.text, {
         category: parsed.category,
         priority: parsed.priority,
