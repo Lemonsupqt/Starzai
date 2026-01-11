@@ -166,6 +166,35 @@ function getProviderForModel(model) {
 // GitHub Models: "openai/gpt-4.1-nano", "openai/gpt-5-nano", "openai/gpt-5-mini", etc.
 // MegaLLM: "gpt-4o", "gpt-4o-mini", etc.
 
+// Clean response from thinking tokens and artifacts
+function cleanLLMResponse(text) {
+  if (!text) return '';
+  
+  let cleaned = text;
+  
+  // Remove <think>...</think> blocks (some models use this)
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  
+  // Remove <thinking>...</thinking> blocks
+  cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  
+  // Remove Chinese thinking phrases mixed with English
+  // Common patterns: "I'm思考ing", "让我think", etc.
+  cleaned = cleaned.replace(/I'm[\u4e00-\u9fff]+ing/gi, '');
+  cleaned = cleaned.replace(/[\u4e00-\u9fff]+ing\s*(about|your|the|this)/gi, '');
+  
+  // Remove standalone thinking status lines
+  cleaned = cleaned.replace(/^.*?(thinking|reasoning|思考|考虑)\s*(in progress|about|\.\.\.).*$/gim, '');
+  
+  // Remove lines that are just "..." or similar
+  cleaned = cleaned.replace(/^\s*\.{3,}\s*$/gm, '');
+  
+  // Clean up multiple newlines
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  return cleaned.trim();
+}
+
 // GitHub Models API call
 async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens = 350 }) {
   if (!GITHUB_PAT) {
@@ -201,7 +230,7 @@ async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens
     throw new Error('No content in GitHub Models response');
   }
 
-  return content.trim();
+  return cleanLLMResponse(content.trim());
 }
 
 // MegaLLM API call (wrapper for existing openai client)
@@ -212,7 +241,8 @@ async function callMegaLLM({ model, messages, temperature = 0.7, max_tokens = 35
     temperature,
     max_tokens,
   });
-  return (resp?.choices?.[0]?.message?.content || "").trim();
+  const rawContent = (resp?.choices?.[0]?.message?.content || "").trim();
+  return cleanLLMResponse(rawContent);
 }
 
 // Provider call wrapper with timeout
