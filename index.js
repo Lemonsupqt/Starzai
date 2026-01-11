@@ -6797,6 +6797,12 @@ function isOverdue(dueDate) {
   return dueDate < today;
 }
 
+// Get user's completion streak
+function getCompletionStreak(userId) {
+  const userTodos = getUserTodos(userId);
+  return userTodos.stats?.currentStreak || 0;
+}
+
 // Category emoji mapping
 const DEFAULT_CATEGORIES = {
   personal: "👤",
