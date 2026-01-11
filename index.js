@@ -9258,28 +9258,15 @@ bot.callbackQuery("itodo_back", async (ctx) => {
 
 bot.callbackQuery("itodo_add", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  await ctx.answerCallbackQuery({ text: "➕ Use inline to add task" });
+  await ctx.answerCallbackQuery();
   
-  const addText = [
-    `➕ <b>Add Task</b>`,
-    ``,
-    `Type in inline mode:`,
-    `<code>t:add Buy groceries</code>`,
-    ``,
-    `Quick add with options:`,
-    `<code>t:add Task #work !high @tomorrow</code>`,
-    ``,
-    `Or use the DM command:`,
-    `<code>/todo add Your task here</code>`,
-  ].join("\n");
-  
+  // Just switch to inline mode directly - no instruction text needed
   try {
-    await ctx.editMessageText(addText, {
-      parse_mode: "HTML",
+    await ctx.editMessageReplyMarkup({
       reply_markup: new InlineKeyboard()
-        .switchInlineCurrent("➕ Add Task", "t:add ")
+        .switchInlineCurrent("➕ Type task here...", "t:add ")
         .row()
-        .text("← Back to List", "itodo_back"),
+        .text("← Back", "itodo_back"),
     });
   } catch (e) {}
 });
