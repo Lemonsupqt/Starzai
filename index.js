@@ -8207,6 +8207,9 @@ bot.callbackQuery("todo_list", async (ctx) => {
   }
 });
 
+// Track last tap for double-tap detection in DM
+const dmTodoLastTap = new Map();
+
 bot.callbackQuery(/^todo_toggle:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -8214,10 +8217,74 @@ bot.callbackQuery(/^todo_toggle:(.+)$/, async (ctx) => {
   if (!userId) return;
   
   const taskId = ctx.match[1];
+  const now = Date.now();
+  const lastTap = dmTodoLastTap.get(userId);
+  
+  // Check for double-tap (same task within 3 seconds)
+  if (lastTap && lastTap.taskId === taskId && (now - lastTap.timestamp) < 3000) {
+    // Double-tap detected - show action menu
+    dmTodoLastTap.delete(userId);
+    await ctx.answerCallbackQuery({ text: "⚙️ Opening options..." });
+    
+    const task = getTaskById(userId, taskId);
+    if (!task) {
+      return ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    }
+    
+    const checkbox = task.completed ? "✅" : "⬜";
+    const categoryEmoji = getCategoryEmoji(task.category);
+    const priorityText = task.priority === "high" ? "🔴 High" : task.priority === "medium" ? "🟡 Medium" : "🟢 Low";
+    const dueText = task.dueDate ? `\n📅 Due: ${task.dueDate}` : "";
+    
+    const menuText = [
+      `⚙️ *Task Options*`,
+      ``,
+      `${checkbox} ${task.text}`,
+      ``,
+      `${categoryEmoji} ${task.category || "personal"} \u2022 ${priorityText}${dueText}`,
+      ``,
+      `_Choose an action:_`,
+    ].join("\n");
+    
+    const keyboard = new InlineKeyboard()
+      .text(task.completed ? "⬜ Uncomplete" : "✅ Complete", `todo_toggle:${taskId}`)
+      .text("🗑️ Delete", `todo_delete_task:${taskId}`)
+      .row()
+      .text("✏️ Edit Text", `todo_edit_task:${taskId}`)
+      .row()
+      .text("🔴 High", `todo_priority:${taskId}:high`)
+      .text("🟡 Med", `todo_priority:${taskId}:medium`)
+      .text("🟢 Low", `todo_priority:${taskId}:low`)
+      .row()
+      .text("📅 Today", `todo_due:${taskId}:today`)
+      .text("📅 Tomorrow", `todo_due:${taskId}:tomorrow`)
+      .row()
+      .text("← Back to List", "todo_list");
+    
+    try {
+      await ctx.editMessageText(menuText, {
+        parse_mode: "Markdown",
+        reply_markup: keyboard,
+      });
+    } catch (e) {}
+    return;
+  }
+  
+  // First tap - toggle the task
+  dmTodoLastTap.set(userId, { taskId, timestamp: now });
+  
+  // Auto-clear after 3 seconds
+  setTimeout(() => {
+    const current = dmTodoLastTap.get(userId);
+    if (current && current.taskId === taskId && current.timestamp === now) {
+      dmTodoLastTap.delete(userId);
+    }
+  }, 3000);
+  
   const task = toggleTaskCompletion(userId, taskId);
   
   if (task) {
-    const status = task.completed ? "✅ Completed!" : "⬜ Unchecked";
+    const status = task.completed ? "✅ Done! Tap again for options" : "⬜ Unchecked! Tap again for options";
     await ctx.answerCallbackQuery({ text: status });
   } else {
     await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
@@ -8520,6 +8587,135 @@ bot.callbackQuery("todo_stats", async (ctx) => {
 
 bot.callbackQuery("todo_noop", async (ctx) => {
   await ctx.answerCallbackQuery();
+});
+
+// DM todo delete task handler
+bot.callbackQuery(/^todo_delete_task:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const deleted = deleteTaskById(userId, taskId);
+  
+  if (deleted) {
+    await ctx.answerCallbackQuery({ text: "🗑️ Task deleted!" });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+// DM todo edit task handler
+bot.callbackQuery(/^todo_edit_task:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const task = getTaskById(userId, taskId);
+  
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  // Store pending edit
+  pendingTodoInput.set(String(userId), { action: "edit", taskId, timestamp: Date.now() });
+  
+  try {
+    await ctx.editMessageText(
+      `✏️ *Edit Task*\n\n` +
+      `Current: ${task.text}\n\n` +
+      `_Reply with the new text for this task:_`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("← Cancel", "todo_list")
+      }
+    );
+  } catch (e) {}
+});
+
+// DM todo priority handler
+bot.callbackQuery(/^todo_priority:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const priority = ctx.match[2];
+  
+  const task = updateTask(userId, taskId, { priority });
+  
+  if (task) {
+    const emoji = priority === "high" ? "🔴" : priority === "medium" ? "🟡" : "🟢";
+    await ctx.answerCallbackQuery({ text: `${emoji} Priority set to ${priority}` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
+});
+
+// DM todo due date handler
+bot.callbackQuery(/^todo_due:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const userId = ctx.from?.id;
+  if (!userId) return;
+  
+  const taskId = ctx.match[1];
+  const dueOption = ctx.match[2];
+  
+  let dueDate;
+  const today = new Date();
+  
+  if (dueOption === "today") {
+    dueDate = today.toISOString().slice(0, 10);
+  } else if (dueOption === "tomorrow") {
+    today.setDate(today.getDate() + 1);
+    dueDate = today.toISOString().slice(0, 10);
+  }
+  
+  const task = updateTask(userId, taskId, { dueDate });
+  
+  if (task) {
+    await ctx.answerCallbackQuery({ text: `📅 Due date set to ${dueOption}` });
+  } else {
+    await ctx.answerCallbackQuery({ text: "Task not found", show_alert: true });
+    return;
+  }
+  
+  const filters = getTodoFilters(userId);
+  
+  try {
+    await ctx.editMessageText(buildTodoListMessage(userId, 0, filters), {
+      parse_mode: "Markdown",
+      reply_markup: buildTodoKeyboard(userId, 0, filters)
+    });
+  } catch (e) {}
 });
 
 // Collab list callback from personal todo
