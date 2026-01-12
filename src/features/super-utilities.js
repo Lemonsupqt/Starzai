@@ -282,6 +282,20 @@ function detectPlatform(url) {
   return null;
 }
 
+/**
+ * Clean up downloaded file after sending (legacy function for compatibility)
+ * Note: With API-based downloads, this is mostly a no-op since we use URLs directly
+ */
+function cleanupDownload(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (e) {
+    // Ignore cleanup errors
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MUSIC FEATURES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -967,6 +981,7 @@ export {
   downloadWithVKR,
   downloadTikTok,
   downloadSpotify,
+  cleanupDownload,
   detectPlatform,
   URL_PATTERNS,
   
