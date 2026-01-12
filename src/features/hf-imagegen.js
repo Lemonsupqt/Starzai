@@ -241,8 +241,9 @@ async function handleImageCallback(bot, query) {
   const data = query.data;
   const session = getSession(userId);
   
-  // Ensure this is the right message
-  if (session.messageId !== messageId) {
+  // Ensure this is the right message (but allow retry/new from photo messages)
+  const isRetryOrNew = data === 'img_retry' || data === 'img_new';
+  if (session.messageId !== messageId && !isRetryOrNew) {
     await bot.answerCallbackQuery(query.id, { text: 'Session expired. Start a new /imagine command.' });
     return;
   }
@@ -391,6 +392,10 @@ async function handleImageCallback(bot, query) {
     }
     else if (data === 'img_retry') {
       session.seed = -1;
+      // For retry from photo message, send a new status message
+      const statusMsg = await bot.sendMessage(chatId, '🔄 *Retrying generation...*', { parse_mode: 'Markdown' });
+      session.messageId = statusMsg.message_id;
+      session.isPhotoMessage = false;
       await generateImage(bot, query, session);
     }
     else if (data === 'img_new') {
