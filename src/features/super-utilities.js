@@ -852,30 +852,46 @@ async function downloadMusic(query) {
       return { success: false, error: 'No songs found for your query' };
     }
     
-    // Get the first (best match) song's full details
-    const songId = searchResult.songs[0].id;
-    const songResult = await getSongById(songId);
+    const firstSong = searchResult.songs[0];
     
-    if (!songResult.success) {
-      return { success: false, error: 'Could not fetch song details' };
+    // Try to get download URL from search results first (more reliable)
+    let downloadUrl = null;
+    let quality = 'Unknown';
+    
+    if (firstSong.downloadUrl && Array.isArray(firstSong.downloadUrl) && firstSong.downloadUrl.length > 0) {
+      // Get highest quality from search results
+      const bestQuality = firstSong.downloadUrl.find(d => d.quality === '320kbps' || d.quality === '320') ||
+                          firstSong.downloadUrl.find(d => d.quality === '160kbps' || d.quality === '160') ||
+                          firstSong.downloadUrl.find(d => d.quality === '96kbps' || d.quality === '96') ||
+                          firstSong.downloadUrl[firstSong.downloadUrl.length - 1];
+      downloadUrl = bestQuality?.url || bestQuality?.link || null;
+      quality = bestQuality?.quality || 'Unknown';
     }
     
-    const song = songResult.song;
+    // If no URL from search, try getSongById as fallback
+    if (!downloadUrl) {
+      const songResult = await getSongById(firstSong.id);
+      if (songResult.success && songResult.song?.downloadUrl) {
+        downloadUrl = songResult.song.downloadUrl;
+        quality = songResult.song.quality || 'Unknown';
+      }
+    }
     
-    if (!song.downloadUrl) {
+    if (!downloadUrl) {
       return { success: false, error: 'Download URL not available for this song' };
     }
     
     return {
       success: true,
       type: 'audio',
-      url: song.downloadUrl,
-      title: song.name,
-      author: song.artist,
-      album: song.album,
-      duration: song.duration,
-      quality: song.quality,
-      thumbnail: song.image,
+      url: downloadUrl,
+      title: firstSong.name,
+      author: firstSong.artist,
+      album: firstSong.album,
+      duration: firstSong.duration,
+      quality: quality,
+      thumbnail: firstSong.image,
+      filename: firstSong.filename,
       allResults: searchResult.songs // Include other results for selection
     };
   } catch (error) {
