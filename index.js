@@ -12733,8 +12733,12 @@ const PLATFORM_EMOJI = {
   tiktok: '🎵',
   instagram: '📸',
   twitter: '🐦',
+  facebook: '📘',
   spotify: '🎧',
-  soundcloud: '☁️'
+  soundcloud: '☁️',
+  deezer: '🎶',
+  applemusic: '🍎',
+  jiosaavn: '🎵'
 };
 
 // /download or /dl - Download media from various platforms
@@ -13996,15 +14000,20 @@ bot.callbackQuery(/^adl:/, async (ctx) => {
     // Build caption
     let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
     if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
+    if (result.album) caption += `\n💿 ${escapeHTML(result.album)}`;
+    if (result.quality) caption += `\n🎵 ${result.quality}`;
     caption += `\n\n<i>Downloaded via StarzAI</i>`;
     
     // API-based downloads return URLs directly, not file paths
     if (result.url) {
       // Send directly using URL
-      if (audioOnly || result.type === 'audio') {
+      if (audioOnly || result.type === 'audio' || result.isMusic) {
+        // For music, send as audio with proper metadata
         await ctx.replyWithAudio(result.url, {
           caption: caption,
-          parse_mode: 'HTML'
+          parse_mode: 'HTML',
+          title: result.title,
+          performer: result.author
         });
       } else if (result.type === 'slideshow' && result.images) {
         // TikTok slideshow - send as media group

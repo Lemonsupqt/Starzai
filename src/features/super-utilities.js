@@ -29,10 +29,15 @@ import os from 'os';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
-  // VKrDownloader API - supports YouTube, Facebook, Twitter, Instagram, etc.
-  vkrdownloader: {
-    api: 'https://vkrdownloader.org/server/',
-    apiKey: 'vkrdownloader',
+  // AllInOne Downloader APIs (multiple fallbacks)
+  downloader: {
+    // Primary: Social Media Video Downloader API
+    primary: 'https://social-media-video-downloader.p.rapidapi.com/smvd/get/all',
+    // Fallback APIs
+    fallbacks: [
+      'https://all-media-downloader1.p.rapidapi.com/download',
+      'https://youtube-video-download-info.p.rapidapi.com/dl'
+    ],
     timeout: 60000
   },
   // TikWM API for TikTok
@@ -86,20 +91,26 @@ const CONFIG = {
   },
   // JioSaavn API for music downloads (free, 320kbps quality)
   jiosaavn: {
-    api: 'https://saavn.dev/api',
+    api: 'https://saavn.sumit.co/api',
     timeout: 30000
   }
 };
 
 // URL pattern matchers for auto-detection
 const URL_PATTERNS = {
+  // Video platforms
   youtube: /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
   tiktok: /(?:tiktok\.com\/@[\w.-]+\/video\/|vm\.tiktok\.com\/|tiktok\.com\/t\/)(\w+)/,
-  instagram: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)([\w-]+)/,
+  instagram: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)([\ w-]+)/,
   twitter: /(?:twitter\.com|x\.com)\/\w+\/status\/(\d+)/,
-  spotify: /(?:open\.spotify\.com\/track\/)([a-zA-Z0-9]+)/,
-  soundcloud: /soundcloud\.com\/[\w-]+\/[\w-]+/,
-  facebook: /(?:facebook\.com|fb\.watch)\/(?:watch\/?\?v=|[\w.]+\/videos\/|reel\/)?(\d+)?/
+  facebook: /(?:facebook\.com|fb\.watch)\/(?:watch\/\?v=|[\w.]+\/videos\/|reel\/)?(\d+)?/,
+  
+  // Music platforms (for auto-detection)
+  spotify: /(?:open\.spotify\.com\/(?:track|album|playlist)\/)([a-zA-Z0-9]+)/,
+  jiosaavn: /(?:jiosaavn\.com\/song\/[\w-]+\/)([a-zA-Z0-9_-]+)/,
+  soundcloud: /soundcloud\.com\/([\w-]+\/[\w-]+)/,
+  deezer: /(?:deezer\.com\/(?:\w+\/)?track\/)([0-9]+)/,
+  applemusic: /(?:music\.apple\.com\/\w+\/album\/[\w-]+\/)([0-9]+)/
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -107,61 +118,218 @@ const URL_PATTERNS = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download media using VKrDownloader API
+ * Download media using multiple API fallbacks
  * Supports: YouTube, Facebook, Twitter, Instagram, etc.
  */
 async function downloadWithVKR(url) {
+  const errors = [];
+  
+  // API 1: Try dlpanda.com (free, no key required)
   try {
-    const apiUrl = `${CONFIG.vkrdownloader.api}?api_key=${CONFIG.vkrdownloader.apiKey}&vkr=${encodeURIComponent(url)}`;
-    
-    const response = await fetch(apiUrl, {
-      timeout: CONFIG.vkrdownloader.timeout,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const data = await response.json();
-    
-    if (!data.success || !data.data) {
-      return { success: false, error: data.error?.message || 'VKR API failed' };
-    }
-    
-    const result = data.data;
-    
-    // Find best quality download URL
-    let downloadUrl = null;
-    let quality = null;
-    
-    if (result.downloads && result.downloads.length > 0) {
-      // Sort by quality (prefer higher)
-      const sorted = result.downloads.sort((a, b) => {
-        const qualityOrder = { '1080p': 4, '720p': 3, '480p': 2, '360p': 1 };
-        return (qualityOrder[b.format_id] || 0) - (qualityOrder[a.format_id] || 0);
-      });
-      downloadUrl = sorted[0].url;
-      quality = sorted[0].format_id;
-    } else if (result.source) {
-      downloadUrl = result.source;
-    }
-    
-    if (!downloadUrl) {
-      return { success: false, error: 'No download URL found' };
-    }
-    
-    return {
-      success: true,
-      url: downloadUrl,
-      title: result.title || 'Video',
-      thumbnail: result.thumbnail,
-      quality: quality,
-      duration: result.duration,
-      formats: result.downloads || []
-    };
-    
-  } catch (error) {
-    return { success: false, error: error.message || 'VKR download failed' };
+    const dlpandaResult = await tryDlPanda(url);
+    if (dlpandaResult.success) return dlpandaResult;
+    errors.push(`DlPanda: ${dlpandaResult.error}`);
+  } catch (e) {
+    errors.push(`DlPanda: ${e.message}`);
   }
+  
+  // API 2: Try saveservall.xyz
+  try {
+    const saveservResult = await trySaveServ(url);
+    if (saveservResult.success) return saveservResult;
+    errors.push(`SaveServ: ${saveservResult.error}`);
+  } catch (e) {
+    errors.push(`SaveServ: ${e.message}`);
+  }
+  
+  // API 3: Try yt1s for YouTube specifically
+  if (url.includes('youtube.com') || url.includes('youtu.be')) {
+    try {
+      const yt1sResult = await tryYt1s(url);
+      if (yt1sResult.success) return yt1sResult;
+      errors.push(`YT1s: ${yt1sResult.error}`);
+    } catch (e) {
+      errors.push(`YT1s: ${e.message}`);
+    }
+  }
+  
+  return { 
+    success: false, 
+    error: 'All download APIs failed. The video may be restricted or the service is temporarily unavailable.\n\nTry again later or use a different link.' 
+  };
+}
+
+/**
+ * Try DlPanda API
+ */
+async function tryDlPanda(url) {
+  const apiUrl = `https://dlpanda.com/api?url=${encodeURIComponent(url)}&token=G7eRpMaa`;
+  
+  const response = await fetch(apiUrl, {
+    timeout: 30000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'application/json'
+    }
+  });
+  
+  const text = await response.text();
+  
+  // Check if response is HTML (error page)
+  if (text.startsWith('<!') || text.startsWith('<html')) {
+    return { success: false, error: 'API returned HTML instead of JSON' };
+  }
+  
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { success: false, error: 'Invalid JSON response' };
+  }
+  
+  if (!data || data.error) {
+    return { success: false, error: data?.error || 'API error' };
+  }
+  
+  // Find video URL from response
+  let videoUrl = null;
+  let title = data.title || 'Video';
+  let thumbnail = data.thumbnail || null;
+  
+  if (data.medias && data.medias.length > 0) {
+    // Sort by quality, prefer mp4
+    const videos = data.medias.filter(m => m.videoAvailable || m.extension === 'mp4');
+    if (videos.length > 0) {
+      // Get highest quality
+      const sorted = videos.sort((a, b) => (b.quality || 0) - (a.quality || 0));
+      videoUrl = sorted[0].url;
+    }
+  } else if (data.url) {
+    videoUrl = data.url;
+  }
+  
+  if (!videoUrl) {
+    return { success: false, error: 'No video URL in response' };
+  }
+  
+  // Validate URL is actually a video (not a webpage)
+  if (!videoUrl.includes('.mp4') && !videoUrl.includes('.webm') && !videoUrl.includes('video')) {
+    // Try to verify it's a direct video link
+    try {
+      const headResp = await fetch(videoUrl, { method: 'HEAD', timeout: 5000 });
+      const contentType = headResp.headers.get('content-type') || '';
+      if (!contentType.includes('video') && !contentType.includes('octet-stream')) {
+        return { success: false, error: 'URL is not a direct video link' };
+      }
+    } catch (e) {
+      // If HEAD fails, still try to use the URL
+    }
+  }
+  
+  return {
+    success: true,
+    url: videoUrl,
+    title: title,
+    thumbnail: thumbnail,
+    author: data.author || null
+  };
+}
+
+/**
+ * Try SaveServ API
+ */
+async function trySaveServ(url) {
+  const apiUrl = `https://api.saveservall.xyz/api/ajaxSearch`;
+  
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    timeout: 30000,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    },
+    body: `q=${encodeURIComponent(url)}&vt=home`
+  });
+  
+  const text = await response.text();
+  
+  if (text.startsWith('<!') || text.startsWith('<html')) {
+    return { success: false, error: 'API returned HTML' };
+  }
+  
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { success: false, error: 'Invalid JSON' };
+  }
+  
+  if (data.status !== 'ok' || !data.links) {
+    return { success: false, error: data.mess || 'API error' };
+  }
+  
+  // Find best video link
+  const videoLinks = data.links.filter(l => l.type === 'mp4' || l.type === 'video');
+  if (videoLinks.length === 0) {
+    return { success: false, error: 'No video links found' };
+  }
+  
+  const best = videoLinks[0];
+  
+  return {
+    success: true,
+    url: best.url,
+    title: data.title || 'Video',
+    thumbnail: data.thumbnail || null,
+    quality: best.quality || null
+  };
+}
+
+/**
+ * Try YT1s API for YouTube
+ */
+async function tryYt1s(url) {
+  // Extract video ID
+  const videoIdMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (!videoIdMatch) {
+    return { success: false, error: 'Invalid YouTube URL' };
+  }
+  
+  const videoId = videoIdMatch[1];
+  
+  // Try y2mate-style API
+  const apiUrl = `https://yt1s.com/api/ajaxSearch/index`;
+  
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    timeout: 30000,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    },
+    body: `q=https://www.youtube.com/watch?v=${videoId}&vt=mp4`
+  });
+  
+  const text = await response.text();
+  
+  if (text.startsWith('<!') || text.startsWith('<html')) {
+    return { success: false, error: 'API returned HTML' };
+  }
+  
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { success: false, error: 'Invalid JSON' };
+  }
+  
+  if (data.status !== 'ok') {
+    return { success: false, error: data.mess || 'API error' };
+  }
+  
+  // This API typically requires a second request to convert
+  // For now, return error to try other APIs
+  return { success: false, error: 'Conversion required (not implemented)' };
 }
 
 /**
@@ -210,33 +378,92 @@ async function downloadTikTok(url) {
 }
 
 /**
- * Download Spotify track by searching on YouTube and downloading audio
- * This is a workaround since direct Spotify download is not available
+ * Download music from Spotify/Deezer/Apple Music by searching on JioSaavn
+ * This searches for the track and returns a download link from JioSaavn
  */
 async function downloadSpotify(url) {
   try {
-    // Extract track ID from Spotify URL
-    const match = url.match(URL_PATTERNS.spotify);
-    if (!match) {
-      return { success: false, error: 'Invalid Spotify URL' };
+    // Try to extract track info from Spotify oEmbed API
+    let searchQuery = '';
+    
+    if (url.includes('spotify.com')) {
+      try {
+        const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`;
+        const response = await fetch(oembedUrl, { timeout: 10000 });
+        const data = await response.json();
+        if (data.title) {
+          // Title format is usually "Song Name" or "Song Name - Artist"
+          searchQuery = data.title;
+        }
+      } catch (e) {
+        // If oEmbed fails, try to extract from URL
+        const trackMatch = url.match(/track\/([a-zA-Z0-9]+)/);
+        if (trackMatch) {
+          searchQuery = trackMatch[1]; // Use track ID as fallback
+        }
+      }
+    } else if (url.includes('deezer.com')) {
+      const trackMatch = url.match(/track\/([0-9]+)/);
+      if (trackMatch) {
+        searchQuery = `deezer track ${trackMatch[1]}`;
+      }
+    } else if (url.includes('music.apple.com')) {
+      // Apple Music URLs contain song name in path
+      const pathMatch = url.match(/album\/([\w-]+)\//);
+      if (pathMatch) {
+        searchQuery = pathMatch[1].replace(/-/g, ' ');
+      }
     }
     
-    const trackId = match[1];
+    if (!searchQuery) {
+      return { 
+        success: false, 
+        error: 'Could not extract song info from URL. Try using /music command with the song name instead.',
+        isMusic: true
+      };
+    }
     
-    // Try to get track info from Spotify embed
-    const embedUrl = `https://open.spotify.com/embed/track/${trackId}`;
+    // Search on JioSaavn
+    const searchResult = await searchMusic(searchQuery, 1);
     
-    // For now, return a message that Spotify direct download isn't supported
-    // User should use YouTube search instead
+    if (!searchResult.success || !searchResult.songs?.length) {
+      return { 
+        success: false, 
+        error: `Song not found on JioSaavn. Try /music ${searchQuery}`,
+        isMusic: true,
+        searchQuery: searchQuery
+      };
+    }
+    
+    // Get full song details
+    const songId = searchResult.songs[0].id;
+    const songResult = await getSongById(songId);
+    
+    if (!songResult.success || !songResult.song?.downloadUrl) {
+      return { 
+        success: false, 
+        error: 'Could not get download link. Try /music command.',
+        isMusic: true
+      };
+    }
+    
+    const song = songResult.song;
+    
     return {
-      success: false,
-      error: 'Spotify direct download is not available. Try searching for the song on YouTube using /dl youtube.com/results?search_query=SONG_NAME',
-      spotifyUrl: url,
-      trackId: trackId
+      success: true,
+      type: 'audio',
+      url: song.downloadUrl,
+      title: song.name,
+      author: song.artist,
+      album: song.album,
+      duration: song.duration,
+      quality: song.quality,
+      thumbnail: song.image,
+      isMusic: true
     };
     
   } catch (error) {
-    return { success: false, error: error.message || 'Spotify download failed' };
+    return { success: false, error: error.message || 'Music download failed', isMusic: true };
   }
 }
 
@@ -253,11 +480,16 @@ async function downloadMedia(url, audioOnly = false) {
       case 'tiktok':
         result = await downloadTikTok(url);
         break;
-        
+      
+      // Music platforms - route to JioSaavn search
       case 'spotify':
+      case 'deezer':
+      case 'applemusic':
+      case 'jiosaavn':
         result = await downloadSpotify(url);
         break;
-        
+      
+      // Video platforms
       case 'youtube':
       case 'instagram':
       case 'twitter':
