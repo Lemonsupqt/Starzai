@@ -3,8 +3,8 @@
  * Interactive UI with edit-in-place design
  */
 
-const fetch = require('node-fetch');
-const { CONFIG } = require('../config/env');
+import fetch from 'node-fetch';
+import { CONFIG } from '../config/env.js';
 
 // HF Space API URL
 const HF_IMAGEGEN_API = process.env.HF_IMAGEGEN_API || '';
@@ -584,7 +584,7 @@ async function checkHealth() {
   }
 }
 
-module.exports = {
+export {
   startImageGeneration,
   handleImageCallback,
   quickGenerate,

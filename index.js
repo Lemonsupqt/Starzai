@@ -4973,6 +4973,35 @@ bot.command("feedback", async (ctx) => {
   );
 });
 
+// /g - Quick image generation alias (owner only)
+bot.command("g", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // Owner only
+  if (!OWNER_IDS.has(String(u.id))) {
+    return; // Silently ignore for non-owners
+  }
+  
+  const text = ctx.message?.text || "";
+  const prompt = text.replace(/^\/g\s*/i, "").trim();
+  
+  if (!prompt) {
+    await ctx.reply("🎨 `/g <prompt>` - Quick image gen (owner only)", { parse_mode: "Markdown" });
+    return;
+  }
+  
+  try {
+    await startImageGeneration(ctx.api, ctx.message, prompt);
+    console.log(`[G] Owner ${u.id} started image generation: "${prompt.slice(0, 50)}"`);
+  } catch (error) {
+    console.error("Image generation error:", error);
+    await ctx.reply("❌ Generation failed. Try again.");
+  }
+});
+
 // /imagine - AI image generation with HF Space (Peppermint SDXL)
 bot.command("imagine", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
