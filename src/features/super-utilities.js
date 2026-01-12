@@ -129,15 +129,24 @@ const URL_PATTERNS = {
 async function downloadWithVKR(url, audioOnly = false) {
   const errors = [];
   
+  // DEBUG: Log HF Space config
+  console.log('[Download] HF_YTDLP_API:', CONFIG.hfspace.api);
+  console.log('[Download] Will use HF Space:', !!(CONFIG.hfspace.api && !CONFIG.hfspace.api.includes('YOUR-USERNAME')));
+  
   // PRIMARY: Try HF Space yt-dlp API (self-hosted, most reliable)
   if (CONFIG.hfspace.api && !CONFIG.hfspace.api.includes('YOUR-USERNAME')) {
     try {
+      console.log('[Download] Calling HF Space API...');
       const hfResult = await tryHFSpace(url, audioOnly);
+      console.log('[Download] HF Space result:', hfResult.success ? 'SUCCESS' : hfResult.error);
       if (hfResult.success) return hfResult;
       errors.push(`HFSpace: ${hfResult.error}`);
     } catch (e) {
+      console.error('[Download] HF Space exception:', e.message);
       errors.push(`HFSpace: ${e.message}`);
     }
+  } else {
+    console.log('[Download] HF Space skipped - not configured');
   }
   
   // FALLBACK 1: Try TikWM for TikTok
@@ -160,9 +169,14 @@ async function downloadWithVKR(url, audioOnly = false) {
     errors.push(`DlPanda: ${e.message}`);
   }
   
+  // Log all errors for debugging
+  console.log('[Download] All methods failed. Errors:', errors.join('; '));
+  
   return { 
     success: false, 
-    error: 'Download failed. Please make sure your HF Space is deployed and configured.\n\nSet HF_YTDLP_API in Railway environment variables.' 
+    error: errors.length > 0 
+      ? `Download failed: ${errors.join(', ')}`
+      : 'Download failed. Please make sure your HF Space is deployed and configured.\n\nSet HF_YTDLP_API in Railway environment variables.' 
   };
 }
 
