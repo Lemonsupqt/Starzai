@@ -19,6 +19,19 @@ const ASPECT_RATIOS = {
   ultrawide: { width: 1344, height: 768, label: '🎥 Ultrawide 21:9' },
 };
 
+// Available models
+const MODELS = {
+  peppermint: { id: 'peppermint', label: '🍬 Peppermint', style: 'anime' },
+  'wai-illustrious': { id: 'wai-illustrious', label: '🎨 WAI Illustrious', style: 'anime' },
+  'ntr-mix': { id: 'ntr-mix', label: '🔥 NTR MIX', style: 'anime' },
+};
+
+// Available LoRAs
+const LORAS = {
+  none: { id: null, label: '❌ None' },
+  'shiny-nai': { id: 'shiny-nai', label: '✨ Shiny Nai Style' },
+};
+
 // Quality presets
 const QUALITY_PRESETS = {
   fast: { steps: 20, cfg: 6.0, label: '⚡ Fast' },
@@ -45,6 +58,8 @@ function getSession(userId) {
       quality: 'balanced',
       numImages: 1,
       seed: -1,
+      model: 'peppermint',
+      lora: 'none',
       messageId: null,
       chatId: null,
       state: 'idle', // idle, configuring, generating
@@ -73,7 +88,9 @@ function buildMainUI(session) {
 🎯 *Quality:* ${q.label} (${q.steps} steps)
 🔢 *Images:* ${session.numImages}
 ⚡ *CFG:* ${q.cfg}
-🌱 *Seed:* ${session.seed === -1 ? 'Random' : session.seed}`;
+🌱 *Seed:* ${session.seed === -1 ? 'Random' : session.seed}
+🤖 *Model:* ${MODELS[session.model]?.label || session.model}
+✨ *LoRA:* ${LORAS[session.lora]?.label || 'None'}`;
 }
 
 /**
@@ -93,6 +110,10 @@ function buildMainKeyboard(session) {
       [
         { text: '🌱 Seed', callback_data: 'img_seed' },
         { text: '🚫 Negative', callback_data: 'img_negative' },
+      ],
+      [
+        { text: '🤖 Model', callback_data: 'img_model' },
+        { text: '✨ LoRA', callback_data: 'img_lora' },
       ],
       [{ text: '❌ Cancel', callback_data: 'img_cancel' }]
     ].filter(row => row.length > 0)
@@ -132,6 +153,33 @@ function buildQualityKeyboard() {
       [{ text: '⚖️ Balanced (30 steps)', callback_data: 'img_quality_balanced' }],
       [{ text: '✨ Quality (40 steps)', callback_data: 'img_quality_quality' }],
       [{ text: '💎 Ultra (50 steps)', callback_data: 'img_quality_ultra' }],
+      [{ text: '🔙 Back', callback_data: 'img_back' }]
+    ]
+  };
+}
+
+/**
+ * Build model selection keyboard
+ */
+function buildModelKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '🍬 Peppermint (Anime)', callback_data: 'img_model_peppermint' }],
+      [{ text: '🎨 WAI Illustrious (Anime)', callback_data: 'img_model_wai-illustrious' }],
+      [{ text: '🔥 NTR MIX (Anime)', callback_data: 'img_model_ntr-mix' }],
+      [{ text: '🔙 Back', callback_data: 'img_back' }]
+    ]
+  };
+}
+
+/**
+ * Build LoRA selection keyboard
+ */
+function buildLoraKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '❌ No LoRA', callback_data: 'img_lora_none' }],
+      [{ text: '✨ Shiny Nai Style', callback_data: 'img_lora_shiny-nai' }],
       [{ text: '🔙 Back', callback_data: 'img_back' }]
     ]
   };
@@ -291,6 +339,48 @@ async function handleImageCallback(bot, query) {
         show_alert: true
       });
     }
+    else if (data === 'img_model') {
+      const text = `🤖 *Select Model*\n\nCurrent: ${MODELS[session.model]?.label || session.model}\n\n_Different models produce different styles!_`;
+      await bot.editMessageText(chatId, messageId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: buildModelKeyboard()
+      });
+      await bot.answerCallbackQuery(query.id);
+    }
+    else if (data.startsWith('img_model_')) {
+      const model = data.replace('img_model_', '');
+      if (MODELS[model]) {
+        session.model = model;
+        await bot.answerCallbackQuery(query.id, { text: `Model: ${MODELS[model].label}` });
+      }
+      const text = buildMainUI(session);
+      const keyboard = buildMainKeyboard(session);
+      await bot.editMessageText(chatId, messageId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+      });
+    }
+    else if (data === 'img_lora') {
+      const text = `✨ *Select LoRA*\n\nCurrent: ${LORAS[session.lora]?.label || 'None'}\n\n_LoRAs add extra style on top of the model!_`;
+      await bot.editMessageText(chatId, messageId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: buildLoraKeyboard()
+      });
+      await bot.answerCallbackQuery(query.id);
+    }
+    else if (data.startsWith('img_lora_')) {
+      const lora = data.replace('img_lora_', '');
+      if (LORAS[lora]) {
+        session.lora = lora;
+        await bot.answerCallbackQuery(query.id, { text: `LoRA: ${LORAS[lora].label}` });
+      }
+      const text = buildMainUI(session);
+      const keyboard = buildMainKeyboard(session);
+      await bot.editMessageText(chatId, messageId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+      });
+    }
     else if (data === 'img_cancel') {
       userSessions.delete(userId);
       await bot.editMessageText(chatId, messageId, '❌ Image generation cancelled.');
@@ -394,6 +484,8 @@ _This may take 10-30 seconds..._`;
         height: ar.height,
         seed: session.seed,
         num_images: session.numImages,
+        model: session.model,
+        lora: session.lora === 'none' ? null : session.lora,
       }),
     });
     
