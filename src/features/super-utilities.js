@@ -853,12 +853,15 @@ async function downloadMusic(query) {
     }
     
     const firstSong = searchResult.songs[0];
+    console.log(`[Music] Found song: ${firstSong.name} by ${firstSong.artist}`);
+    console.log(`[Music] downloadUrl array length: ${firstSong.downloadUrl?.length || 0}`);
     
     // Try to get download URL from search results first (more reliable)
     let downloadUrl = null;
     let quality = 'Unknown';
     
     if (firstSong.downloadUrl && Array.isArray(firstSong.downloadUrl) && firstSong.downloadUrl.length > 0) {
+      console.log(`[Music] First downloadUrl entry:`, JSON.stringify(firstSong.downloadUrl[0]));
       // Get highest quality from search results
       const bestQuality = firstSong.downloadUrl.find(d => d.quality === '320kbps' || d.quality === '320') ||
                           firstSong.downloadUrl.find(d => d.quality === '160kbps' || d.quality === '160') ||
