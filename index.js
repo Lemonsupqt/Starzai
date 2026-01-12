@@ -137,6 +137,14 @@ import {
 import { promisify } from "util";
 const execAsync = promisify(exec);
 
+// HF Space Image Generation
+import {
+  startImageGeneration,
+  handleImageCallback,
+  quickGenerate,
+  checkHealth as checkHFHealth
+} from './src/features/hf-imagegen.js';
+
 // =====================
 // ENV
 // =====================
@@ -4965,7 +4973,7 @@ bot.command("feedback", async (ctx) => {
   );
 });
 
-// /imagine - AI image generation (free, unlimited)
+// /imagine - AI image generation with HF Space (Peppermint SDXL)
 bot.command("imagine", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -4985,12 +4993,12 @@ bot.command("imagine", async (ctx) => {
   if (!prompt) {
     await ctx.reply(
       "🎨 *AI Image Generator*\n\n" +
-      "Generate stunning images from text descriptions!\n\n" +
+      "Generate stunning anime-style images!\n\n" +
       "*Usage:*\n" +
-      "`/imagine a cute cat in space`\n" +
+      "`/imagine anime girl with pink hair`\n" +
       "`/imagine fantasy landscape with mountains`\n" +
       "`/imagine cyberpunk city at night`\n\n" +
-      `_Powered by ${getRandomTagline()}_`,
+      "_Powered by Peppermint SDXL_",
       { parse_mode: "Markdown" }
     );
     return;
@@ -5002,83 +5010,18 @@ bot.command("imagine", async (ctx) => {
     return;
   }
   
-  // Send generating message
-  const statusMsg = await ctx.reply(
-    "🎨 *Generating image...*\n\n" +
-    `Prompt: _${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_\n\n` +
-    "⏳ This may take 10-30 seconds...",
-    { parse_mode: "Markdown" }
-  );
-  
+  // Use the HF Space interactive UI
   try {
-    // URL encode the prompt
-    const encodedPrompt = encodeURIComponent(prompt);
-    
-    // Build image generation URL with parameters
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
-    
-    // Fetch the image
-    const response = await fetch(imageUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'StarzAI-Bot/1.0'
-      },
-      timeout: 60000 // 60 second timeout
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    // Get image as buffer
-    const imageBuffer = Buffer.from(await response.arrayBuffer());
-    
-    // Send the image
-    await ctx.replyWithPhoto(
-      new InputFile(imageBuffer, "generated_image.jpg"),
-      {
-        caption: `🎨 *Generated Image*\n\n📝 Prompt: _${prompt}_\n\n✨ _Powered by ${getRandomTagline(prompt)}_`,
-        parse_mode: "Markdown"
-      }
-    );
-    
-    // Delete the status message
-    try {
-      await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
-    } catch (e) {
-      // Ignore deletion errors
-    }
-    
-    // Track usage (save is batched automatically)
-    const rec = getUserRecord(u.id);
-    if (rec) {
-      rec.messagesCount = (rec.messagesCount || 0) + 1;
-      saveUsers(); // Batched save - won't block other requests
-    }
-    
-    console.log(`[IMAGINE] User ${u.id} generated image: "${prompt.slice(0, 50)}"`);
-    
+    await startImageGeneration(ctx.api, ctx.message, prompt);
+    console.log(`[IMAGINE] User ${u.id} started image generation: "${prompt.slice(0, 50)}"`);
   } catch (error) {
     console.error("Image generation error:", error);
-    
-    // Update status message with error
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        "❌ *Image generation failed*\n\n" +
-        "The service might be temporarily unavailable. Please try again in a moment.\n\n" +
-        "_If the problem persists, use /feedback to report it._",
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      // If edit fails, send new message
-      await ctx.reply(
-        "❌ *Image generation failed*\n\n" +
-        "The service might be temporarily unavailable. Please try again in a moment.",
-        { parse_mode: "Markdown" }
-      );
-    }
+    await ctx.reply(
+      "❌ *Image generation failed*\n\n" +
+      "The service might be temporarily unavailable. Please try again in a moment.\n\n" +
+      "_If the problem persists, use /feedback to report it._",
+      { parse_mode: "Markdown" }
+    );
   }
 });
 
@@ -6413,6 +6356,22 @@ bot.callbackQuery("img_cancel", async (ctx) => {
     try {
       await ctx.editMessageText("❌ Cancelled");
     } catch (e2) {}
+  }
+});
+
+// =====================
+// HF SPACE IMAGE GENERATION CALLBACKS (/imagine)
+// =====================
+
+// Handle all HF image generation callbacks (img_size, img_quality, img_count, img_seed, img_negative, img_generate, img_retry, img_new)
+bot.callbackQuery(/^img_(size|quality|count|seed|negative|generate|retry|new|ar_|q_|n_|s_)/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  try {
+    await handleImageCallback(ctx.api, ctx.callbackQuery);
+  } catch (error) {
+    console.error("HF image callback error:", error);
+    await ctx.answerCallbackQuery({ text: "Error processing request", show_alert: true });
   }
 });
 
