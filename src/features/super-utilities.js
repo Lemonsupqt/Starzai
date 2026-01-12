@@ -13,26 +13,41 @@
  * - Fun: Quotes, Truth or Dare, Would You Rather, Roast, Pickup Lines
  * - Dev: Code Runner
  * - Media: Wallpapers
+ * 
+ * UPDATED: Now uses API-based downloads instead of yt-dlp for Railway compatibility
  */
 
 import fetch from 'node-fetch';
 import QRCode from 'qrcode';
 import { createCanvas, loadImage } from 'canvas';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-
-const execAsync = promisify(exec);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
-  cobalt: {
-    api: 'https://api.cobalt.tools',
+  // VKrDownloader API - supports YouTube, Facebook, Twitter, Instagram, etc.
+  vkrdownloader: {
+    api: 'https://vkrdownloader.org/server/',
+    apiKey: 'vkrdownloader',
+    timeout: 60000
+  },
+  // TikWM API for TikTok
+  tikwm: {
+    api: 'https://www.tikwm.com/api/',
+    timeout: 30000
+  },
+  // SSSTik API for TikTok (backup)
+  ssstik: {
+    api: 'https://ssstik.io',
+    timeout: 30000
+  },
+  // Loader.to for audio/Spotify
+  loaderto: {
+    api: 'https://loader.to/ajax/download.php',
     timeout: 60000
   },
   tmdb: {
@@ -78,79 +93,181 @@ const URL_PATTERNS = {
   instagram: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)([\w-]+)/,
   twitter: /(?:twitter\.com|x\.com)\/\w+\/status\/(\d+)/,
   spotify: /(?:open\.spotify\.com\/track\/)([a-zA-Z0-9]+)/,
-  soundcloud: /soundcloud\.com\/[\w-]+\/[\w-]+/
+  soundcloud: /soundcloud\.com\/[\w-]+\/[\w-]+/,
+  facebook: /(?:facebook\.com|fb\.watch)\/(?:watch\/?\?v=|[\w.]+\/videos\/|reel\/)?(\d+)?/
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIDEO/SOCIAL MEDIA DOWNLOADS (yt-dlp based)
+// VIDEO/SOCIAL MEDIA DOWNLOADS (API-based - Railway compatible)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download video/audio from various platforms using yt-dlp
- * Supports: YouTube, TikTok, Instagram, Twitter, SoundCloud, Spotify, etc.
+ * Download media using VKrDownloader API
+ * Supports: YouTube, Facebook, Twitter, Instagram, etc.
  */
-async function downloadMedia(url, audioOnly = false) {
-  const tmpDir = os.tmpdir();
-  const outputId = `starz_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const outputTemplate = path.join(tmpDir, `${outputId}.%(ext)s`);
-  
+async function downloadWithVKR(url) {
   try {
-    // Build yt-dlp command
-    let cmd = `yt-dlp --no-playlist --no-warnings -q`;
+    const apiUrl = `${CONFIG.vkrdownloader.api}?api_key=${CONFIG.vkrdownloader.apiKey}&vkr=${encodeURIComponent(url)}`;
     
-    if (audioOnly) {
-      cmd += ` -x --audio-format mp3 --audio-quality 0`;
-    } else {
-      cmd += ` -f "best[filesize<50M]/best" --merge-output-format mp4`;
+    const response = await fetch(apiUrl, {
+      timeout: CONFIG.vkrdownloader.timeout,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const data = await response.json();
+    
+    if (!data.success || !data.data) {
+      return { success: false, error: data.error?.message || 'VKR API failed' };
     }
     
-    cmd += ` -o "${outputTemplate}" "${url}"`;
+    const result = data.data;
     
-    // Execute download
-    await execAsync(cmd, { timeout: 120000 });
+    // Find best quality download URL
+    let downloadUrl = null;
+    let quality = null;
     
-    // Find the downloaded file
-    const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
-    if (files.length === 0) {
-      return { success: false, error: 'Download completed but file not found' };
+    if (result.downloads && result.downloads.length > 0) {
+      // Sort by quality (prefer higher)
+      const sorted = result.downloads.sort((a, b) => {
+        const qualityOrder = { '1080p': 4, '720p': 3, '480p': 2, '360p': 1 };
+        return (qualityOrder[b.format_id] || 0) - (qualityOrder[a.format_id] || 0);
+      });
+      downloadUrl = sorted[0].url;
+      quality = sorted[0].format_id;
+    } else if (result.source) {
+      downloadUrl = result.source;
     }
     
-    const filePath = path.join(tmpDir, files[0]);
-    const stats = fs.statSync(filePath);
-    
-    // Check file size (Telegram limit is 50MB for bots)
-    if (stats.size > 50 * 1024 * 1024) {
-      fs.unlinkSync(filePath);
-      return { success: false, error: 'File too large (>50MB). Try audio only.' };
+    if (!downloadUrl) {
+      return { success: false, error: 'No download URL found' };
     }
     
     return {
       success: true,
-      filePath: filePath,
-      filename: files[0],
-      size: stats.size
+      url: downloadUrl,
+      title: result.title || 'Video',
+      thumbnail: result.thumbnail,
+      quality: quality,
+      duration: result.duration,
+      formats: result.downloads || []
     };
     
   } catch (error) {
-    // Clean up any partial files
-    try {
-      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(outputId));
-      files.forEach(f => fs.unlinkSync(path.join(tmpDir, f)));
-    } catch (e) {}
-    
-    return { success: false, error: error.message || 'Download failed' };
+    return { success: false, error: error.message || 'VKR download failed' };
   }
 }
 
 /**
- * Clean up downloaded file after sending
+ * Download TikTok video using TikWM API
  */
-function cleanupDownload(filePath) {
+async function downloadTikTok(url) {
   try {
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Try TikWM API first
+    const tikwmUrl = `${CONFIG.tikwm.api}?url=${encodeURIComponent(url)}`;
+    
+    const response = await fetch(tikwmUrl, {
+      timeout: CONFIG.tikwm.timeout,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const data = await response.json();
+    
+    if (data.code === 0 && data.data) {
+      const videoData = data.data;
+      return {
+        success: true,
+        url: videoData.play || videoData.wmplay,
+        title: videoData.title || 'TikTok Video',
+        thumbnail: videoData.cover || videoData.origin_cover,
+        author: videoData.author?.nickname || 'Unknown',
+        music: videoData.music_info?.play,
+        duration: videoData.duration,
+        type: videoData.images ? 'slideshow' : 'video',
+        images: videoData.images || null
+      };
     }
-  } catch (e) {}
+    
+    // Fallback to VKR if TikWM fails
+    return await downloadWithVKR(url);
+    
+  } catch (error) {
+    // Try VKR as fallback
+    try {
+      return await downloadWithVKR(url);
+    } catch (e) {
+      return { success: false, error: error.message || 'TikTok download failed' };
+    }
+  }
+}
+
+/**
+ * Download Spotify track by searching on YouTube and downloading audio
+ * This is a workaround since direct Spotify download is not available
+ */
+async function downloadSpotify(url) {
+  try {
+    // Extract track ID from Spotify URL
+    const match = url.match(URL_PATTERNS.spotify);
+    if (!match) {
+      return { success: false, error: 'Invalid Spotify URL' };
+    }
+    
+    const trackId = match[1];
+    
+    // Try to get track info from Spotify embed
+    const embedUrl = `https://open.spotify.com/embed/track/${trackId}`;
+    
+    // For now, return a message that Spotify direct download isn't supported
+    // User should use YouTube search instead
+    return {
+      success: false,
+      error: 'Spotify direct download is not available. Try searching for the song on YouTube using /dl youtube.com/results?search_query=SONG_NAME',
+      spotifyUrl: url,
+      trackId: trackId
+    };
+    
+  } catch (error) {
+    return { success: false, error: error.message || 'Spotify download failed' };
+  }
+}
+
+/**
+ * Main download function - routes to appropriate API based on platform
+ */
+async function downloadMedia(url, audioOnly = false) {
+  const platform = detectPlatform(url);
+  
+  try {
+    let result;
+    
+    switch (platform) {
+      case 'tiktok':
+        result = await downloadTikTok(url);
+        break;
+        
+      case 'spotify':
+        result = await downloadSpotify(url);
+        break;
+        
+      case 'youtube':
+      case 'instagram':
+      case 'twitter':
+      case 'facebook':
+      case 'soundcloud':
+      default:
+        result = await downloadWithVKR(url);
+        break;
+    }
+    
+    return result;
+    
+  } catch (error) {
+    return { success: false, error: error.message || 'Download failed' };
+  }
 }
 
 /**
@@ -336,23 +453,32 @@ async function getWeather(location) {
     const response = await fetch(`${CONFIG.weather.api}/${encodeURIComponent(location)}?format=j1`);
     const data = await response.json();
     
-    if (data.current_condition) {
+    if (data.current_condition && data.current_condition[0]) {
       const current = data.current_condition[0];
       const area = data.nearest_area?.[0];
+      
       return {
         success: true,
         location: area?.areaName?.[0]?.value || location,
         country: area?.country?.[0]?.value || '',
-        temp_c: current.temp_C,
-        temp_f: current.temp_F,
-        feels_like_c: current.FeelsLikeC,
+        temperature: {
+          celsius: current.temp_C,
+          fahrenheit: current.temp_F
+        },
+        feelsLike: {
+          celsius: current.FeelsLikeC,
+          fahrenheit: current.FeelsLikeF
+        },
         condition: current.weatherDesc?.[0]?.value || 'Unknown',
         humidity: current.humidity,
-        wind_kph: current.windspeedKmph,
-        wind_dir: current.winddir16Point
+        windSpeed: current.windspeedKmph,
+        windDirection: current.winddir16Point,
+        visibility: current.visibility,
+        uvIndex: current.uvIndex,
+        precipitation: current.precipMM
       };
     }
-    return { success: false, error: 'Location not found' };
+    return { success: false, error: 'Weather data not found' };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -374,8 +500,8 @@ async function translateText(text, from = 'auto', to = 'en') {
         success: true,
         original: text,
         translated: data.responseData.translatedText,
-        from: data.responseData.detectedLanguage || from,
-        to
+        from: from,
+        to: to
       };
     }
     return { success: false, error: 'Translation failed' };
@@ -385,43 +511,50 @@ async function translateText(text, from = 'auto', to = 'en') {
 }
 
 /**
- * Unit conversion
+ * Convert units
  */
 function convertUnit(value, fromUnit, toUnit) {
   const conversions = {
     // Length
-    'km_mi': v => v * 0.621371,
-    'mi_km': v => v * 1.60934,
     'm_ft': v => v * 3.28084,
-    'ft_m': v => v * 0.3048,
+    'ft_m': v => v / 3.28084,
+    'km_mi': v => v * 0.621371,
+    'mi_km': v => v / 0.621371,
     'cm_in': v => v * 0.393701,
-    'in_cm': v => v * 2.54,
+    'in_cm': v => v / 0.393701,
+    
     // Weight
     'kg_lb': v => v * 2.20462,
-    'lb_kg': v => v * 0.453592,
+    'lb_kg': v => v / 2.20462,
     'g_oz': v => v * 0.035274,
-    'oz_g': v => v * 28.3495,
+    'oz_g': v => v / 0.035274,
+    
     // Temperature
     'c_f': v => (v * 9/5) + 32,
     'f_c': v => (v - 32) * 5/9,
+    'c_k': v => v + 273.15,
+    'k_c': v => v - 273.15,
+    
     // Volume
     'l_gal': v => v * 0.264172,
-    'gal_l': v => v * 3.78541,
+    'gal_l': v => v / 0.264172,
     'ml_floz': v => v * 0.033814,
-    'floz_ml': v => v * 29.5735
+    'floz_ml': v => v / 0.033814
   };
-
+  
   const key = `${fromUnit.toLowerCase()}_${toUnit.toLowerCase()}`;
+  
   if (conversions[key]) {
     return {
       success: true,
-      value,
-      fromUnit,
-      toUnit,
-      result: conversions[key](value).toFixed(4)
+      original: value,
+      converted: conversions[key](value).toFixed(4),
+      from: fromUnit,
+      to: toUnit
     };
   }
-  return { success: false, error: 'Unsupported conversion' };
+  
+  return { success: false, error: 'Unsupported unit conversion' };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -433,10 +566,13 @@ function convertUnit(value, fromUnit, toUnit) {
  */
 async function getWikipedia(query) {
   try {
-    const response = await fetch(`${CONFIG.wikipedia.api}/${encodeURIComponent(query)}`);
+    const response = await fetch(
+      `${CONFIG.wikipedia.api}/${encodeURIComponent(query)}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
     const data = await response.json();
     
-    if (data.extract) {
+    if (data.title && data.extract) {
       return {
         success: true,
         title: data.title,
@@ -452,23 +588,23 @@ async function getWikipedia(query) {
 }
 
 /**
- * Get dictionary definition
+ * Get word definition
  */
 async function getDefinition(word) {
   try {
     const response = await fetch(`${CONFIG.dictionary.api}/${encodeURIComponent(word)}`);
     const data = await response.json();
     
-    if (Array.isArray(data) && data.length > 0) {
+    if (Array.isArray(data) && data[0]) {
       const entry = data[0];
       return {
         success: true,
         word: entry.word,
         phonetic: entry.phonetic || entry.phonetics?.[0]?.text,
         audio: entry.phonetics?.find(p => p.audio)?.audio,
-        meanings: entry.meanings.map(m => ({
+        meanings: entry.meanings?.map(m => ({
           partOfSpeech: m.partOfSpeech,
-          definitions: m.definitions.slice(0, 3).map(d => ({
+          definitions: m.definitions?.slice(0, 3).map(d => ({
             definition: d.definition,
             example: d.example
           }))
@@ -486,20 +622,20 @@ async function getDefinition(word) {
  */
 async function getRandomFact() {
   try {
-    const response = await fetch(`${CONFIG.facts.api}?language=en`);
+    const response = await fetch(CONFIG.facts.api);
     const data = await response.json();
     
     if (data.text) {
-      return { success: true, fact: data.text, source: data.source_url };
+      return { success: true, fact: data.text, source: data.source };
     }
-    return { success: false, error: 'Failed to get fact' };
+    return { success: false, error: 'Could not fetch fact' };
   } catch (error) {
     return { success: false, error: error.message };
   }
 }
 
 /**
- * Get "This Day in History"
+ * Get this day in history
  */
 async function getThisDayInHistory() {
   try {
@@ -514,14 +650,17 @@ async function getThisDayInHistory() {
     
     if (data.events && data.events.length > 0) {
       // Get 5 random events
-      const events = data.events
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 5)
-        .map(e => ({
+      const shuffled = data.events.sort(() => 0.5 - Math.random());
+      const selected = shuffled.slice(0, 5);
+      
+      return {
+        success: true,
+        date: `${month}/${day}`,
+        events: selected.map(e => ({
           year: e.year,
           text: e.text
-        }));
-      return { success: true, date: `${month}/${day}`, events };
+        }))
+      };
     }
     return { success: false, error: 'No events found' };
   } catch (error) {
@@ -545,80 +684,80 @@ async function getRandomQuote() {
       return {
         success: true,
         quote: data.content,
-        author: data.author
+        author: data.author,
+        tags: data.tags
       };
     }
-    return { success: false, error: 'Failed to get quote' };
+    return { success: false, error: 'Could not fetch quote' };
   } catch (error) {
-    return { success: false, error: error.message };
+    // Fallback quotes
+    const fallbackQuotes = [
+      { quote: "The only way to do great work is to love what you do.", author: "Steve Jobs" },
+      { quote: "Innovation distinguishes between a leader and a follower.", author: "Steve Jobs" },
+      { quote: "Stay hungry, stay foolish.", author: "Steve Jobs" },
+      { quote: "The future belongs to those who believe in the beauty of their dreams.", author: "Eleanor Roosevelt" },
+      { quote: "It is during our darkest moments that we must focus to see the light.", author: "Aristotle" }
+    ];
+    const random = fallbackQuotes[Math.floor(Math.random() * fallbackQuotes.length)];
+    return { success: true, ...random };
   }
 }
 
 /**
- * Generate Discord-style quote image
+ * Generate quote image
  */
-async function generateQuoteImage(text, username, avatarUrl) {
+async function generateQuoteImage(quote, author) {
   try {
-    const canvas = createCanvas(800, 400);
+    const width = 800;
+    const height = 400;
+    const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
     
-    // Background
-    ctx.fillStyle = '#36393f';
-    ctx.fillRect(0, 0, 800, 400);
-    
-    // Avatar
-    if (avatarUrl) {
-      try {
-        const avatar = await loadImage(avatarUrl);
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(60, 80, 40, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.clip();
-        ctx.drawImage(avatar, 20, 40, 80, 80);
-        ctx.restore();
-      } catch (e) {
-        // Draw placeholder circle if avatar fails
-        ctx.fillStyle = '#7289da';
-        ctx.beginPath();
-        ctx.arc(60, 80, 40, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    
-    // Username
-    ctx.fillStyle = '#7289da';
-    ctx.font = 'bold 24px Arial';
-    ctx.fillText(username || 'Anonymous', 120, 70);
-    
-    // Timestamp
-    ctx.fillStyle = '#72767d';
-    ctx.font = '14px Arial';
-    ctx.fillText(new Date().toLocaleDateString(), 120, 95);
+    // Background gradient
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, '#667eea');
+    gradient.addColorStop(1, '#764ba2');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
     
     // Quote text
-    ctx.fillStyle = '#dcddde';
-    ctx.font = '20px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     
     // Word wrap
-    const words = text.split(' ');
-    let line = '';
-    let y = 160;
-    const maxWidth = 700;
+    const words = quote.split(' ');
+    const lines = [];
+    let currentLine = '';
+    const maxWidth = width - 100;
     
     for (const word of words) {
-      const testLine = line + word + ' ';
+      const testLine = currentLine + word + ' ';
       const metrics = ctx.measureText(testLine);
-      if (metrics.width > maxWidth && line !== '') {
-        ctx.fillText(line, 50, y);
-        line = word + ' ';
-        y += 30;
-        if (y > 360) break;
+      if (metrics.width > maxWidth && currentLine !== '') {
+        lines.push(currentLine.trim());
+        currentLine = word + ' ';
       } else {
-        line = testLine;
+        currentLine = testLine;
       }
     }
-    ctx.fillText(line, 50, y);
+    lines.push(currentLine.trim());
+    
+    // Draw quote
+    const lineHeight = 40;
+    const startY = (height - lines.length * lineHeight) / 2 - 20;
+    
+    ctx.fillText('"', 50, startY - 20);
+    lines.forEach((line, i) => {
+      ctx.fillText(line, width / 2, startY + i * lineHeight);
+    });
+    ctx.fillText('"', width - 50, startY + (lines.length - 1) * lineHeight + 20);
+    
+    // Author
+    ctx.font = 'italic 20px Arial';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillText(`— ${author}`, width / 2, startY + lines.length * lineHeight + 40);
     
     return { success: true, buffer: canvas.toBuffer('image/png') };
   } catch (error) {
@@ -626,57 +765,61 @@ async function generateQuoteImage(text, username, avatarUrl) {
   }
 }
 
-// Truth or Dare questions
-const TRUTH_QUESTIONS = [
-  "What's the most embarrassing thing you've ever done?",
-  "What's your biggest fear?",
-  "What's a secret you've never told anyone?",
-  "What's the worst lie you've ever told?",
-  "What's your most embarrassing childhood memory?",
-  "Have you ever cheated on a test?",
-  "What's the most childish thing you still do?",
-  "What's your guilty pleasure?",
-  "What's the worst date you've ever been on?",
-  "What's the most trouble you've ever been in?"
-];
-
-const DARE_CHALLENGES = [
-  "Send a voice message singing your favorite song",
-  "Change your profile picture to something embarrassing for 1 hour",
-  "Send the last photo in your gallery",
-  "Text your crush and screenshot the conversation",
-  "Do 10 pushups and send a video",
-  "Speak in an accent for the next 5 minutes",
-  "Let someone else send a message from your phone",
-  "Share your screen time report",
-  "Send a message to your ex",
-  "Post an embarrassing story on social media"
-];
-
-const WOULD_YOU_RATHER = [
-  ["be able to fly", "be invisible"],
-  ["have unlimited money", "unlimited knowledge"],
-  ["live without music", "live without movies"],
-  ["be famous", "be rich"],
-  ["travel to the past", "travel to the future"],
-  ["have no internet", "have no phone"],
-  ["be too hot", "be too cold"],
-  ["speak all languages", "talk to animals"],
-  ["have super strength", "super speed"],
-  ["never age", "never get sick"]
-];
-
-function getTruthOrDare(type) {
-  if (type === 'truth') {
-    return TRUTH_QUESTIONS[Math.floor(Math.random() * TRUTH_QUESTIONS.length)];
-  } else {
-    return DARE_CHALLENGES[Math.floor(Math.random() * DARE_CHALLENGES.length)];
-  }
+/**
+ * Get truth or dare
+ */
+async function getTruthOrDare(type = 'truth') {
+  const truths = [
+    "What's the most embarrassing thing you've ever done?",
+    "What's a secret you've never told anyone?",
+    "What's the biggest lie you've ever told?",
+    "What's your biggest fear?",
+    "What's the most childish thing you still do?",
+    "What's the worst date you've ever been on?",
+    "What's the most trouble you've ever been in?",
+    "What's your guilty pleasure?",
+    "What's the weirdest dream you've ever had?",
+    "What's something you've done that you're proud of but never told anyone?"
+  ];
+  
+  const dares = [
+    "Do your best impression of a celebrity",
+    "Sing the chorus of your favorite song",
+    "Do 10 jumping jacks right now",
+    "Talk in an accent for the next 3 messages",
+    "Send a funny selfie to the group",
+    "Tell a joke (it has to be funny!)",
+    "Do your best dance move",
+    "Speak only in questions for the next 5 minutes",
+    "Give a compliment to everyone in the chat",
+    "Share the last photo in your camera roll"
+  ];
+  
+  const list = type === 'truth' ? truths : dares;
+  const selected = list[Math.floor(Math.random() * list.length)];
+  
+  return { success: true, type, challenge: selected };
 }
 
-function getWouldYouRather() {
-  const pair = WOULD_YOU_RATHER[Math.floor(Math.random() * WOULD_YOU_RATHER.length)];
-  return { option1: pair[0], option2: pair[1] };
+/**
+ * Get would you rather
+ */
+async function getWouldYouRather() {
+  const questions = [
+    { optionA: "Be able to fly", optionB: "Be invisible" },
+    { optionA: "Live without music", optionB: "Live without movies" },
+    { optionA: "Be famous", optionB: "Be rich" },
+    { optionA: "Have unlimited money", optionB: "Have unlimited time" },
+    { optionA: "Know how you die", optionB: "Know when you die" },
+    { optionA: "Be able to read minds", optionB: "Be able to see the future" },
+    { optionA: "Live in the past", optionB: "Live in the future" },
+    { optionA: "Have no internet", optionB: "Have no air conditioning" },
+    { optionA: "Be a genius but ugly", optionB: "Be beautiful but average intelligence" },
+    { optionA: "Never use social media again", optionB: "Never watch TV again" }
+  ];
+  
+  const selected = questions[Math.floor(Math.random() * questions.length)];
+  return { success: true, ...selected };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -684,22 +827,41 @@ function getWouldYouRather() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Execute code using Piston API
+ * Run code using Piston API
  */
 async function runCode(language, code) {
   try {
-    // Get available runtimes
-    const runtimesRes = await fetch(`${CONFIG.piston.api}/runtimes`);
-    const runtimes = await runtimesRes.json();
+    const languageMap = {
+      'js': 'javascript',
+      'javascript': 'javascript',
+      'py': 'python',
+      'python': 'python',
+      'java': 'java',
+      'cpp': 'c++',
+      'c++': 'c++',
+      'c': 'c',
+      'go': 'go',
+      'rust': 'rust',
+      'ruby': 'ruby',
+      'php': 'php',
+      'swift': 'swift',
+      'kotlin': 'kotlin',
+      'ts': 'typescript',
+      'typescript': 'typescript'
+    };
     
-    // Find matching runtime
-    const runtime = runtimes.find(r => 
-      r.language.toLowerCase() === language.toLowerCase() ||
-      r.aliases?.includes(language.toLowerCase())
-    );
+    const lang = languageMap[language.toLowerCase()];
+    if (!lang) {
+      return { success: false, error: 'Unsupported language' };
+    }
     
+    // Get runtime info
+    const runtimesResponse = await fetch(`${CONFIG.piston.api}/runtimes`);
+    const runtimes = await runtimesResponse.json();
+    
+    const runtime = runtimes.find(r => r.language === lang);
     if (!runtime) {
-      return { success: false, error: `Language "${language}" not supported` };
+      return { success: false, error: `Runtime for ${lang} not found` };
     }
     
     // Execute code
@@ -721,10 +883,11 @@ async function runCode(language, code) {
         language: runtime.language,
         version: runtime.version,
         output: result.run.stdout || '',
-        error: result.run.stderr || '',
+        stderr: result.run.stderr || '',
         exitCode: result.run.code
       };
     }
+    
     return { success: false, error: result.message || 'Execution failed' };
   } catch (error) {
     return { success: false, error: error.message };
@@ -738,12 +901,13 @@ async function getSupportedLanguages() {
   try {
     const response = await fetch(`${CONFIG.piston.api}/runtimes`);
     const runtimes = await response.json();
+    
     return {
       success: true,
       languages: runtimes.map(r => ({
-        name: r.language,
+        language: r.language,
         version: r.version,
-        aliases: r.aliases || []
+        aliases: r.aliases
       }))
     };
   } catch (error) {
@@ -756,17 +920,17 @@ async function getSupportedLanguages() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Search wallpapers
+ * Search wallpapers from Wallhaven
  */
 async function searchWallpapers(query, options = {}) {
   try {
     const params = new URLSearchParams({
       q: query,
-      categories: options.categories || '100', // General
-      purity: options.purity || '100', // SFW only
+      categories: options.categories || '111',
+      purity: options.purity || '100',
       sorting: options.sorting || 'relevance',
-      order: 'desc',
-      atleast: options.resolution || '1920x1080'
+      order: options.order || 'desc',
+      page: options.page || 1
     });
     
     const response = await fetch(`${CONFIG.wallhaven.api}?${params}`);
@@ -778,10 +942,13 @@ async function searchWallpapers(query, options = {}) {
         wallpapers: data.data.slice(0, 10).map(w => ({
           id: w.id,
           url: w.path,
-          thumbnail: w.thumbs.large,
+          thumbnail: w.thumbs?.large || w.thumbs?.original,
           resolution: w.resolution,
-          colors: w.colors
-        }))
+          colors: w.colors,
+          category: w.category,
+          purity: w.purity
+        })),
+        meta: data.meta
       };
     }
     return { success: false, error: 'No wallpapers found' };
@@ -797,7 +964,9 @@ async function searchWallpapers(query, options = {}) {
 export {
   // Downloads
   downloadMedia,
-  cleanupDownload,
+  downloadWithVKR,
+  downloadTikTok,
+  downloadSpotify,
   detectPlatform,
   URL_PATTERNS,
   

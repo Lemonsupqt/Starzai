@@ -56,7 +56,8 @@ const PLATFORM_EMOJI = {
   instagram: '📸',
   twitter: '🐦',
   spotify: '🎧',
-  soundcloud: '☁️'
+  soundcloud: '☁️',
+  facebook: '📘'
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -148,49 +149,82 @@ export async function handleDownloadCommand(ctx) {
       return;
     }
     
-    if (result.picker) {
-      // Multiple options available
+    // Check if we have multiple format options
+    if (result.formats && result.formats.length > 1) {
       const kb = new InlineKeyboard();
-      result.options.slice(0, 4).forEach((opt, i) => {
-        kb.text(opt.type || `Option ${i + 1}`, `dl_pick:${i}:${encodeURIComponent(url)}`).row();
+      result.formats.slice(0, 4).forEach((fmt, i) => {
+        const label = fmt.format_id || fmt.ext || `Option ${i + 1}`;
+        kb.text(`📹 ${label}`, `dl_fmt:${i}:${encodeURIComponent(url)}`).row();
       });
       
       await ctx.api.editMessageText(
         ctx.chat.id, statusMsg.message_id,
-        `${emoji} <b>Multiple options available:</b>\n\nSelect what you want to download:`,
+        `${emoji} <b>Multiple formats available:</b>\n\n` +
+        `<b>Title:</b> ${escapeHTML(result.title || 'Video')}\n\n` +
+        `Select quality:`,
         { parse_mode: 'HTML', reply_markup: kb }
       );
       return;
     }
     
-    // Send the file
+    // Send the file directly using URL
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      `${emoji} <b>Uploading to Telegram...</b>`,
+      `${emoji} <b>Sending to Telegram...</b>\n\n<b>Title:</b> ${escapeHTML(result.title || 'Video')}`,
       { parse_mode: 'HTML' }
     );
     
-    // Determine if it's video or audio based on URL/response
-    const isAudio = url.includes('soundcloud') || url.includes('spotify');
+    // Determine if it's video or audio based on platform/URL
+    const isAudio = platform === 'soundcloud' || platform === 'spotify' || result.type === 'audio';
+    const isTikTokSlideshow = result.type === 'slideshow' && result.images;
     
-    if (isAudio) {
+    // Build caption
+    let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
+    if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
+    caption += `\n\n<i>Downloaded via StarzAI</i>`;
+    
+    if (isTikTokSlideshow) {
+      // Send images as media group for TikTok slideshows
+      const mediaGroup = result.images.slice(0, 10).map((img, i) => ({
+        type: 'photo',
+        media: img,
+        caption: i === 0 ? caption : undefined,
+        parse_mode: i === 0 ? 'HTML' : undefined
+      }));
+      
+      await ctx.replyWithMediaGroup(mediaGroup, {
+        reply_to_message_id: ctx.message?.message_id
+      });
+      
+      // Also send audio if available
+      if (result.music) {
+        await ctx.replyWithAudio(result.music, {
+          caption: '🎵 Audio from slideshow',
+          reply_to_message_id: ctx.message?.message_id
+        });
+      }
+    } else if (isAudio) {
       await ctx.replyWithAudio(result.url, {
-        caption: `${emoji} Downloaded via StarzAI`,
+        caption: caption,
+        parse_mode: 'HTML',
         reply_to_message_id: ctx.message?.message_id
       });
     } else {
       await ctx.replyWithVideo(result.url, {
-        caption: `${emoji} Downloaded via StarzAI`,
-        reply_to_message_id: ctx.message?.message_id
+        caption: caption,
+        parse_mode: 'HTML',
+        reply_to_message_id: ctx.message?.message_id,
+        supports_streaming: true
       });
     }
     
     await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
     
   } catch (error) {
+    console.error('Download error:', error);
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      `❌ Error: ${escapeHTML(error.message)}`,
+      `❌ Error: ${escapeHTML(error.message)}\n\n<i>Try again or use a different link.</i>`,
       { parse_mode: 'HTML' }
     );
   }

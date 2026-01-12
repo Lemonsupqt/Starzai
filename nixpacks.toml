@@ -1,8 +1,8 @@
-[phases.setup]
-aptPkgs = ["ffmpeg", "python3", "python3-pip"]
+# StarzAI Bot - Railway Configuration
+# No longer requires yt-dlp - uses API-based downloads
 
-[phases.install]
-cmds = ["npm install", "pip3 install yt-dlp"]
+[phases.setup]
+aptPkgs = ["ffmpeg"]
 
 [start]
 cmd = "npm start"
