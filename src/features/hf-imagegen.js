@@ -4,7 +4,6 @@
  */
 
 import fetch from 'node-fetch';
-import { CONFIG } from '../config/env.js';
 
 // HF Space API URL
 const HF_IMAGEGEN_API = process.env.HF_IMAGEGEN_API || '';
