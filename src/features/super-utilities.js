@@ -25,6 +25,44 @@ import path from 'path';
 import os from 'os';
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Decode HTML entities in a string
+ * @param {string} text - Text with HTML entities
+ * @returns {string} Decoded text
+ */
+function decodeHTMLEntities(text) {
+  if (!text) return '';
+  return text
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#34;/g, '"')
+    .replace(/&#x22;/g, '"')
+    .replace(/&nbsp;/g, ' ');
+}
+
+/**
+ * Sanitize filename for safe file system usage
+ * @param {string} name - Original filename
+ * @returns {string} Sanitized filename
+ */
+function sanitizeFilename(name) {
+  if (!name) return 'audio';
+  return decodeHTMLEntities(name)
+    .replace(/[<>:"/\\|?*]/g, '') // Remove invalid chars
+    .replace(/\s+/g, ' ')          // Normalize spaces
+    .trim()
+    .slice(0, 100);                // Limit length
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -653,19 +691,27 @@ async function searchMusic(query, limit = 10) {
       return { success: false, error: 'No songs found' };
     }
     
-    const songs = data.data.results.map(song => ({
-      id: song.id,
-      name: song.name,
-      artist: song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
-      album: song.album?.name || 'Unknown',
-      year: song.year || '',
-      duration: song.duration ? formatDuration(song.duration) : '',
-      language: song.language || '',
-      hasLyrics: song.hasLyrics || false,
-      image: song.image?.find(i => i.quality === '500x500')?.url || 
-             song.image?.find(i => i.quality === '150x150')?.url || '',
-      downloadUrl: song.downloadUrl || []
-    }));
+    const songs = data.data.results.map(song => {
+      // Decode HTML entities in all text fields
+      const cleanName = decodeHTMLEntities(song.name);
+      const cleanArtist = decodeHTMLEntities(song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown');
+      const cleanAlbum = decodeHTMLEntities(song.album?.name || 'Unknown');
+      
+      return {
+        id: song.id,
+        name: cleanName,
+        artist: cleanArtist,
+        album: cleanAlbum,
+        year: song.year || '',
+        duration: song.duration ? formatDuration(song.duration) : '',
+        language: song.language || '',
+        hasLyrics: song.hasLyrics || false,
+        image: song.image?.find(i => i.quality === '500x500')?.url || 
+               song.image?.find(i => i.quality === '150x150')?.url || '',
+        downloadUrl: song.downloadUrl || [],
+        filename: sanitizeFilename(`${cleanArtist} - ${cleanName}`)
+      };
+    });
     
     return { success: true, songs };
   } catch (error) {
@@ -699,13 +745,21 @@ async function getSongById(songId) {
                         downloadUrls.find(d => d.quality === '96kbps') ||
                         downloadUrls[0];
     
+    // Decode HTML entities and sanitize metadata
+    const cleanName = decodeHTMLEntities(song.name);
+    const cleanArtist = decodeHTMLEntities(song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown');
+    const cleanAlbum = decodeHTMLEntities(song.album?.name || 'Unknown');
+    
+    // Generate clean filename for the audio file
+    const cleanFilename = sanitizeFilename(`${cleanArtist} - ${cleanName}`);
+    
     return {
       success: true,
       song: {
         id: song.id,
-        name: song.name,
-        artist: song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
-        album: song.album?.name || 'Unknown',
+        name: cleanName,
+        artist: cleanArtist,
+        album: cleanAlbum,
         year: song.year || '',
         duration: song.duration ? formatDuration(song.duration) : '',
         language: song.language || '',
@@ -714,7 +768,8 @@ async function getSongById(songId) {
                song.image?.find(i => i.quality === '150x150')?.url || '',
         downloadUrl: bestQuality?.url || null,
         quality: bestQuality?.quality || 'Unknown',
-        allQualities: downloadUrls
+        allQualities: downloadUrls,
+        filename: cleanFilename
       }
     };
   } catch (error) {

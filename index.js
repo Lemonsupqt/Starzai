@@ -16966,6 +16966,93 @@ bot.on("inline_query", async (ctx) => {
   const shortModel = model.split("/").pop();
   
   // =====================
+  // AUTO URL DETECTION - Detect video/media links for instant download
+  // =====================
+  
+  // URL patterns for auto-detection
+  const urlPatterns = {
+    youtube: /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+    tiktok: /(?:tiktok\.com\/@[\w.-]+\/video\/|vm\.tiktok\.com\/|tiktok\.com\/t\/)(\w+)/,
+    instagram: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)([\w-]+)/,
+    twitter: /(?:twitter\.com|x\.com)\/\w+\/status\/(\d+)/,
+    facebook: /(?:facebook\.com|fb\.watch)\/(?:watch\/\?v=|[\w.]+\/videos\/|reel\/)?(\d+)?/,
+    spotify: /(?:open\.spotify\.com\/(?:track|album|playlist)\/)([a-zA-Z0-9]+)/,
+  };
+  
+  const platformEmojis = {
+    youtube: '🎬',
+    tiktok: '🎵',
+    instagram: '📸',
+    twitter: '🐦',
+    facebook: '📘',
+    spotify: '🎧',
+  };
+  
+  const platformNames = {
+    youtube: 'YouTube',
+    tiktok: 'TikTok',
+    instagram: 'Instagram',
+    twitter: 'Twitter/X',
+    facebook: 'Facebook',
+    spotify: 'Spotify',
+  };
+  
+  // Check if query contains a supported URL
+  let detectedPlatform = null;
+  let detectedUrl = q;
+  
+  for (const [platform, pattern] of Object.entries(urlPatterns)) {
+    if (pattern.test(q)) {
+      detectedPlatform = platform;
+      break;
+    }
+  }
+  
+  // If URL detected, show download option
+  if (detectedPlatform) {
+    const dlKey = makeId(6);
+    const emoji = platformEmojis[detectedPlatform] || '📥';
+    const platformName = platformNames[detectedPlatform] || 'Media';
+    
+    // Store the URL for the callback handler
+    inlineCache.set(`dl_pending_${dlKey}`, {
+      type: 'download',
+      url: detectedUrl,
+      platform: detectedPlatform,
+      userId: String(userId),
+      createdAt: Date.now(),
+    });
+    setTimeout(() => inlineCache.delete(`dl_pending_${dlKey}`), 5 * 60 * 1000);
+    
+    return safeAnswerInline(ctx, [
+      {
+        type: "article",
+        id: `dl_start_${dlKey}`,
+        title: `${emoji} Download from ${platformName}`,
+        description: `Tap to download this ${platformName} media`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/download.png",
+        input_message_content: {
+          message_text: `${emoji} <b>Downloading from ${platformName}...</b>\n\n🔗 ${escapeHTML(detectedUrl.slice(0, 50))}${detectedUrl.length > 50 ? '...' : ''}\n\n<i>⏳ Please wait...</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Downloading...", `dl_loading_${dlKey}`),
+      },
+      {
+        type: "article",
+        id: `dl_audio_${dlKey}`,
+        title: `🎵 Download Audio Only`,
+        description: `Extract audio from this ${platformName} media`,
+        thumbnail_url: "https://img.icons8.com/fluency/96/audio-file.png",
+        input_message_content: {
+          message_text: `🎵 <b>Extracting audio from ${platformName}...</b>\n\n🔗 ${escapeHTML(detectedUrl.slice(0, 50))}${detectedUrl.length > 50 ? '...' : ''}\n\n<i>⏳ Please wait...</i>`,
+          parse_mode: "HTML",
+        },
+        reply_markup: new InlineKeyboard().text("⏳ Extracting...", `dl_audio_loading_${dlKey}`),
+      },
+    ], { cache_time: 0, is_personal: true });
+  }
+  
+  // =====================
   // SHORT PREFIX HANDLERS - q, b, code, e, r, s for quick access
   // =====================
   
@@ -19722,6 +19809,98 @@ bot.on("chosen_inline_result", async (ctx) => {
         );
       } catch {}
     }
+    return;
+  }
+  
+  // Handle inline download - dl_start_KEY or dl_audio_KEY
+  if (resultId.startsWith("dl_start_") || resultId.startsWith("dl_audio_")) {
+    const isAudioOnly = resultId.startsWith("dl_audio_");
+    const dlKey = resultId.replace("dl_start_", "").replace("dl_audio_", "");
+    const pending = inlineCache.get(`dl_pending_${dlKey}`);
+    
+    if (!pending) {
+      console.log(`Pending download not found for key=${dlKey}`);
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            "❌ Download request expired. Please try again.",
+            { parse_mode: "HTML" }
+          );
+        } catch {}
+      }
+      return;
+    }
+    
+    const { url, platform, userId: ownerId } = pending;
+    console.log(`Processing inline download: ${url} (platform: ${platform}, audioOnly: ${isAudioOnly})`);
+    
+    try {
+      // Import the download function
+      const { downloadWithVKR } = await import('./src/features/super-utilities.js');
+      
+      // Perform the download
+      const result = await downloadWithVKR(url, isAudioOnly);
+      
+      if (!result.success) {
+        if (inlineMessageId) {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `❌ <b>Download failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}\n\n<i>Try using /dl command instead</i>`,
+            { parse_mode: "HTML" }
+          );
+        }
+        return;
+      }
+      
+      // Update message with success and send the file
+      const platformEmojis = { youtube: '🎬', tiktok: '🎵', instagram: '📸', twitter: '🐦', facebook: '📘', spotify: '🎧' };
+      const emoji = platformEmojis[platform] || '📥';
+      
+      // Build caption
+      let caption = `${emoji} <b>${escapeHTML(result.title || 'Media')}</b>\n`;
+      if (result.author) caption += `👤 ${escapeHTML(result.author)}\n`;
+      if (result.duration) caption += `⏱ ${result.duration}\n`;
+      caption += `\n<i>Downloaded via StarzAI</i>`;
+      
+      // Update the inline message
+      if (inlineMessageId) {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `${emoji} <b>Download complete!</b>\n\n🎬 ${escapeHTML(result.title || 'Media')}\n👤 ${escapeHTML(result.author || 'Unknown')}\n\n<i>Sending file...</i>`,
+          { parse_mode: "HTML" }
+        );
+      }
+      
+      // Note: Inline mode can't send files directly, so we update the message with info
+      // The user can use /dl command for actual file download
+      if (inlineMessageId) {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `${emoji} <b>${escapeHTML(result.title || 'Media')}</b>\n\n👤 ${escapeHTML(result.author || 'Unknown')}\n⏱ ${result.duration || 'N/A'}\n\n✅ <i>Use /dl command in chat to download this file</i>\n\n🔗 ${escapeHTML(url.slice(0, 50))}${url.length > 50 ? '...' : ''}`,
+          { 
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .url("📥 Open Original", url)
+          }
+        );
+      }
+      
+    } catch (e) {
+      console.error("Inline download error:", e.message);
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `❌ <b>Download failed</b>\n\n${escapeHTML(e.message)}\n\n<i>Try using /dl command instead</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch {}
+      }
+    }
+    
+    // Clean up pending
+    inlineCache.delete(`dl_pending_${dlKey}`);
     return;
   }
   
