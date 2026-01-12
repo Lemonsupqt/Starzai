@@ -5002,6 +5002,114 @@ bot.command("g", async (ctx) => {
   }
 });
 
+// /ga - Activate/wake up the HF Space (owner only)
+bot.command("ga", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // Owner only
+  if (!OWNER_IDS.has(String(u.id))) {
+    return; // Silently ignore for non-owners
+  }
+  
+  const HF_API = process.env.HF_IMAGEGEN_API;
+  if (!HF_API) {
+    await ctx.reply("❌ HF_IMAGEGEN_API not configured.");
+    return;
+  }
+  
+  const statusMsg = await ctx.reply("🔄 Checking AI Space status...");
+  
+  try {
+    // Check current status
+    const healthRes = await fetch(`${HF_API}/health`, { signal: AbortSignal.timeout(10000) });
+    const health = await healthRes.json();
+    
+    if (health.model_loaded) {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, 
+        `✅ *AI Space is ACTIVE!*\n\n🤖 Model: \`${health.current_model || 'loaded'}\`\n📊 Available: ${health.available_models?.join(', ') || 'peppermint'}\n\n_Ready to generate images!_`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+        `😴 *AI Space is waking up...*\n\n⏳ Loading model into GPU...\n_This takes 30-60 seconds._\n\nI'll ping it to speed up the wake!",
+        { parse_mode: 'Markdown' }
+      );
+      
+      // Ping the generate endpoint to trigger model loading
+      fetch(`${HF_API}/health`).catch(() => {});
+      
+      // Wait and check again
+      await new Promise(r => setTimeout(r, 30000));
+      
+      const health2 = await fetch(`${HF_API}/health`, { signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => ({}));
+      
+      if (health2.model_loaded) {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `✅ *AI Space is now ACTIVE!*\n\n🤖 Model: \`${health2.current_model || 'loaded'}\`\n\n_Ready to generate images!_`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `⏳ *AI Space is still loading...*\n\n_Model is being loaded. Try /ga again in 30 seconds._`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    }
+  } catch (error) {
+    console.error('[GA] Error:', error);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+      `😴 *AI Space is sleeping*\n\n⏳ Sending wake-up signal...\n_Try /g or /imagine in 1-2 minutes._`,
+      { parse_mode: 'Markdown' }
+    );
+    // Ping to wake it up
+    fetch(`${HF_API}/health`).catch(() => {});
+  }
+});
+
+// /gd - Deactivate/show Space status (owner only) - Note: Can't actually pause via API
+bot.command("gd", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // Owner only
+  if (!OWNER_IDS.has(String(u.id))) {
+    return;
+  }
+  
+  const HF_API = process.env.HF_IMAGEGEN_API;
+  if (!HF_API) {
+    await ctx.reply("❌ HF_IMAGEGEN_API not configured.");
+    return;
+  }
+  
+  try {
+    const healthRes = await fetch(`${HF_API}/health`, { signal: AbortSignal.timeout(10000) });
+    const health = await healthRes.json();
+    
+    const status = health.model_loaded ? '✅ Active' : '😴 Sleeping';
+    const models = health.available_models?.join(', ') || 'peppermint';
+    
+    await ctx.reply(
+      `📊 *AI Space Status*\n\n` +
+      `🟢 Status: ${status}\n` +
+      `🤖 Current Model: \`${health.current_model || 'none'}\`\n` +
+      `📋 Available Models: ${models}\n\n` +
+      `⏰ Sleep Timer: 30 min inactivity\n` +
+      `💡 _Space will auto-sleep after 30 min of no requests._\n\n` +
+      `🔗 [Open Space Settings](https://huggingface.co/spaces/KazukiXD/starzai-imagegen/settings)`,
+      { parse_mode: 'Markdown', disable_web_page_preview: true }
+    );
+  } catch (error) {
+    await ctx.reply(
+      `📊 *AI Space Status*\n\n` +
+      `😴 Status: Sleeping/Offline\n\n` +
+      `_Use /ga to wake it up!_`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
 // /imagine - AI image generation with HF Space (Peppermint SDXL)
 bot.command("imagine", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
