@@ -29,11 +29,16 @@ import os from 'os';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
-  // AllInOne Downloader APIs (multiple fallbacks)
+  // Hugging Face Space yt-dlp API (Primary - self-hosted)
+  hfspace: {
+    // Replace with your HF Space URL after deployment
+    api: process.env.HF_YTDLP_API || 'https://YOUR-USERNAME-starzai-ytdlp-api.hf.space',
+    apiKey: process.env.HF_YTDLP_KEY || '',
+    timeout: 120000  // 2 minutes for downloads
+  },
+  // Fallback APIs (if HF Space is down)
   downloader: {
-    // Primary: Social Media Video Downloader API
     primary: 'https://social-media-video-downloader.p.rapidapi.com/smvd/get/all',
-    // Fallback APIs
     fallbacks: [
       'https://all-media-downloader1.p.rapidapi.com/download',
       'https://youtube-video-download-info.p.rapidapi.com/dl'
@@ -118,13 +123,35 @@ const URL_PATTERNS = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Download media using multiple API fallbacks
- * Supports: YouTube, Facebook, Twitter, Instagram, etc.
+ * Download media using HF Space yt-dlp API (primary) with fallbacks
+ * Supports: YouTube, Facebook, Twitter, Instagram, TikTok, etc.
  */
-async function downloadWithVKR(url) {
+async function downloadWithVKR(url, audioOnly = false) {
   const errors = [];
   
-  // API 1: Try dlpanda.com (free, no key required)
+  // PRIMARY: Try HF Space yt-dlp API (self-hosted, most reliable)
+  if (CONFIG.hfspace.api && !CONFIG.hfspace.api.includes('YOUR-USERNAME')) {
+    try {
+      const hfResult = await tryHFSpace(url, audioOnly);
+      if (hfResult.success) return hfResult;
+      errors.push(`HFSpace: ${hfResult.error}`);
+    } catch (e) {
+      errors.push(`HFSpace: ${e.message}`);
+    }
+  }
+  
+  // FALLBACK 1: Try TikWM for TikTok
+  if (url.includes('tiktok.com') || url.includes('vm.tiktok.com')) {
+    try {
+      const tikwmResult = await downloadTikTok(url);
+      if (tikwmResult.success) return tikwmResult;
+      errors.push(`TikWM: ${tikwmResult.error}`);
+    } catch (e) {
+      errors.push(`TikWM: ${e.message}`);
+    }
+  }
+  
+  // FALLBACK 2: Try other free APIs
   try {
     const dlpandaResult = await tryDlPanda(url);
     if (dlpandaResult.success) return dlpandaResult;
@@ -133,29 +160,64 @@ async function downloadWithVKR(url) {
     errors.push(`DlPanda: ${e.message}`);
   }
   
-  // API 2: Try saveservall.xyz
-  try {
-    const saveservResult = await trySaveServ(url);
-    if (saveservResult.success) return saveservResult;
-    errors.push(`SaveServ: ${saveservResult.error}`);
-  } catch (e) {
-    errors.push(`SaveServ: ${e.message}`);
-  }
-  
-  // API 3: Try yt1s for YouTube specifically
-  if (url.includes('youtube.com') || url.includes('youtu.be')) {
-    try {
-      const yt1sResult = await tryYt1s(url);
-      if (yt1sResult.success) return yt1sResult;
-      errors.push(`YT1s: ${yt1sResult.error}`);
-    } catch (e) {
-      errors.push(`YT1s: ${e.message}`);
-    }
-  }
-  
   return { 
     success: false, 
-    error: 'All download APIs failed. The video may be restricted or the service is temporarily unavailable.\n\nTry again later or use a different link.' 
+    error: 'Download failed. Please make sure your HF Space is deployed and configured.\n\nSet HF_YTDLP_API in Railway environment variables.' 
+  };
+}
+
+/**
+ * Try HF Space yt-dlp API
+ */
+async function tryHFSpace(url, audioOnly = false) {
+  const apiUrl = `${CONFIG.hfspace.api}/download`;
+  
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    timeout: CONFIG.hfspace.timeout,
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'StarzAI-Bot/2.0'
+    },
+    body: JSON.stringify({
+      url: url,
+      audio_only: audioOnly,
+      api_key: CONFIG.hfspace.apiKey || undefined
+    })
+  });
+  
+  const text = await response.text();
+  
+  // Check if response is HTML (error page)
+  if (text.startsWith('<!') || text.startsWith('<html')) {
+    return { success: false, error: 'HF Space returned HTML - may be starting up' };
+  }
+  
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { success: false, error: 'Invalid JSON from HF Space' };
+  }
+  
+  if (!data.success) {
+    return { success: false, error: data.error || 'HF Space download failed' };
+  }
+  
+  // Build full URL for the file
+  const fileUrl = data.url.startsWith('http') 
+    ? data.url 
+    : `${CONFIG.hfspace.api}${data.url}`;
+  
+  return {
+    success: true,
+    url: fileUrl,
+    title: data.title || 'Downloaded Video',
+    author: data.author || null,
+    duration: data.duration || null,
+    thumbnail: data.thumbnail || null,
+    filesize: data.filesize || null,
+    type: audioOnly ? 'audio' : 'video'
   };
 }
 
