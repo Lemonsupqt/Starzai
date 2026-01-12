@@ -6500,8 +6500,8 @@ bot.callbackQuery("img_cancel", async (ctx) => {
 // HF SPACE IMAGE GENERATION CALLBACKS (/imagine)
 // =====================
 
-// Handle all HF image generation callbacks (img_size, img_quality, img_count, img_seed, img_negative, img_generate, img_retry, img_new)
-bot.callbackQuery(/^img_(size|quality|count|seed|negative|generate|retry|new|ar_|q_|n_|s_)/, async (ctx) => {
+// Handle all HF image generation callbacks
+bot.callbackQuery(/^img_(size|quality|count|seed|negative|generate|retry|new|cancel|back|model|lora|ar_|q_|n_|s_)/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
   try {

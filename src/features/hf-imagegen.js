@@ -520,7 +520,7 @@ _Generated via StarzAI_`;
       
       // grammY: sendPhoto with InputFile
       const { InputFile } = await import('grammy');
-      await bot.sendPhoto(chatId, new InputFile(imgBuffer, 'generated.png'), {
+      const sentPhoto = await bot.sendPhoto(chatId, new InputFile(imgBuffer, 'generated.png'), {
         caption: caption,
         parse_mode: 'Markdown',
         reply_markup: {
@@ -532,6 +532,9 @@ _Generated via StarzAI_`;
           ]
         }
       });
+      
+      // Update session messageId to the last sent photo for Retry to work
+      session.messageId = sentPhoto.message_id;
     }
     
     // Delete the generating message
