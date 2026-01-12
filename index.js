@@ -5032,7 +5032,7 @@ bot.command("ga", async (ctx) => {
       );
     } else {
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-        `😴 *AI Space is waking up...*\n\n⏳ Loading model into GPU...\n_This takes 30-60 seconds._\n\nI'll ping it to speed up the wake!",
+        `😴 *AI Space is waking up...*\n\n⏳ Loading model into GPU...\n_This takes 30-60 seconds._\n\nI'll ping it to speed up the wake!`,
         { parse_mode: 'Markdown' }
       );
       
