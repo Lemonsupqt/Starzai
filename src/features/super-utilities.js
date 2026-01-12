@@ -287,8 +287,13 @@ function detectPlatform(url) {
  * Note: With API-based downloads, this is mostly a no-op since we use URLs directly
  */
 function cleanupDownload(filePath) {
+  // Early return if filePath is undefined, null, or not a string
+  if (!filePath || typeof filePath !== 'string') {
+    return;
+  }
+  
   try {
-    if (filePath && fs.existsSync(filePath)) {
+    if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
   } catch (e) {
