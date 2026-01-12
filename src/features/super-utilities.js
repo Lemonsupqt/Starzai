@@ -83,6 +83,11 @@ const CONFIG = {
   },
   wallhaven: {
     api: 'https://wallhaven.cc/api/v1/search'
+  },
+  // JioSaavn API for music downloads (free, 320kbps quality)
+  jiosaavn: {
+    api: 'https://saavn.dev/api',
+    timeout: 30000
   }
 };
 
@@ -320,6 +325,147 @@ async function getLyrics(artist, title) {
   } catch (error) {
     return { success: false, error: error.message };
   }
+}
+
+/**
+ * Search for songs using JioSaavn API
+ * @param {string} query - Search query (song name, artist, etc.)
+ * @param {number} limit - Number of results to return (default: 10)
+ * @returns {Promise<Object>} Search results with song details
+ */
+async function searchMusic(query, limit = 10) {
+  try {
+    const response = await fetch(
+      `${CONFIG.jiosaavn.api}/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+      { timeout: CONFIG.jiosaavn.timeout }
+    );
+    const data = await response.json();
+    
+    if (!data.success || !data.data?.results?.length) {
+      return { success: false, error: 'No songs found' };
+    }
+    
+    const songs = data.data.results.map(song => ({
+      id: song.id,
+      name: song.name,
+      artist: song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
+      album: song.album?.name || 'Unknown',
+      year: song.year || '',
+      duration: song.duration ? formatDuration(song.duration) : '',
+      language: song.language || '',
+      hasLyrics: song.hasLyrics || false,
+      image: song.image?.find(i => i.quality === '500x500')?.url || 
+             song.image?.find(i => i.quality === '150x150')?.url || '',
+      downloadUrl: song.downloadUrl || []
+    }));
+    
+    return { success: true, songs };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Get song details and download URL by ID
+ * @param {string} songId - JioSaavn song ID
+ * @returns {Promise<Object>} Song details with download URLs
+ */
+async function getSongById(songId) {
+  try {
+    const response = await fetch(
+      `${CONFIG.jiosaavn.api}/songs/${songId}`,
+      { timeout: CONFIG.jiosaavn.timeout }
+    );
+    const data = await response.json();
+    
+    if (!data.success || !data.data?.length) {
+      return { success: false, error: 'Song not found' };
+    }
+    
+    const song = data.data[0];
+    
+    // Get the highest quality download URL (320kbps preferred)
+    const downloadUrls = song.downloadUrl || [];
+    const bestQuality = downloadUrls.find(d => d.quality === '320kbps') ||
+                        downloadUrls.find(d => d.quality === '160kbps') ||
+                        downloadUrls.find(d => d.quality === '96kbps') ||
+                        downloadUrls[0];
+    
+    return {
+      success: true,
+      song: {
+        id: song.id,
+        name: song.name,
+        artist: song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
+        album: song.album?.name || 'Unknown',
+        year: song.year || '',
+        duration: song.duration ? formatDuration(song.duration) : '',
+        language: song.language || '',
+        hasLyrics: song.hasLyrics || false,
+        image: song.image?.find(i => i.quality === '500x500')?.url || 
+               song.image?.find(i => i.quality === '150x150')?.url || '',
+        downloadUrl: bestQuality?.url || null,
+        quality: bestQuality?.quality || 'Unknown',
+        allQualities: downloadUrls
+      }
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Download music by search query - searches and returns the best match
+ * @param {string} query - Song name or "artist - song" format
+ * @returns {Promise<Object>} Download result with URL
+ */
+async function downloadMusic(query) {
+  try {
+    // First search for the song
+    const searchResult = await searchMusic(query, 5);
+    
+    if (!searchResult.success || !searchResult.songs?.length) {
+      return { success: false, error: 'No songs found for your query' };
+    }
+    
+    // Get the first (best match) song's full details
+    const songId = searchResult.songs[0].id;
+    const songResult = await getSongById(songId);
+    
+    if (!songResult.success) {
+      return { success: false, error: 'Could not fetch song details' };
+    }
+    
+    const song = songResult.song;
+    
+    if (!song.downloadUrl) {
+      return { success: false, error: 'Download URL not available for this song' };
+    }
+    
+    return {
+      success: true,
+      type: 'audio',
+      url: song.downloadUrl,
+      title: song.name,
+      author: song.artist,
+      album: song.album,
+      duration: song.duration,
+      quality: song.quality,
+      thumbnail: song.image,
+      allResults: searchResult.songs // Include other results for selection
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Helper function to format duration in seconds to mm:ss
+ */
+function formatDuration(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -992,6 +1138,9 @@ export {
   
   // Music
   getLyrics,
+  searchMusic,
+  getSongById,
+  downloadMusic,
   
   // Movies/TV
   searchMedia,

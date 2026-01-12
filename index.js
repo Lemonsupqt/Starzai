@@ -110,6 +110,9 @@ import {
   detectPlatform,
   URL_PATTERNS,
   getLyrics,
+  searchMusic,
+  getSongById,
+  downloadMusic,
   searchMedia,
   getMediaDetails,
   getTrailers,
@@ -12886,6 +12889,158 @@ bot.command("lyrics", async (ctx) => {
   );
 });
 
+// /music - Search and download music (JioSaavn API)
+const pendingMusicSearches = new Map(); // Store search results for selection
+
+bot.command(["music", "song"], async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+  
+  const text = ctx.message.text.replace(/^\/(music|song)\s*/i, '').trim();
+  
+  if (!text) {
+    return ctx.reply(
+      '🎵 <b>Music Download</b>\n\n' +
+      '<b>Usage:</b>\n' +
+      '<code>/music song name</code>\n' +
+      '<code>/music artist - song</code>\n\n' +
+      '<b>Examples:</b>\n' +
+      '<code>/music Shape of You</code>\n' +
+      '<code>/music Ed Sheeran - Perfect</code>\n\n' +
+      '<i>Powered by JioSaavn • 320kbps quality</i>',
+      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+    );
+  }
+  
+  const statusMsg = await ctx.reply('🔍 Searching for music...', {
+    reply_to_message_id: ctx.message?.message_id
+  });
+  
+  try {
+    const result = await searchMusic(text, 5);
+    
+    if (!result.success || !result.songs?.length) {
+      await ctx.api.editMessageText(
+        ctx.chat.id, statusMsg.message_id,
+        `❌ No songs found for "${escapeHTML(text)}"`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    // Store search results for callback
+    const searchId = `ms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    pendingMusicSearches.set(searchId, result.songs);
+    
+    // Auto-expire after 5 minutes
+    setTimeout(() => pendingMusicSearches.delete(searchId), 5 * 60 * 1000);
+    
+    // Build song list with inline buttons
+    let message = `🎵 <b>Search Results for "${escapeHTML(text)}"</b>\n\n`;
+    
+    const buttons = result.songs.map((song, i) => {
+      message += `<b>${i + 1}.</b> ${escapeHTML(song.name)}\n`;
+      message += `    🎤 ${escapeHTML(song.artist)}\n`;
+      if (song.album) message += `    💿 ${escapeHTML(song.album)}\n`;
+      if (song.duration) message += `    ⏱ ${song.duration}\n`;
+      message += '\n';
+      
+      return [{ text: `${i + 1}. ${song.name.slice(0, 30)}${song.name.length > 30 ? '...' : ''}`, callback_data: `mdl:${searchId}:${i}` }];
+    });
+    
+    message += '<i>Select a song to download (320kbps)</i>';
+    
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      message,
+      { 
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+      }
+    );
+  } catch (error) {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      `❌ Error: ${escapeHTML(error.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+// Callback for music download selection
+bot.callbackQuery(/^mdl:/, async (ctx) => {
+  const [, searchId, indexStr] = ctx.callbackQuery.data.split(':');
+  const songs = pendingMusicSearches.get(searchId);
+  
+  if (!songs) {
+    await ctx.answerCallbackQuery({ text: 'Search expired. Please search again.', show_alert: true });
+    return;
+  }
+  
+  const index = parseInt(indexStr, 10);
+  const song = songs[index];
+  
+  if (!song) {
+    await ctx.answerCallbackQuery({ text: 'Song not found.', show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery({ text: 'Downloading...' });
+  
+  try {
+    await ctx.editMessageText(
+      `🎵 <b>Downloading:</b> ${escapeHTML(song.name)}\n🎤 ${escapeHTML(song.artist)}\n\n<i>Please wait...</i>`,
+      { parse_mode: 'HTML' }
+    );
+    
+    // Get full song details with download URL
+    const songResult = await getSongById(song.id);
+    
+    if (!songResult.success || !songResult.song?.downloadUrl) {
+      await ctx.editMessageText(
+        `❌ Could not get download link for this song.\n\n<i>Try another result or search again.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    const fullSong = songResult.song;
+    
+    await ctx.editMessageText(
+      `🎵 <b>Sending:</b> ${escapeHTML(fullSong.name)}\n🎤 ${escapeHTML(fullSong.artist)}\n💿 ${escapeHTML(fullSong.album)}\n📊 ${fullSong.quality}`,
+      { parse_mode: 'HTML' }
+    );
+    
+    // Build caption
+    let caption = `🎵 <b>${escapeHTML(fullSong.name)}</b>\n`;
+    caption += `🎤 ${escapeHTML(fullSong.artist)}\n`;
+    if (fullSong.album) caption += `💿 ${escapeHTML(fullSong.album)}\n`;
+    if (fullSong.duration) caption += `⏱ ${fullSong.duration}\n`;
+    caption += `📊 ${fullSong.quality}\n\n`;
+    caption += `<i>Downloaded via StarzAI</i>`;
+    
+    // Send the audio file
+    await ctx.replyWithAudio(fullSong.downloadUrl, {
+      caption: caption,
+      parse_mode: 'HTML',
+      title: fullSong.name,
+      performer: fullSong.artist,
+      thumbnail: fullSong.image ? { url: fullSong.image } : undefined
+    });
+    
+    // Delete the selection message
+    await ctx.deleteMessage();
+    pendingMusicSearches.delete(searchId);
+    
+  } catch (error) {
+    await ctx.editMessageText(
+      `❌ Error: ${escapeHTML(error.message)}`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
 // /movie - Search movies
 bot.command("movie", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -13834,32 +13989,59 @@ bot.callbackQuery(/^adl:/, async (ctx) => {
     }
     
     await ctx.editMessageText(
-      `${emoji} <b>Uploading to Telegram...</b>`,
+      `${emoji} <b>Sending to Telegram...</b>`,
       { parse_mode: 'HTML' }
     );
     
-    // Import fs for file reading
-    const fs = await import('fs');
-    const { InputFile } = await import('grammy');
+    // Build caption
+    let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
+    if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
+    caption += `\n\n<i>Downloaded via StarzAI</i>`;
     
-    const fileBuffer = fs.default.readFileSync(result.filePath);
-    const inputFile = new InputFile(fileBuffer, result.filename);
-    
-    if (audioOnly) {
-      await ctx.replyWithAudio(inputFile, {
-        caption: `${emoji} Downloaded via StarzAI`
-      });
-    } else {
-      await ctx.replyWithVideo(inputFile, {
-        caption: `${emoji} Downloaded via StarzAI`
-      });
+    // API-based downloads return URLs directly, not file paths
+    if (result.url) {
+      // Send directly using URL
+      if (audioOnly || result.type === 'audio') {
+        await ctx.replyWithAudio(result.url, {
+          caption: caption,
+          parse_mode: 'HTML'
+        });
+      } else if (result.type === 'slideshow' && result.images) {
+        // TikTok slideshow - send as media group
+        const mediaGroup = result.images.slice(0, 10).map((img, i) => ({
+          type: 'photo',
+          media: img,
+          caption: i === 0 ? caption : undefined,
+          parse_mode: i === 0 ? 'HTML' : undefined
+        }));
+        await ctx.replyWithMediaGroup(mediaGroup);
+        if (result.music) {
+          await ctx.replyWithAudio(result.music, { caption: '🎵 Audio' });
+        }
+      } else {
+        await ctx.replyWithVideo(result.url, {
+          caption: caption,
+          parse_mode: 'HTML',
+          supports_streaming: true
+        });
+      }
+    } else if (result.filePath) {
+      // Legacy file-based download (fallback)
+      const fs = await import('fs');
+      const { InputFile } = await import('grammy');
+      const fileBuffer = fs.default.readFileSync(result.filePath);
+      const inputFile = new InputFile(fileBuffer, result.filename);
+      
+      if (audioOnly) {
+        await ctx.replyWithAudio(inputFile, { caption: caption, parse_mode: 'HTML' });
+      } else {
+        await ctx.replyWithVideo(inputFile, { caption: caption, parse_mode: 'HTML' });
+      }
+      cleanupDownload(result.filePath);
     }
     
     await ctx.deleteMessage();
     pendingDownloadUrls.delete(urlId);
-    
-    // Clean up the temp file
-    cleanupDownload(result.filePath);
     
   } catch (error) {
     await ctx.editMessageText(
