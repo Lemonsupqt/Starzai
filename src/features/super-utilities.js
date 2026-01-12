@@ -133,8 +133,13 @@ const CONFIG = {
     api: 'https://wallhaven.cc/api/v1/search'
   },
   // JioSaavn API for music downloads (free, 320kbps quality)
+  // Multiple endpoints for fallback
   jiosaavn: {
-    api: 'https://saavn.sumit.co/api',
+    apis: [
+      'https://jiosaavn-api-privatecvc2.vercel.app',  // Primary - most reliable
+      'https://saavn.dev/api',                         // Fallback 1
+      'https://jiosaavn-api.vercel.app'                // Fallback 2
+    ],
     timeout: 30000
   }
 };
@@ -674,107 +679,163 @@ async function getLyrics(artist, title) {
 }
 
 /**
- * Search for songs using JioSaavn API
+ * Search for songs using JioSaavn API with fallback endpoints
  * @param {string} query - Search query (song name, artist, etc.)
  * @param {number} limit - Number of results to return (default: 10)
  * @returns {Promise<Object>} Search results with song details
  */
 async function searchMusic(query, limit = 10) {
-  try {
-    const response = await fetch(
-      `${CONFIG.jiosaavn.api}/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
-      { timeout: CONFIG.jiosaavn.timeout }
-    );
-    const data = await response.json();
-    
-    if (!data.success || !data.data?.results?.length) {
-      return { success: false, error: 'No songs found' };
-    }
-    
-    const songs = data.data.results.map(song => {
-      // Decode HTML entities in all text fields
-      const cleanName = decodeHTMLEntities(song.name);
-      const cleanArtist = decodeHTMLEntities(song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown');
-      const cleanAlbum = decodeHTMLEntities(song.album?.name || 'Unknown');
+  const apis = CONFIG.jiosaavn.apis || ['https://jiosaavn-api-privatecvc2.vercel.app'];
+  let lastError = null;
+  
+  for (const apiBase of apis) {
+    try {
+      const response = await fetch(
+        `${apiBase}/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+        { timeout: CONFIG.jiosaavn.timeout }
+      );
       
-      return {
-        id: song.id,
-        name: cleanName,
-        artist: cleanArtist,
-        album: cleanAlbum,
-        year: song.year || '',
-        duration: song.duration ? formatDuration(song.duration) : '',
-        language: song.language || '',
-        hasLyrics: song.hasLyrics || false,
-        image: song.image?.find(i => i.quality === '500x500')?.url || 
-               song.image?.find(i => i.quality === '150x150')?.url || '',
-        downloadUrl: song.downloadUrl || [],
-        filename: sanitizeFilename(`${cleanArtist} - ${cleanName}`)
-      };
-    });
-    
-    return { success: true, songs };
-  } catch (error) {
-    return { success: false, error: error.message };
+      if (!response.ok) continue;
+      
+      const data = await response.json();
+      
+      // Handle different API response formats
+      let results = data.data?.results || data.results || [];
+      
+      if (!results.length) continue;
+      
+      const songs = results.map(song => {
+        // Decode HTML entities in all text fields
+        // Handle different API response structures
+        const rawName = song.name || song.title || '';
+        const rawArtist = song.primaryArtists || 
+                          song.artists?.primary?.map(a => a.name).join(', ') || 
+                          song.artist || 'Unknown';
+        const rawAlbum = song.album?.name || song.album || 'Unknown';
+        
+        const cleanName = decodeHTMLEntities(rawName);
+        const cleanArtist = decodeHTMLEntities(rawArtist);
+        const cleanAlbum = decodeHTMLEntities(rawAlbum);
+        
+        // Get image URL (handle different formats)
+        let imageUrl = '';
+        if (Array.isArray(song.image)) {
+          const img = song.image.find(i => i.quality === '500x500' || i.link?.includes('500x500'));
+          imageUrl = img?.url || img?.link || song.image[song.image.length - 1]?.url || song.image[song.image.length - 1]?.link || '';
+        } else if (typeof song.image === 'string') {
+          imageUrl = song.image;
+        }
+        
+        return {
+          id: song.id,
+          name: cleanName,
+          artist: cleanArtist,
+          album: cleanAlbum,
+          year: song.year || '',
+          duration: song.duration ? formatDuration(parseInt(song.duration)) : '',
+          language: song.language || '',
+          hasLyrics: song.hasLyrics === 'true' || song.hasLyrics === true || false,
+          image: imageUrl,
+          downloadUrl: song.downloadUrl || [],
+          filename: sanitizeFilename(`${cleanArtist} - ${cleanName}`)
+        };
+      });
+      
+      return { success: true, songs, apiUsed: apiBase };
+    } catch (error) {
+      lastError = error;
+      console.log(`JioSaavn API ${apiBase} failed: ${error.message}`);
+      continue;
+    }
   }
+  
+  return { success: false, error: lastError?.message || 'All JioSaavn APIs failed' };
 }
 
 /**
- * Get song details and download URL by ID
+ * Get song details and download URL by ID with fallback APIs
  * @param {string} songId - JioSaavn song ID
  * @returns {Promise<Object>} Song details with download URLs
  */
 async function getSongById(songId) {
-  try {
-    const response = await fetch(
-      `${CONFIG.jiosaavn.api}/songs/${songId}`,
-      { timeout: CONFIG.jiosaavn.timeout }
-    );
-    const data = await response.json();
-    
-    if (!data.success || !data.data?.length) {
-      return { success: false, error: 'Song not found' };
-    }
-    
-    const song = data.data[0];
-    
-    // Get the highest quality download URL (320kbps preferred)
-    const downloadUrls = song.downloadUrl || [];
-    const bestQuality = downloadUrls.find(d => d.quality === '320kbps') ||
-                        downloadUrls.find(d => d.quality === '160kbps') ||
-                        downloadUrls.find(d => d.quality === '96kbps') ||
-                        downloadUrls[0];
-    
-    // Decode HTML entities and sanitize metadata
-    const cleanName = decodeHTMLEntities(song.name);
-    const cleanArtist = decodeHTMLEntities(song.artists?.primary?.map(a => a.name).join(', ') || 'Unknown');
-    const cleanAlbum = decodeHTMLEntities(song.album?.name || 'Unknown');
-    
-    // Generate clean filename for the audio file
-    const cleanFilename = sanitizeFilename(`${cleanArtist} - ${cleanName}`);
-    
-    return {
-      success: true,
-      song: {
-        id: song.id,
-        name: cleanName,
-        artist: cleanArtist,
-        album: cleanAlbum,
-        year: song.year || '',
-        duration: song.duration ? formatDuration(song.duration) : '',
-        language: song.language || '',
-        hasLyrics: song.hasLyrics || false,
-        image: song.image?.find(i => i.quality === '500x500')?.url || 
-               song.image?.find(i => i.quality === '150x150')?.url || '',
-        downloadUrl: bestQuality?.url || null,
-        quality: bestQuality?.quality || 'Unknown',
-        allQualities: downloadUrls,
-        filename: cleanFilename
+  const apis = CONFIG.jiosaavn.apis || ['https://jiosaavn-api-privatecvc2.vercel.app'];
+  let lastError = null;
+  
+  for (const apiBase of apis) {
+    try {
+      const response = await fetch(
+        `${apiBase}/songs/${songId}`,
+        { timeout: CONFIG.jiosaavn.timeout }
+      );
+      
+      if (!response.ok) continue;
+      
+      const data = await response.json();
+      
+      // Handle different API response formats
+      let songData = data.data?.[0] || data.data || data;
+      if (!songData || !songData.id) continue;
+      
+      const song = songData;
+      
+      // Get the highest quality download URL (320kbps preferred)
+      const downloadUrls = song.downloadUrl || [];
+      const bestQuality = downloadUrls.find(d => d.quality === '320kbps' || d.quality === '320') ||
+                          downloadUrls.find(d => d.quality === '160kbps' || d.quality === '160') ||
+                          downloadUrls.find(d => d.quality === '96kbps' || d.quality === '96') ||
+                          downloadUrls[downloadUrls.length - 1];
+      
+      // Decode HTML entities and sanitize metadata
+      // Handle different API response structures
+      const rawName = song.name || song.title || '';
+      const rawArtist = song.primaryArtists || 
+                        song.artists?.primary?.map(a => a.name).join(', ') || 
+                        song.artist || 'Unknown';
+      const rawAlbum = song.album?.name || song.album || 'Unknown';
+      
+      const cleanName = decodeHTMLEntities(rawName);
+      const cleanArtist = decodeHTMLEntities(rawArtist);
+      const cleanAlbum = decodeHTMLEntities(rawAlbum);
+      
+      // Generate clean filename for the audio file
+      const cleanFilename = sanitizeFilename(`${cleanArtist} - ${cleanName}`);
+      
+      // Get image URL (handle different formats)
+      let imageUrl = '';
+      if (Array.isArray(song.image)) {
+        const img = song.image.find(i => i.quality === '500x500' || i.link?.includes('500x500'));
+        imageUrl = img?.url || img?.link || song.image[song.image.length - 1]?.url || song.image[song.image.length - 1]?.link || '';
+      } else if (typeof song.image === 'string') {
+        imageUrl = song.image;
       }
-    };
-  } catch (error) {
-    return { success: false, error: error.message };
+      
+      return {
+        success: true,
+        song: {
+          id: song.id,
+          name: cleanName,
+          artist: cleanArtist,
+          album: cleanAlbum,
+          year: song.year || '',
+          duration: song.duration ? formatDuration(parseInt(song.duration)) : '',
+          language: song.language || '',
+          hasLyrics: song.hasLyrics === 'true' || song.hasLyrics === true || false,
+          image: imageUrl,
+          downloadUrl: bestQuality?.url || bestQuality?.link || null,
+          quality: bestQuality?.quality || 'Unknown',
+          allQualities: downloadUrls,
+          filename: cleanFilename
+        },
+        apiUsed: apiBase
+      };
+    } catch (error) {
+      lastError = error;
+      console.log(`JioSaavn API ${apiBase} failed for song ${songId}: ${error.message}`);
+      continue;
+    }
   }
+  
+  return { success: false, error: lastError?.message || 'All JioSaavn APIs failed' };
 }
 
 /**
