@@ -335,8 +335,33 @@ async function generateImage(bot, query, session) {
   const q = QUALITY_PRESETS[session.quality];
   const ar = ASPECT_RATIOS[session.aspectRatio];
   
-  // Show generating status
-  const statusText = `🎨 *Generating...*
+  // Check if Space is awake first
+  let spaceReady = false;
+  try {
+    const healthCheck = await fetch(`${HF_IMAGEGEN_API}/health`, { 
+      signal: AbortSignal.timeout(5000) 
+    });
+    const healthData = await healthCheck.json();
+    spaceReady = healthData.model_loaded === true;
+  } catch (e) {
+    spaceReady = false;
+  }
+  
+  // Show appropriate status message
+  let statusText;
+  if (!spaceReady) {
+    statusText = `🎨 *Waking up AI...*
+
+📝 ${session.prompt.substring(0, 50)}...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+😴 *The AI is sleeping to save costs*
+⏳ Waking up and loading model...
+
+_This may take 2-3 minutes on first use._
+_Subsequent requests will be much faster!_`;
+  } else {
+    statusText = `🎨 *Generating...*
 
 📝 ${session.prompt.substring(0, 50)}...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -345,12 +370,19 @@ async function generateImage(bot, query, session) {
 ⚙️ *Settings:* ${q.steps} steps | ${ar.width}x${ar.height}
 
 _This may take 10-30 seconds..._`;
+  }
 
   await bot.editMessageText(chatId, messageId, statusText, { parse_mode: 'Markdown' });
-  await bot.answerCallbackQuery(query.id, { text: 'Generating image...' });
+  await bot.answerCallbackQuery(query.id, { text: spaceReady ? 'Generating image...' : 'Waking up AI... please wait 2-3 min' });
   
   try {
+    // Use longer timeout if Space was sleeping
+    const controller = new AbortController();
+    const timeoutMs = spaceReady ? 120000 : 300000; // 2 min if ready, 5 min if waking
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
     const response = await fetch(`${HF_IMAGEGEN_API}/generate`, {
+      signal: controller.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
