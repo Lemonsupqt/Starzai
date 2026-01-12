@@ -726,6 +726,19 @@ async function searchMusic(query, limit = 10) {
           imageUrl = song.image;
         }
         
+        // Extract best download URL directly
+        let bestDownloadUrl = null;
+        let bestQuality = 'Unknown';
+        const dlUrls = song.downloadUrl || [];
+        if (dlUrls.length > 0) {
+          const best = dlUrls.find(d => d.quality === '320kbps') ||
+                       dlUrls.find(d => d.quality === '160kbps') ||
+                       dlUrls.find(d => d.quality === '96kbps') ||
+                       dlUrls[dlUrls.length - 1];
+          bestDownloadUrl = best?.link || best?.url || null;
+          bestQuality = best?.quality || 'Unknown';
+        }
+        
         return {
           id: song.id,
           name: cleanName,
@@ -736,7 +749,8 @@ async function searchMusic(query, limit = 10) {
           language: song.language || '',
           hasLyrics: song.hasLyrics === 'true' || song.hasLyrics === true || false,
           image: imageUrl,
-          downloadUrl: song.downloadUrl || [],
+          downloadUrl: bestDownloadUrl,
+          quality: bestQuality,
           filename: sanitizeFilename(`${cleanArtist} - ${cleanName}`)
         };
       });
@@ -853,26 +867,15 @@ async function downloadMusic(query) {
     }
     
     const firstSong = searchResult.songs[0];
-    console.log(`[Music] Found song: ${firstSong.name} by ${firstSong.artist}`);
-    console.log(`[Music] downloadUrl array length: ${firstSong.downloadUrl?.length || 0}`);
+    console.log(`[Music] Found: ${firstSong.name} by ${firstSong.artist}, URL: ${firstSong.downloadUrl ? 'YES' : 'NO'}`);
     
-    // Try to get download URL from search results first (more reliable)
-    let downloadUrl = null;
-    let quality = 'Unknown';
+    // URL is now pre-extracted in searchMusic
+    let downloadUrl = firstSong.downloadUrl;
+    let quality = firstSong.quality || 'Unknown';
     
-    if (firstSong.downloadUrl && Array.isArray(firstSong.downloadUrl) && firstSong.downloadUrl.length > 0) {
-      console.log(`[Music] First downloadUrl entry:`, JSON.stringify(firstSong.downloadUrl[0]));
-      // Get highest quality from search results
-      const bestQuality = firstSong.downloadUrl.find(d => d.quality === '320kbps' || d.quality === '320') ||
-                          firstSong.downloadUrl.find(d => d.quality === '160kbps' || d.quality === '160') ||
-                          firstSong.downloadUrl.find(d => d.quality === '96kbps' || d.quality === '96') ||
-                          firstSong.downloadUrl[firstSong.downloadUrl.length - 1];
-      downloadUrl = bestQuality?.url || bestQuality?.link || null;
-      quality = bestQuality?.quality || 'Unknown';
-    }
-    
-    // If no URL from search, try getSongById as fallback
+    // Fallback to getSongById if no URL
     if (!downloadUrl) {
+      console.log(`[Music] No URL from search, trying getSongById...`);
       const songResult = await getSongById(firstSong.id);
       if (songResult.success && songResult.song?.downloadUrl) {
         downloadUrl = songResult.song.downloadUrl;
@@ -883,6 +886,8 @@ async function downloadMusic(query) {
     if (!downloadUrl) {
       return { success: false, error: 'Download URL not available for this song' };
     }
+    
+    console.log(`[Music] Final URL: ${downloadUrl.substring(0, 50)}...`);
     
     return {
       success: true,
