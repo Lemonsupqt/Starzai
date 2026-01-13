@@ -24,6 +24,7 @@ const MODELS = {
   peppermint: { id: 'peppermint', label: '🍬 Peppermint', style: 'anime' },
   'wai-illustrious': { id: 'wai-illustrious', label: '🎨 WAI Illustrious', style: 'anime' },
   'ntr-mix': { id: 'ntr-mix', label: '🔥 NTR MIX', style: 'anime' },
+  ultrareal: { id: 'ultrareal', label: '📸 UltraReal', style: 'realistic' },
 };
 
 // Available LoRAs
