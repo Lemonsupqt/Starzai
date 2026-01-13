@@ -163,11 +163,13 @@ function buildQualityKeyboard() {
  * Build model selection keyboard
  */
 function buildModelKeyboard() {
+  const modelButtons = Object.entries(MODELS).map(([key, model]) => {
+    const styleLabel = model.style === 'anime' ? 'Anime' : 'Realistic';
+    return [{ text: `${model.label} (${styleLabel})`, callback_data: `img_model_${key}` }];
+  });
   return {
     inline_keyboard: [
-      [{ text: '🍬 Peppermint (Anime)', callback_data: 'img_model_peppermint' }],
-      [{ text: '🎨 WAI Illustrious (Anime)', callback_data: 'img_model_wai-illustrious' }],
-      [{ text: '🔥 NTR MIX (Anime)', callback_data: 'img_model_ntr-mix' }],
+      ...modelButtons,
       [{ text: '🔙 Back', callback_data: 'img_back' }]
     ]
   };
