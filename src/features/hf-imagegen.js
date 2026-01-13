@@ -473,67 +473,40 @@ async function generateImage(bot, query, session) {
   
   try {
     // Use longer timeout if Space was sleeping
+    const controller = new AbortController();
     const timeoutMs = spaceReady ? 120000 : 300000; // 2 min if ready, 5 min if waking
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
-    // Generate images in parallel for faster multi-image generation
-    const numImages = session.numImages;
-    const generateSingleImage = async (imageIndex) => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      
-      // Use different seed for each image if random, or increment if specific seed
-      const imageSeed = session.seed === -1 ? -1 : session.seed + imageIndex;
-      
-      try {
-        const response = await fetch(`${HF_IMAGEGEN_API}/generate`, {
-          signal: controller.signal,
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: session.prompt,
-            negative_prompt: session.negativePrompt,
-            steps: q.steps,
-            cfg_scale: q.cfg,
-            width: ar.width,
-            height: ar.height,
-            seed: imageSeed,
-            num_images: 1, // Always generate 1 image per request for parallel processing
-            model: session.model,
-            lora: session.lora === 'none' ? null : session.lora,
-          }),
-        });
-        
-        clearTimeout(timeoutId);
-        const result = await response.json();
-        
-        if (!result.success) {
-          throw new Error(result.error || 'Generation failed');
-        }
-        
-        return {
-          image: result.images?.[0] || result.image,
-          seed: result.seeds?.[0] || result.seed,
-          generation_time: result.generation_time,
-        };
-      } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
-      }
-    };
+    // Batch generation - single request with multiple images (more efficient)
+    const response = await fetch(`${HF_IMAGEGEN_API}/generate`, {
+      signal: controller.signal,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: session.prompt,
+        negative_prompt: session.negativePrompt,
+        steps: q.steps,
+        cfg_scale: q.cfg,
+        width: ar.width,
+        height: ar.height,
+        seed: session.seed,
+        num_images: session.numImages,
+        model: session.model,
+        lora: session.lora === 'none' ? null : session.lora,
+      }),
+    });
     
-    // Launch all image generations in parallel
-    console.log(`[ImageGen] Starting parallel generation of ${numImages} images`);
-    const startTime = Date.now();
-    const results = await Promise.all(
-      Array.from({ length: numImages }, (_, i) => generateSingleImage(i))
-    );
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[ImageGen] All ${numImages} images generated in ${totalTime}s (parallel)`);
+    clearTimeout(timeoutId);
+    const result = await response.json();
     
-    // Extract images and seeds from results
-    const images = results.map(r => r.image).filter(Boolean);
-    const seeds = results.map(r => r.seed).filter(Boolean);
-    const avgGenTime = results.reduce((sum, r) => sum + (r.generation_time || 0), 0) / results.length;
+    if (!result.success) {
+      throw new Error(result.error || 'Generation failed');
+    }
+    
+    // Handle both old API (image/seed) and new API (images/seeds) formats
+    const images = result.images || (result.image ? [result.image] : []);
+    const seeds = result.seeds || (result.seed ? [result.seed] : []);
+    const genTime = result.generation_time?.toFixed(1) || '?';
     
     if (images.length === 0) {
       throw new Error('No images generated');
@@ -551,7 +524,7 @@ async function generateImage(bot, query, session) {
 📐 ${ar.width}×${ar.height} | 🎯 ${q.steps} steps
 🤖 ${MODELS[session.model]?.label || session.model}
 🌱 Seed: \`${seed}\`
-⏱️ ${totalTime}s total${images.length > 1 ? ' (parallel)' : ''}
+⏱️ ${genTime}s
 
 _Generated via StarzAI_`;
       
