@@ -145,6 +145,15 @@ import {
   checkHealth as checkHFHealth
 } from './src/features/hf-imagegen.js';
 
+// ComfyUI Image Generation (Hivenet)
+import {
+  startHivenetGeneration,
+  handleHivenetCallback,
+  quickHivenetGenerate,
+  checkHivenetHealth,
+  MODELS as HIVENET_MODELS
+} from './src/features/comfyui-imagegen.js';
+
 // =====================
 // ENV
 // =====================
@@ -5162,6 +5171,100 @@ bot.command("imagine", async (ctx) => {
   }
 });
 
+// /hi - Hivenet ComfyUI image generation (RTX 4090)
+bot.command("hi", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // Owner only for now
+  if (!OWNER_IDS.has(String(u.id))) {
+    return; // Silently ignore for non-owners
+  }
+  
+  const text = ctx.message?.text || "";
+  const prompt = text.replace(/^\/hi\s*/i, "").trim();
+  
+  if (!prompt) {
+    await ctx.reply(
+      "🎨 *Hivenet Image Generator*\n\n" +
+      "Generate stunning images on RTX 4090!\n\n" +
+      "*Models Available:*\n" +
+      "🌸 Hassaku XL - Anime/Illustrious style\n" +
+      "🐉 Dark Beast Z - 4K Photorealistic\n\n" +
+      "*Usage:*\n" +
+      "`/hi anime girl with pink hair`\n" +
+      "`/hi photorealistic landscape`\n\n" +
+      "_Powered by ComfyUI on Hivenet_",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Check if prompt is too long
+  if (prompt.length > 500) {
+    await ctx.reply("⚠️ Prompt is too long. Please keep it under 500 characters.");
+    return;
+  }
+  
+  try {
+    await startHivenetGeneration(ctx.api, ctx.message, prompt);
+    console.log(`[HI] Owner ${u.id} started Hivenet generation: "${prompt.slice(0, 50)}"`);
+  } catch (error) {
+    console.error("Hivenet generation error:", error);
+    await ctx.reply(
+      "❌ *Hivenet generation failed*\n\n" +
+      "The ComfyUI instance might be unavailable. Please try again in a moment.\n\n" +
+      "_Use /hia to check the status._",
+      { parse_mode: "Markdown" }
+    );
+  }
+});
+
+// /hia - Activate/check Hivenet ComfyUI status (owner only)
+bot.command("hia", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  // Owner only
+  if (!OWNER_IDS.has(String(u.id))) {
+    return;
+  }
+  
+  const statusMsg = await ctx.reply("🔄 Checking Hivenet ComfyUI status...");
+  
+  try {
+    const health = await checkHivenetHealth();
+    
+    if (health.available) {
+      const modelList = Object.values(HIVENET_MODELS).map(m => `${m.label}${m.supports4K ? ' [4K]' : ''}`).join('\n');
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+        `✅ *Hivenet ComfyUI is ACTIVE!*\n\n` +
+        `🖥️ GPU: ${health.gpu || 'RTX 4090'}\n` +
+        `💾 VRAM: ${health.vram || '24 GB'}\n\n` +
+        `*Available Models:*\n${modelList}\n\n` +
+        `_Ready to generate images!_`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+        `😴 *Hivenet ComfyUI is OFFLINE*\n\n` +
+        `Error: ${health.error || 'Connection failed'}\n\n` +
+        `_Check if the instance is running on Hivenet console._`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  } catch (error) {
+    console.error('[HIA] Error:', error);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+      `❌ *Failed to check Hivenet status*\n\n` +
+      `Error: ${error.message}`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
 // =====================
 // IMAGE GENERATION
 // =====================
@@ -6508,6 +6611,18 @@ bot.callbackQuery(/^img_(size|quality|count|seed|negative|generate|retry|new|can
     await handleImageCallback(ctx.api, ctx.callbackQuery);
   } catch (error) {
     console.error("HF image callback error:", error);
+    await ctx.answerCallbackQuery({ text: "Error processing request", show_alert: true });
+  }
+});
+
+// Handle all Hivenet ComfyUI image generation callbacks (/hi)
+bot.callbackQuery(/^hi_(size|quality|count|seed|negative|generate|retry|new|cancel|back|model|sampler|4k_toggle)/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  try {
+    await handleHivenetCallback(ctx.api, ctx.callbackQuery);
+  } catch (error) {
+    console.error("Hivenet image callback error:", error);
     await ctx.answerCallbackQuery({ text: "Error processing request", show_alert: true });
   }
 });

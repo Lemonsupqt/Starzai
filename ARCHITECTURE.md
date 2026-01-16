@@ -81,6 +81,7 @@ The `src/` folder contains the same code split into logical modules. These serve
 - LLM helpers (text, vision, streaming)
 - Web search (SearXNG, DuckDuckGo, Parallel API)
 - Image generation (DeAPI)
+- Hivenet Image Generation (ComfyUI, RTX 4090, 4K Mode)
 - Todo system (personal + collaborative)
 - Video summarization
 
