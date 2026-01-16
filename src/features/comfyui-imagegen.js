@@ -46,37 +46,55 @@ const MODELS = {
     id: 'dark_beast_z.safetensors', 
     label: '🐉 Dark Beast Z', 
     style: 'realistic',
-    description: '4K photorealistic, extreme detail',
+    description: '4K photorealistic (ZImageTurbo)',
     supports4K: true,
-    defaultSteps: 35,
-    defaultCfg: 6.5,
+    isZIT: true, // ZImageTurbo - uses CFG 1 and fewer steps
+    defaultSteps: 10,
+    defaultCfg: 1.0,
+    recommendedSampler: 'euler',
+    recommendedScheduler: 'sgm_uniform',
   },
 };
 
-// Quality presets - Standard
+// Quality presets - Optimized for RTX 4090 (faster steps, same quality)
 const QUALITY_PRESETS = {
-  fast: { steps: 20, cfg: 6.0, label: '⚡ Fast', description: 'Quick preview' },
-  balanced: { steps: 28, cfg: 7.0, label: '⚖️ Balanced', description: 'Good quality' },
-  quality: { steps: 35, cfg: 7.5, label: '✨ Quality', description: 'High detail' },
-  ultra: { steps: 45, cfg: 8.0, label: '💎 Ultra', description: 'Maximum quality' },
+  turbo: { steps: 8, cfg: 2.0, label: '🚀 Turbo', description: '~3s, LCM/Lightning' },
+  fast: { steps: 15, cfg: 5.0, label: '⚡ Fast', description: '~6s, quick preview' },
+  balanced: { steps: 20, cfg: 6.5, label: '⚖️ Balanced', description: '~10s, good quality' },
+  quality: { steps: 28, cfg: 7.0, label: '✨ Quality', description: '~15s, high detail' },
+  ultra: { steps: 35, cfg: 7.5, label: '💎 Ultra', description: '~20s, maximum quality' },
 };
 
-// Quality presets - 4K Mode (Dark Beast Z)
+// Quality presets - 4K Mode (Dark Beast Z) - Optimized for RTX 4090
 const QUALITY_PRESETS_4K = {
-  '4k_fast': { steps: 25, cfg: 5.5, label: '⚡ 4K Fast', description: '4K quick render' },
-  '4k_balanced': { steps: 35, cfg: 6.0, label: '⚖️ 4K Balanced', description: '4K good quality' },
-  '4k_quality': { steps: 45, cfg: 6.5, label: '✨ 4K Quality', description: '4K high detail' },
-  '4k_ultra': { steps: 60, cfg: 7.0, label: '💎 4K Ultra', description: '4K maximum quality' },
-  '4k_extreme': { steps: 80, cfg: 7.5, label: '🔥 4K Extreme', description: '4K extreme detail (slow)' },
+  '4k_fast': { steps: 20, cfg: 5.0, label: '⚡ 4K Fast', description: '~20s, quick 4K' },
+  '4k_balanced': { steps: 28, cfg: 5.5, label: '⚖️ 4K Balanced', description: '~30s, good 4K' },
+  '4k_quality': { steps: 35, cfg: 6.0, label: '✨ 4K Quality', description: '~45s, detailed 4K' },
+  '4k_ultra': { steps: 45, cfg: 6.5, label: '💎 4K Ultra', description: '~60s, premium 4K' },
+  '4k_extreme': { steps: 60, cfg: 7.0, label: '🔥 4K Extreme', description: '~90s, extreme 4K' },
 };
 
-// Samplers available in ComfyUI
+// Samplers available in ComfyUI - Optimized for RTX 4090
 const SAMPLERS = {
-  euler_a: { id: 'euler_ancestral', label: '🎲 Euler A', description: 'Creative, varied' },
-  euler: { id: 'euler', label: '📐 Euler', description: 'Consistent, fast' },
-  dpmpp_2m: { id: 'dpmpp_2m', label: '🚀 DPM++ 2M', description: 'Fast, quality' },
-  dpmpp_sde: { id: 'dpmpp_sde', label: '🎨 DPM++ SDE', description: 'Artistic, detailed' },
-  dpmpp_2m_sde: { id: 'dpmpp_2m_sde', label: '💫 DPM++ 2M SDE', description: 'Best for 4K' },
+  // FAST - Best for quick generations
+  euler: { id: 'euler', label: '⚡ Euler', description: 'Fastest, consistent', speed: 'fast' },
+  euler_a: { id: 'euler_ancestral', label: '🎲 Euler A', description: 'Fast, creative', speed: 'fast' },
+  lcm: { id: 'lcm', label: '🚀 LCM', description: 'Ultra fast (4-8 steps)', speed: 'ultra' },
+  
+  // BALANCED - Good speed/quality
+  dpmpp_2m: { id: 'dpmpp_2m', label: '⚖️ DPM++ 2M', description: 'Balanced, reliable', speed: 'balanced' },
+  dpmpp_2s_a: { id: 'dpmpp_2s_ancestral', label: '🎯 DPM++ 2S A', description: 'Balanced, varied', speed: 'balanced' },
+  heun: { id: 'heun', label: '📊 Heun', description: 'Balanced, smooth', speed: 'balanced' },
+  
+  // QUALITY - Best detail
+  dpmpp_sde: { id: 'dpmpp_sde', label: '🎨 DPM++ SDE', description: 'Artistic, detailed', speed: 'quality' },
+  dpmpp_2m_sde: { id: 'dpmpp_2m_sde', label: '💫 DPM++ 2M SDE', description: 'Best quality', speed: 'quality' },
+  dpmpp_3m_sde: { id: 'dpmpp_3m_sde', label: '✨ DPM++ 3M SDE', description: 'Premium quality', speed: 'quality' },
+  
+  // SPECIAL
+  ddim: { id: 'ddim', label: '🔧 DDIM', description: 'Classic, deterministic', speed: 'balanced' },
+  uni_pc: { id: 'uni_pc', label: '🎪 UniPC', description: 'Fast convergence', speed: 'fast' },
+  uni_pc_bh2: { id: 'uni_pc_bh2', label: '🎭 UniPC BH2', description: 'Smoother UniPC', speed: 'fast' },
 };
 
 // Schedulers
@@ -258,18 +276,25 @@ function buildQualityKeyboard(session) {
 }
 
 /**
- * Build sampler selection keyboard
+ * Build sampler selection keyboard - Grouped by speed
  */
 function buildSamplerKeyboard() {
-  const samplerButtons = Object.entries(SAMPLERS).map(([key, s]) => {
-    return [{ text: `${s.label} - ${s.description || ''}`, callback_data: `hi_sampler_${key}` }];
-  });
-  return {
-    inline_keyboard: [
-      ...samplerButtons,
-      [{ text: '🔙 Back', callback_data: 'hi_back' }]
-    ]
-  };
+  // Group samplers by speed category
+  const fastSamplers = Object.entries(SAMPLERS).filter(([k, s]) => s.speed === 'fast' || s.speed === 'ultra');
+  const balancedSamplers = Object.entries(SAMPLERS).filter(([k, s]) => s.speed === 'balanced');
+  const qualitySamplers = Object.entries(SAMPLERS).filter(([k, s]) => s.speed === 'quality');
+  
+  const keyboard = [
+    [{ text: '⚡ FAST SAMPLERS ⚡', callback_data: 'hi_noop' }],
+    ...fastSamplers.map(([key, s]) => [{ text: `${s.label}`, callback_data: `hi_sampler_${key}` }]),
+    [{ text: '⚖️ BALANCED ⚖️', callback_data: 'hi_noop' }],
+    ...balancedSamplers.map(([key, s]) => [{ text: `${s.label}`, callback_data: `hi_sampler_${key}` }]),
+    [{ text: '✨ QUALITY ✨', callback_data: 'hi_noop' }],
+    ...qualitySamplers.map(([key, s]) => [{ text: `${s.label}`, callback_data: `hi_sampler_${key}` }]),
+    [{ text: '🔙 Back', callback_data: 'hi_back' }]
+  ];
+  
+  return { inline_keyboard: keyboard };
 }
 
 /**
@@ -295,6 +320,7 @@ function buildCountKeyboard() {
 function buildComfyWorkflow(session) {
   const model = MODELS[session.model];
   const is4K = session.mode4K && model?.supports4K;
+  const isZIT = model?.isZIT; // ZImageTurbo models need separate CLIP (Qwen) and VAE
   
   const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
   const qualityPresets = is4K ? QUALITY_PRESETS_4K : QUALITY_PRESETS;
@@ -306,66 +332,157 @@ function buildComfyWorkflow(session) {
   const seed = session.seed === -1 ? Math.floor(Math.random() * 2147483647) : session.seed;
   const negativePrompt = is4K ? DEFAULT_NEGATIVE_4K : session.negativePrompt;
   
-  // Standard SDXL workflow
-  const workflow = {
-    "3": {
-      "inputs": {
-        "seed": seed,
-        "steps": q.steps,
-        "cfg": q.cfg,
-        "sampler_name": sampler.id,
-        "scheduler": session.scheduler || "karras",
-        "denoise": 1,
-        "model": ["4", 0],
-        "positive": ["6", 0],
-        "negative": ["7", 0],
-        "latent_image": ["5", 0]
+  // Choose scheduler based on model and sampler for optimal speed
+  let scheduler = session.scheduler || 'karras';
+  if (sampler.id === 'lcm') scheduler = 'sgm_uniform'; // LCM works best with sgm_uniform
+  if (model?.isZIT) scheduler = model.recommendedScheduler || 'sgm_uniform'; // ZImageTurbo prefers sgm_uniform
+  
+  // Override CFG for ZImageTurbo models (they need CFG ~1)
+  let cfg = q.cfg;
+  let steps = q.steps;
+  if (model?.isZIT) {
+    cfg = model.defaultCfg || 1.0; // ZIT models need CFG 1
+    steps = Math.min(steps, 15); // ZIT models work best with fewer steps
+  }
+  
+  let workflow;
+  
+  if (isZIT) {
+    // ZImageTurbo workflow (Dark Beast Z) - uses Qwen CLIP and separate VAE
+    workflow = {
+      "1": {
+        "inputs": {
+          "clip_name": "model-00001-of-00003.safetensors",
+          "type": "qwen_image"
+        },
+        "class_type": "CLIPLoader"
       },
-      "class_type": "KSampler"
-    },
-    "4": {
-      "inputs": {
-        "ckpt_name": model.id
+      "2": {
+        "inputs": {
+          "text": session.prompt,
+          "clip": ["1", 0]
+        },
+        "class_type": "CLIPTextEncode"
       },
-      "class_type": "CheckpointLoaderSimple"
-    },
-    "5": {
-      "inputs": {
-        "width": ar.width,
-        "height": ar.height,
-        "batch_size": session.numImages
+      "3": {
+        "inputs": {
+          "ckpt_name": model.id
+        },
+        "class_type": "CheckpointLoaderSimple"
       },
-      "class_type": "EmptyLatentImage"
-    },
-    "6": {
-      "inputs": {
-        "text": session.prompt,
-        "clip": ["4", 1]
+      "4": {
+        "inputs": {
+          "seed": seed,
+          "steps": steps,
+          "cfg": cfg,
+          "sampler_name": sampler.id,
+          "scheduler": scheduler,
+          "denoise": 1,
+          "model": ["3", 0],
+          "positive": ["2", 0],
+          "negative": ["5", 0],
+          "latent_image": ["6", 0]
+        },
+        "class_type": "KSampler"
       },
-      "class_type": "CLIPTextEncode"
-    },
-    "7": {
-      "inputs": {
-        "text": negativePrompt,
-        "clip": ["4", 1]
+      "5": {
+        "inputs": {
+          "text": negativePrompt,
+          "clip": ["1", 0]
+        },
+        "class_type": "CLIPTextEncode"
       },
-      "class_type": "CLIPTextEncode"
-    },
-    "8": {
-      "inputs": {
-        "samples": ["3", 0],
-        "vae": ["4", 2]
+      "6": {
+        "inputs": {
+          "width": ar.width,
+          "height": ar.height,
+          "batch_size": session.numImages
+        },
+        "class_type": "EmptyLatentImage"
       },
-      "class_type": "VAEDecode"
-    },
-    "9": {
-      "inputs": {
-        "filename_prefix": "StarzAI",
-        "images": ["8", 0]
+      "7": {
+        "inputs": {
+          "samples": ["4", 0],
+          "vae": ["9", 0]
+        },
+        "class_type": "VAEDecode"
       },
-      "class_type": "SaveImage"
-    }
-  };
+      "8": {
+        "inputs": {
+          "filename_prefix": "StarzAI_DBZ",
+          "images": ["7", 0]
+        },
+        "class_type": "SaveImage"
+      },
+      "9": {
+        "inputs": {
+          "vae_name": "ae.safetensors"
+        },
+        "class_type": "VAELoader"
+      }
+    };
+  } else {
+    // Standard workflow for models with embedded CLIP (Hassaku XL, Dark Beast Z)
+    workflow = {
+      "3": {
+        "inputs": {
+          "seed": seed,
+          "steps": steps,
+          "cfg": cfg,
+          "sampler_name": sampler.id,
+          "scheduler": scheduler,
+          "denoise": 1,
+          "model": ["4", 0],
+          "positive": ["6", 0],
+          "negative": ["7", 0],
+          "latent_image": ["5", 0]
+        },
+        "class_type": "KSampler"
+      },
+      "4": {
+        "inputs": {
+          "ckpt_name": model.id
+        },
+        "class_type": "CheckpointLoaderSimple"
+      },
+      "5": {
+        "inputs": {
+          "width": ar.width,
+          "height": ar.height,
+          "batch_size": session.numImages
+        },
+        "class_type": "EmptyLatentImage"
+      },
+      "6": {
+        "inputs": {
+          "text": session.prompt,
+          "clip": ["4", 1]
+        },
+        "class_type": "CLIPTextEncode"
+      },
+      "7": {
+        "inputs": {
+          "text": negativePrompt,
+          "clip": ["4", 1]
+        },
+        "class_type": "CLIPTextEncode"
+      },
+      "8": {
+        "inputs": {
+          "samples": ["3", 0],
+          "vae": ["4", 2]
+        },
+        "class_type": "VAEDecode"
+      },
+      "9": {
+        "inputs": {
+          "filename_prefix": "StarzAI",
+          "images": ["8", 0]
+        },
+        "class_type": "SaveImage"
+      }
+    };
+  }
   
   return { workflow, seed };
 }
@@ -693,6 +810,13 @@ async function generateHivenetImage(bot, query, session) {
   const ar = aspectRatios[session.aspectRatio] || ASPECT_RATIOS.portrait;
   const q = qualityPresets[session.quality] || QUALITY_PRESETS.balanced;
   
+  // Estimate time based on quality preset
+  const sampler = SAMPLERS[session.sampler] || SAMPLERS.euler_a;
+  let estimatedTime = is4K ? '20-60' : '5-15';
+  if (q.label.includes('Turbo')) estimatedTime = '2-5';
+  else if (q.label.includes('Fast')) estimatedTime = is4K ? '15-25' : '4-8';
+  else if (q.label.includes('Ultra') || q.label.includes('Extreme')) estimatedTime = is4K ? '45-90' : '15-25';
+  
   // Build status message
   let statusText = `🎨 *Generating${is4K ? ' 4K' : ''} Image...*
 
@@ -701,10 +825,10 @@ async function generateHivenetImage(bot, query, session) {
 
 🤖 *Model:* ${model?.label || session.model}
 🖼️ *Resolution:* ${ar.width}×${ar.height}
-⚙️ *Steps:* ${q.steps} | CFG ${q.cfg}
+⚙️ *Steps:* ${q.steps} | *Sampler:* ${sampler.label}
 
-⏱️ _Estimated: ${is4K ? '30-90' : '10-30'} seconds_
-🖥️ _Running on RTX 4090_`;
+⏱️ _Estimated: ~${estimatedTime}s_
+🖥️ _RTX 4090 • 24GB VRAM_`;
 
   try {
     await bot.editMessageText(chatId, messageId, statusText, { parse_mode: 'Markdown' });
@@ -740,13 +864,14 @@ async function generateHivenetImage(bot, query, session) {
       throw new Error('No prompt ID received from ComfyUI');
     }
     
-    // Poll for completion
+    // Poll for completion - Faster polling for RTX 4090
     let completed = false;
     let attempts = 0;
-    const maxAttempts = is4K ? 90 : 60; // 90 attempts for 4K (3 min), 60 for standard (2 min)
+    const pollInterval = 1000; // Poll every 1 second (RTX 4090 is fast)
+    const maxAttempts = is4K ? 120 : 45; // 2 min for 4K, 45s for standard
     
     while (!completed && attempts < maxAttempts) {
-      await new Promise(r => setTimeout(r, 2000)); // Poll every 2 seconds
+      await new Promise(r => setTimeout(r, pollInterval));
       attempts++;
       
       const historyResponse = await fetch(`${COMFYUI_API}/history/${promptId}`);
