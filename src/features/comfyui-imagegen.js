@@ -358,9 +358,13 @@ function buildComfyWorkflow(session) {
   // Override CFG for ZImageTurbo models (they need CFG ~1)
   let cfg = q.cfg;
   let steps = q.steps;
+  let actualSampler = sampler;
   if (model?.isZIT) {
     cfg = model.defaultCfg || 1.0; // ZIT models need CFG 1
     steps = Math.min(steps, 15); // ZIT models work best with fewer steps
+    // ZIT models ONLY work with euler sampler - force it regardless of user selection
+    actualSampler = SAMPLERS.euler;
+    scheduler = 'sgm_uniform';
   }
   
   let workflow;
@@ -393,7 +397,7 @@ function buildComfyWorkflow(session) {
           "seed": seed,
           "steps": steps,
           "cfg": cfg,
-          "sampler_name": sampler.id,
+          "sampler_name": actualSampler.id,
           "scheduler": scheduler,
           "denoise": 1,
           "model": ["3", 0],
