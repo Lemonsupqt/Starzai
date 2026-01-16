@@ -11,24 +11,31 @@ import fetch from 'node-fetch';
 // ComfyUI API URL (Hivenet instance)
 const COMFYUI_API = process.env.COMFYUI_API || 'https://7d658bf1-c72d-4b24-b4b4-c88dc7289f98-8888.tenants.hivecompute.ai';
 
-// Aspect ratio presets - Standard
+// Aspect ratio presets - Standard (for Hassaku XL and other SDXL models)
 const ASPECT_RATIOS = {
   square: { width: 1024, height: 1024, label: '🔲 Square 1:1' },
   portrait: { width: 832, height: 1216, label: '📱 Portrait 2:3' },
   landscape: { width: 1216, height: 832, label: '🖼️ Landscape 3:2' },
-  phone: { width: 576, height: 1024, label: '📲 Phone 9:16' },
   wide: { width: 1344, height: 768, label: '🎬 Wide 16:9' },
   ultrawide: { width: 1536, height: 640, label: '🎥 Ultrawide 21:9' },
 };
 
-// 4K Aspect ratio presets - For Dark Beast Z
+// ZImageTurbo compatible resolutions (Dark Beast Z standard mode)
+// ZIT works best with 1024-based resolutions, similar to SDXL
+const ASPECT_RATIOS_ZIT = {
+  square: { width: 1024, height: 1024, label: '🔲 Square 1:1' },
+  portrait: { width: 832, height: 1216, label: '📱 Portrait 2:3' },
+  landscape: { width: 1216, height: 832, label: '🖼️ Landscape 3:2' },
+  wide: { width: 1344, height: 768, label: '🎬 Wide 16:9' },
+};
+
+// 4K Aspect ratio presets - For Dark Beast Z (ZImageTurbo 4K mode)
+// ZIT 4K requires minimum 2048 on long edge, max ~4M pixels for stability
 const ASPECT_RATIOS_4K = {
-  '4k_square': { width: 2048, height: 2048, label: '🔲 4K Square' },
-  '4k_portrait': { width: 1536, height: 2560, label: '📱 4K Portrait' },
-  '4k_landscape': { width: 2560, height: 1536, label: '🖼️ 4K Landscape' },
-  '4k_uhd': { width: 3840, height: 2160, label: '📺 4K UHD 16:9' },
-  '4k_uhd_portrait': { width: 2160, height: 3840, label: '📲 4K UHD Portrait' },
-  '4k_cinema': { width: 4096, height: 1716, label: '🎬 4K Cinema 2.39:1' },
+  '4k_square': { width: 2048, height: 2048, label: '🔲 2K Square' },
+  '4k_portrait': { width: 1664, height: 2432, label: '📱 2K Portrait' },
+  '4k_landscape': { width: 2432, height: 1664, label: '🖼️ 2K Landscape' },
+  '4k_wide': { width: 2560, height: 1440, label: '🎬 2K Wide 16:9' },
 };
 
 // Available models on Hivenet ComfyUI
@@ -139,13 +146,24 @@ function getSession(userId) {
 }
 
 /**
+ * Get the correct aspect ratios based on model type
+ */
+function getAspectRatios(model, is4K) {
+  if (model?.isZIT) {
+    // ZImageTurbo models use specific resolutions
+    return is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS_ZIT;
+  }
+  return ASPECT_RATIOS;
+}
+
+/**
  * Build the main generation UI message
  */
 function buildMainUI(session) {
   const model = MODELS[session.model];
   const is4K = session.mode4K && model?.supports4K;
   
-  const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
+  const aspectRatios = getAspectRatios(model, is4K);
   const qualityPresets = is4K ? QUALITY_PRESETS_4K : QUALITY_PRESETS;
   
   const ar = aspectRatios[session.aspectRatio] || ASPECT_RATIOS.portrait;
@@ -241,7 +259,7 @@ function buildModelKeyboard() {
 function buildSizeKeyboard(session) {
   const model = MODELS[session.model];
   const is4K = session.mode4K && model?.supports4K;
-  const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
+  const aspectRatios = getAspectRatios(model, is4K);
   
   const sizeButtons = Object.entries(aspectRatios).map(([key, ar]) => {
     return [{ text: `${ar.label} (${ar.width}×${ar.height})`, callback_data: `hi_size_${key}` }];
@@ -322,7 +340,7 @@ function buildComfyWorkflow(session) {
   const is4K = session.mode4K && model?.supports4K;
   const isZIT = model?.isZIT; // ZImageTurbo models need separate CLIP (Qwen) and VAE
   
-  const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
+  const aspectRatios = getAspectRatios(model, is4K);
   const qualityPresets = is4K ? QUALITY_PRESETS_4K : QUALITY_PRESETS;
   
   const ar = aspectRatios[session.aspectRatio] || ASPECT_RATIOS.portrait;
@@ -613,7 +631,7 @@ async function handleHivenetCallback(bot, query) {
       const sizeKey = data.replace('hi_size_', '');
       const model = MODELS[session.model];
       const is4K = session.mode4K && model?.supports4K;
-      const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
+      const aspectRatios = getAspectRatios(model, is4K);
       
       if (aspectRatios[sizeKey]) {
         session.aspectRatio = sizeKey;
@@ -804,7 +822,7 @@ async function generateHivenetImage(bot, query, session) {
   
   const model = MODELS[session.model];
   const is4K = session.mode4K && model?.supports4K;
-  const aspectRatios = is4K ? ASPECT_RATIOS_4K : ASPECT_RATIOS;
+  const aspectRatios = getAspectRatios(model, is4K);
   const qualityPresets = is4K ? QUALITY_PRESETS_4K : QUALITY_PRESETS;
   
   const ar = aspectRatios[session.aspectRatio] || ASPECT_RATIOS.portrait;
