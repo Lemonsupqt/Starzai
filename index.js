@@ -1046,8 +1046,15 @@ async function renderQrArtFromData(rawData, options, botApi) {
   ctx.fillRect(0, 0, size, size);
   ctx.restore();
 
-  // Dot color: strong themed dark with some transparency so art shows through
-  const dotColor = `rgba(${darkRgb.r},${darkRgb.g},${darkRgb.b},0.85)`;
+  // Stronger white mask under the QR area (modules + quiet zone)
+  // This significantly reduces background noise while still letting the art show through.
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  // Dot color: strong themed dark with transparency so illustration is still visible
+  const dotColor = `rgba(${darkRgb.r},${darkRgb.g},${darkRgb.b},0.9)`;
 
   function inFinder(row, col) {
     const tl = row < 7 && col < 7;
@@ -23534,7 +23541,7 @@ bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
 // =====================
 setInterval(() => {
   const t = nowMs();
-  const ttl = 30 * 60_000; // 30 min
+  const ttl = 30 * 60_000; // 30 minutes
   for (const [k, v] of inlineCache.entries()) {
     if (t - v.createdAt > ttl) inlineCache.delete(k);
   }
