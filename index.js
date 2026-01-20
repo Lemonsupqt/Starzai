@@ -540,6 +540,7 @@ function getUserQrPrefs(userId) {
   const themeKey = base.theme && QR_THEMES[base.theme] ? base.theme : "classic";
   const theme = QR_THEMES[themeKey];
   const logoEnabled = base.logoEnabled === true;
+  const reencodeOnScan = base.reencodeOnScan !== false; // default: true
   return {
     themeKey,
     theme,
@@ -548,6 +549,7 @@ function getUserQrPrefs(userId) {
       base.errorCorrectionLevel || theme.errorCorrectionLevel || "L",
     margin: base.margin ?? theme.margin ?? 4,
     logoEnabled,
+    reencodeOnScan,
   };
 }
 
@@ -561,6 +563,7 @@ function buildQrSettingsView(userId) {
   user.qrPrefs.errorCorrectionLevel = prefs.errorCorrectionLevel;
   user.qrPrefs.margin = prefs.margin;
   user.qrPrefs.logoEnabled = prefs.logoEnabled;
+  user.qrPrefs.reencodeOnScan = prefs.reencodeOnScan;
   saveUsers();
 
   const theme = prefs.theme;
@@ -578,6 +581,9 @@ function buildQrSettingsView(userId) {
   lines.push(
     `Logo: <b>${prefs.logoEnabled ? "Enabled (center overlay)" : "Disabled"}</b>`
   );
+  lines.push(
+    `Re-encode on scan: <b>${prefs.reencodeOnScan ? "Enabled" : "Disabled"}</b>`
+  );
   lines.push("");
   lines.push("<b>Themes:</b>");
 
@@ -593,7 +599,7 @@ function buildQrSettingsView(userId) {
 
   lines.push("");
   lines.push(
-    "Tap a theme below to switch. Use advanced buttons to tweak resolution, error correction, and logo overlay."
+    "Tap a theme below to switch. Use advanced buttons to tweak resolution, error correction, logo overlay, and auto re-encode on scan."
   );
 
   const kb = new InlineKeyboard();
@@ -650,9 +656,29 @@ function buildQrSettingsView(userId) {
   kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`);
   kb.row();
 
+  // Re-encode on scan toggle row
+  const reLabel = prefs.reencodeOnScan
+    ? "✅ Re-encode on scan: On"
+    : "📸 Re-encode on scan: Off";
+  kb.text(reLabel, `qs_reencode:${prefs.reencodeOnScan ? "0" : "1"}`);
+  kb.row();
+
   kb.text("↩️ Reset", "qs_reset");
 
   return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Adjust error correction when using logo overlay
+function getEffectiveQrErrorCorrection(level, logoEnabled) {
+  const order = ["L", "M", "Q", "H"];
+  const requested = (level || "L").toUpperCase();
+  const idx = order.indexOf(requested);
+  const baseLevel = idx === -1 ? "L" : order[idx];
+  if (!logoEnabled) return baseLevel;
+  // With a center logo, require at least Q-level error correction
+  const minIndexForLogo = 2; // Q
+  const effectiveIdx = Math.max(order.indexOf(baseLevel), minIndexForLogo);
+  return order[effectiveIdx];
 }
 
 // Fetch QR logo buffer from Telegram (owner-set)
@@ -13713,10 +13739,15 @@ bot.command("qr", async (ctx) => {
   const { themeKey, theme, size, errorCorrectionLevel, margin, logoEnabled } =
     getUserQrPrefs(ctx.from.id);
 
+  const effectiveLevel = getEffectiveQrErrorCorrection(
+    errorCorrectionLevel,
+    logoEnabled
+  );
+
   const result = await generateQR(text, {
     width: size || theme.width,
     margin,
-    errorCorrectionLevel,
+    errorCorrectionLevel: effectiveLevel,
     dark: theme.dark,
     light: theme.light,
   });
@@ -13738,7 +13769,7 @@ bot.command("qr", async (ctx) => {
     caption:
       `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>\n\n` +
       `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
-      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(errorCorrectionLevel)}</b>` +
+      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(effectiveLevel)}</b>` +
       (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
@@ -13934,6 +13965,27 @@ bot.callbackQuery(/^qs_logo:(0|1)$/, async (ctx) => {
   }
 });
 
+bot.callbackQuery(/^qs_reencode:(0|1)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const enable = ctx.match[1] === "1";
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.reencodeOnScan = enable;
+  saveUsers();
+  await ctx.answerCallbackQuery({
+    text: enable ? "Re-encode on scan enabled" : "Re-encode on scan disabled",
+    show_alert: false,
+  });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
 bot.callbackQuery("qs_reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   const userId = ctx.from.id;
@@ -13944,6 +13996,7 @@ bot.callbackQuery("qs_reset", async (ctx) => {
     errorCorrectionLevel: "L",
     margin: 4,
     logoEnabled: false,
+    reencodeOnScan: true,
   };
   saveUsers();
   await ctx.answerCallbackQuery({ text: "QR settings reset.", show_alert: false });
@@ -17054,13 +17107,28 @@ bot.on("message:photo", async (ctx) => {
 
       // Also re-encode the content as a fresh QR using the user's current /qs settings
       try {
-        const { theme, size, errorCorrectionLevel, margin, logoEnabled } =
-          getUserQrPrefs(u.id);
+        const {
+          theme,
+          size,
+          errorCorrectionLevel,
+          margin,
+          logoEnabled,
+          reencodeOnScan,
+        } = getUserQrPrefs(u.id);
+
+        if (!reencodeOnScan) {
+          return;
+        }
+
+        const effectiveLevel = getEffectiveQrErrorCorrection(
+          errorCorrectionLevel,
+          logoEnabled
+        );
 
         const genResult = await generateQR(rawData, {
           width: size || theme.width,
           margin,
-          errorCorrectionLevel,
+          errorCorrectionLevel: effectiveLevel,
           dark: theme.dark,
           light: theme.light,
         });
@@ -17077,7 +17145,7 @@ bot.on("message:photo", async (ctx) => {
               `🔁 Re-encoded with your QR settings\n\n` +
               `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
               `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(
-                errorCorrectionLevel
+                effectiveLevel
               )}</b>` +
               (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
             parse_mode: "HTML",
