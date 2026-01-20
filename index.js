@@ -614,12 +614,53 @@ function buildQrSettingsView(userId) {
 
   lines.push("");
   lines.push(
-    "Use the buttons below to change theme, resolution, error correction, logo overlay, art mode, and scan behaviour."
+    "Use the buttons below to open each section: themes, resolution, error correction, overlays, and scan behaviour."
   );
 
   const kb = new InlineKeyboard();
 
-  // Theme buttons (2 per row)
+  // Main QR settings menu (compact, multi-section)
+  kb
+    .text("🎨 Themes", "qs_menu:themes")
+    .text("📐 Resolution", "qs_menu:size")
+    .row()
+    .text("🛡️ Error correction", "qs_menu:ec")
+    .row()
+    .text("✨ Overlay & Art", "qs_menu:overlay")
+    .text("📸 Scan behaviour", "qs_menu:scan")
+    .row()
+    .text("↩️ Reset", "qs_reset");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Theme selection
+function buildQrThemesView(userId) {
+  const prefs = getUserQrPrefs(userId);
+  const theme = prefs.theme;
+
+  const lines = [];
+  lines.push("🎨 <b>QR Themes</b>");
+  lines.push("");
+  lines.push(
+    `Current theme: ${theme.icon} <b>${escapeHTML(theme.label)}</b>`
+  );
+  lines.push("");
+
+  Object.values(QR_THEMES).forEach((t) => {
+    const isCurrent = t.key === prefs.themeKey;
+    const prefix = isCurrent ? "✅" : "▫️";
+    lines.push(
+      `${prefix} ${t.icon} <b>${escapeHTML(t.label)}</b> – ${escapeHTML(
+        t.description
+      )}`
+    );
+  });
+
+  lines.push("");
+  lines.push("<i>Tap a theme below, or go back to the main QR settings menu.</i>");
+
+  const kb = new InlineKeyboard();
   const themes = Object.values(QR_THEMES);
   for (let i = 0; i < themes.length; i += 2) {
     const t1 = themes[i];
@@ -634,8 +675,28 @@ function buildQrSettingsView(userId) {
     }
     kb.row();
   }
+  kb.text("⬅ Back", "qs_menu:main");
 
-  // Resolution row
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Resolution (size)
+function buildQrSizeView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("📐 <b>QR Resolution</b>");
+  lines.push("");
+  lines.push(
+    `Current size: <code>${prefs.size}×${prefs.size}</code>`
+  );
+  lines.push(`Quiet zone (margin modules): <code>${prefs.margin}</code>`);
+  lines.push("");
+  lines.push(
+    "<i>Bigger sizes are easier to scan, but produce larger files.</i>"
+  );
+
+  const kb = new InlineKeyboard();
   const sizes = [1024, 2048, 4096];
   const sizeLabels = {
     1024: "🔹 1024",
@@ -647,8 +708,30 @@ function buildQrSettingsView(userId) {
     kb.text(active ? `✅ ${sizeLabels[s]}` : sizeLabels[s], `qs_size:${s}`);
   });
   kb.row();
+  kb.text("⬅ Back", "qs_menu:main");
 
-  // Error correction row (L, M, Q, H)
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Error correction level
+function buildQrEcView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("🛡️ <b>Error Correction</b>");
+  lines.push("");
+  lines.push(
+    `Current level: <b>${escapeHTML(prefs.errorCorrectionLevel)}</b>`
+  );
+  lines.push("");
+  lines.push("• ⚡ L – Lowest redundancy, smallest code");
+  lines.push("• ⭐ M – Balanced for most use-cases");
+  lines.push("• 🛡️ Q – High redundancy (better for art / logos)");
+  lines.push("• 💎 H – Maximum redundancy, densest code");
+  lines.push("");
+  lines.push("<i>Higher levels survive more distortion but require more pixels.</i>");
+
+  const kb = new InlineKeyboard();
   const levels = ["L", "M", "Q", "H"];
   levels.forEach((lvl) => {
     const active = prefs.errorCorrectionLevel === lvl;
@@ -666,27 +749,71 @@ function buildQrSettingsView(userId) {
     );
   });
   kb.row();
+  kb.text("⬅ Back", "qs_menu:main");
 
-  // Logo toggle row (mutually exclusive with art mode)
-  const logoLabel = prefs.logoEnabled ? "✅ Logo overlay: On" : "✨ Logo overlay: Off";
-  kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`);
-  kb.row();
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
 
-  // Re-encode on scan toggle row
+// Sub-view: Overlay & Art
+function buildQrOverlayView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("✨ <b>Overlay & Art</b>");
+  lines.push("");
+  lines.push(
+    `Logo overlay: <b>${prefs.logoEnabled ? "On (center logo)" : "Off"}</b>`
+  );
+  lines.push(
+    `Art mode: <b>${prefs.artMode ? "On (dot-style art QR)" : "Off"}</b>`
+  );
+  lines.push("");
+  lines.push(
+    "<i>Logo overlay uses the image set with <code>/qrlogo</code> in the center.</i>"
+  );
+  lines.push(
+    "<i>Art mode uses the image from <code>/qa</code> to color dot-style modules.</i>"
+  );
+  lines.push(
+    "<i>To keep codes scannable, logo overlay and art mode cannot be enabled together.</i>"
+  );
+
+  const kb = new InlineKeyboard();
+  const logoLabel = prefs.logoEnabled
+    ? "✅ Logo overlay: On"
+    : "✨ Logo overlay: Off";
+  const artLabel = prefs.artMode ? "🎨 Art mode: On" : "🎨 Art mode: Off";
+
+  kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`).row();
+  kb.text(artLabel, `qs_art:${prefs.artMode ? "0" : "1"}`).row();
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Scan behaviour (re-encode)
+function buildQrScanView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("📸 <b>Scan Behaviour</b>");
+  lines.push("");
+  lines.push(
+    `Re-encode on scan: <b>${
+      prefs.reencodeOnScan ? "On" : "Off"
+    }</b>`
+  );
+  lines.push("");
+  lines.push(
+    "<i>When enabled, sending a QR photo will re-scan and rebuild it with your current theme, size, and art settings.</i>"
+  );
+
+  const kb = new InlineKeyboard();
   const reLabel = prefs.reencodeOnScan
     ? "✅ Re-encode on scan: On"
     : "📸 Re-encode on scan: Off";
-  kb.text(reLabel, `qs_reencode:${prefs.reencodeOnScan ? "0" : "1"}`);
-  kb.row();
-
-  // Art mode toggle row (mutually exclusive with logo overlay)
-  const artLabel = prefs.artMode
-    ? "🎨 Art mode: On"
-    : "🎨 Art mode: Off";
-  kb.text(artLabel, `qs_art:${prefs.artMode ? "0" : "1"}`);
-  kb.row();
-
-  kb.text("↩️ Reset", "qs_reset");
+  kb.text(reLabel, `qs_reencode:${prefs.reencodeOnScan ? "0" : "1"}`).row();
+  kb.text("⬅ Back", "qs_menu:main");
 
   return { text: lines.join("\n"), keyboard: kb, prefs };
 }
@@ -1042,9 +1169,9 @@ async function renderQrArt(qrBuffer, theme, botApi) {
       {
         theme,
         size,
-        // We don't know the original margin / EC here; fall back to safe defaults.
+        // We don't know the original margin / EC here; choose a safer default for art.
         margin: 4,
-        errorCorrectionLevel: "L",
+        errorCorrectionLevel: "Q",
       },
       botApi
     );
@@ -14260,6 +14387,49 @@ bot.command("qs", async (ctx) => {
   });
 });
 
+// QR settings main menu + section navigation
+bot.callbackQuery(/^qs_menu:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const section = ctx.match[1];
+
+  let view;
+  switch (section) {
+    case "themes":
+      view = buildQrThemesView(userId);
+      break;
+    case "size":
+      view = buildQrSizeView(userId);
+      break;
+    case "ec":
+      view = buildQrEcView(userId);
+      break;
+    case "overlay":
+      view = buildQrOverlayView(userId);
+      break;
+    case "scan":
+      view = buildQrScanView(userId);
+      break;
+    case "main":
+    default:
+      view = buildQrSettingsView(userId);
+      break;
+  }
+
+  const { text, keyboard } = view;
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch {
+    await ctx.reply(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  }
+});
+
 // QR settings callbacks
 bot.callbackQuery(/^qs_theme:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
@@ -14285,7 +14455,7 @@ bot.callbackQuery(/^qs_theme:(.+)$/, async (ctx) => {
 
   await ctx.answerCallbackQuery({ text: `Theme: ${theme.label} ✅` });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrThemesView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
@@ -14306,7 +14476,7 @@ bot.callbackQuery(/^qs_size:(\d+)$/, async (ctx) => {
   saveUsers();
   await ctx.answerCallbackQuery({ text: `Size set to ${size}×${size}`, show_alert: false });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrSizeView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
@@ -14324,7 +14494,7 @@ bot.callbackQuery(/^qs_level:([LMQH])$/, async (ctx) => {
   saveUsers();
   await ctx.answerCallbackQuery({ text: `Error correction: ${level}`, show_alert: false });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrEcView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
@@ -14353,7 +14523,7 @@ bot.callbackQuery(/^qs_logo:(0|1)$/, async (ctx) => {
     show_alert: false,
   });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrOverlayView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
@@ -14374,7 +14544,7 @@ bot.callbackQuery(/^qs_reencode:(0|1)$/, async (ctx) => {
     show_alert: false,
   });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrScanView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
@@ -14401,7 +14571,7 @@ bot.callbackQuery(/^qs_art:(0|1)$/, async (ctx) => {
     show_alert: false,
   });
 
-  const { text, keyboard } = buildQrSettingsView(userId);
+  const { text, keyboard } = buildQrOverlayView(userId);
   try {
     await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
   } catch {
