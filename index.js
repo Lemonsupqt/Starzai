@@ -596,7 +596,7 @@ function buildQrSettingsView(userId) {
   );
   lines.push("");
   lines.push(
-    "<i>Art mode renders a dot-style QR using colors sampled from the image set with <code>/qa</code>. "
+    "<i>Art mode renders a dot-style QR over your image from <code>/qa</code> (full art kept visible). "
     + "Logo overlay and art mode are mutually exclusive to keep codes scannable.</i>"
   );
   lines.push("");
@@ -976,7 +976,8 @@ function getLuminance(r, g, b) {
   return 0.2126 * R + 0.7152 * G + 0.0722 * B;
 }
 
-// Core art renderer: generate a dot-style QR directly from data + theme + art
+// Core art renderer: generate a dot-style QR directly from data + theme + art,
+// keeping the underlying image fully visible (KFC-style).
 async function renderQrArtFromData(rawData, options, botApi) {
   const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
 
@@ -1010,34 +1011,50 @@ async function renderQrArtFromData(rawData, options, botApi) {
   const darkRgb = hexToRgb(theme?.dark || "#000000");
   const lightRgb = hexToRgb(theme?.light || "#ffffff");
 
-  // Always start from a clean, uniform light background inside the QR region.
-  // This maximizes contrast for scanners; art is only used to tint dark modules.
-  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
-  ctx.fillRect(0, 0, size, size);
-
-  // Load art into an offscreen canvas purely for color sampling.
+  // 1) Draw full-canvas art background
   const artBuffer =
     (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
-  let artPixels = null;
-
   if (artBuffer) {
     const artImg = await loadImage(artBuffer);
-    const artCanvas = createCanvas(size, size);
-    const artCtx = artCanvas.getContext("2d");
+
+    // Optional circular mask for the art (KFC-style framing)
+    ctx.save();
+    const radius = size * 0.5;
+    const cx0 = size / 2;
+    const cy0 = size / 2;
+    ctx.beginPath();
+    ctx.arc(cx0, cy0, radius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
 
     const artScale = Math.max(size / artImg.width, size / artImg.height);
     const w = artImg.width * artScale;
     const h = artImg.height * artScale;
     const dx = (size - w) / 2;
     const dy = (size - h) / 2;
-
-    artCtx.drawImage(artImg, dx, dy, w, h);
-    const artData = artCtx.getImageData(0, 0, size, size);
-    artPixels = artData.data;
+    ctx.drawImage(artImg, dx, dy, w, h);
+    ctx.restore();
+  } else {
+    // Fallback: simple themed gradient
+    const grad = ctx.createLinearGradient(0, 0, size, size);
+    grad.addColorStop(0, theme?.light || "#ffffff");
+    grad.addColorStop(1, theme?.dark || "#000000");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
   }
 
+  // 2) Soften the background slightly with a light wash to aid readability
+  ctx.save();
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.globalAlpha = 0.14;
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  // 3) Precompute art pixels for color sampling (from the already-drawn background)
+  const bgData = ctx.getImageData(0, 0, size, size);
+  const artPixels = bgData.data;
+
   function sampleArtColor(px, py) {
-    if (!artPixels) return darkRgb;
     const x = Math.max(0, Math.min(size - 1, Math.round(px)));
     const y = Math.max(0, Math.min(size - 1, Math.round(py)));
     const idx = (y * size + x) * 4;
@@ -1049,16 +1066,17 @@ async function renderQrArtFromData(rawData, options, botApi) {
   }
 
   function mixWithThemeDark(sample) {
-    // Weighted blend: keep modules clearly in the "dark" range.
-    const mix = 0.4;
+    // Blend so dots keep the image hue but stay distinctly dark.
+    const mix = 0.45;
     let r = darkRgb.r * mix + sample.r * (1 - mix);
     let g = darkRgb.g * mix + sample.g * (1 - mix);
     let b = darkRgb.b * mix + sample.b * (1 - mix);
 
-    // Enforce strong contrast vs light background.
     const lumBg = getLuminance(lightRgb.r, lightRgb.g, lightRgb.b);
     const lumDot = getLuminance(r, g, b);
-    const maxLum = Math.min(lumBg * 0.35, 0.35); // keep dots quite dark
+
+    // Cap brightness relative to the themed light background.
+    const maxLum = Math.min(lumBg * 0.42, 0.42);
 
     if (lumDot > maxLum) {
       const factor = maxLum / (lumDot || 1);
@@ -1081,7 +1099,16 @@ async function renderQrArtFromData(rawData, options, botApi) {
     return inTopLeft || inTopRight || inBottomLeft;
   }
 
-  // Draw modules
+  // 4) Optional outer border around the QR region to separate it from background
+  ctx.save();
+  const qrPx = marginModules * scale;
+  const qrSizePx = n * scale;
+  ctx.strokeStyle = `rgba(${darkRgb.r},${darkRgb.g},${darkRgb.b},0.85)`;
+  ctx.lineWidth = Math.max(2, Math.floor(scale * 0.4));
+  ctx.strokeRect(qrPx - scale * 0.5, qrPx - scale * 0.5, qrSizePx + scale, qrSizePx + scale);
+  ctx.restore();
+
+  // 5) Draw modules as dots over the art background
   for (let row = 0; row < n; row++) {
     for (let col = 0; col < n; col++) {
       if (!modules.get(row, col)) continue;
@@ -1091,7 +1118,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
       const cx = x + scale / 2;
       const cy = y + scale / 2;
 
-      // Finder patterns: keep them as solid squares for robust scanning
+      // Finder patterns: keep them as solid squares, tinted but dark and opaque
       if (isInFinder(row, col)) {
         ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
         ctx.fillRect(x, y, scale, scale);
