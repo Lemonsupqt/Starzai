@@ -102,6 +102,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+import fetch from "node-fetch";
 
 // Super Utilities Module (27 features)
 import {
@@ -117,6 +118,7 @@ import {
   getMediaDetails,
   getTrailers,
   generateQR,
+  scanQR,
   shortenURL,
   convertCurrency,
   getWeather,
