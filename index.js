@@ -790,6 +790,7 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
 }
 
 // QArt-inspired full-canvas art rendering: blend QR modules with logo image or gradient
+// but keep a very strong binary contrast so scanners (including jsQR) can still read it.
 async function renderQrArt(qrBuffer, theme, botApi) {
   try {
     const { createCanvas, loadImage } = await import("canvas");
@@ -833,35 +834,68 @@ async function renderQrArt(qrBuffer, theme, botApi) {
       return 0.299 * r + 0.587 * g + 0.114 * b;
     }
 
-    // Modulate background image brightness based on QR mask to preserve readability
+    function hexToRgb(hex) {
+      if (!hex) return { r: 0, g: 0, b: 0 };
+      const m = hex.replace("#", "").match(/^([0-9a-fA-F]{6})$/);
+      if (!m) return { r: 0, g: 0, b: 0 };
+      const intVal = parseInt(m[1], 16);
+      return {
+        r: (intVal >> 16) & 0xff,
+        g: (intVal >> 8) & 0xff,
+        b: intVal & 0xff,
+      };
+    }
+
+    const themeDark = hexToRgb(theme.dark || "#000000");
+    const themeLight = hexToRgb(theme.light || "#ffffff");
+
+    const quietBorder = Math.floor(size * 0.06); // enforce a clean quiet zone near edges
+
+    // Blend art with a strong binary QR mask
     for (let y = 0; y < size; y++) {
       for (let x = 0; x < size; x++) {
         const idx = (y * size + x) * 4;
+
+        // Enforce quiet zone
+        if (
+          x < quietBorder ||
+          y < quietBorder ||
+          x >= size - quietBorder ||
+          y >= size - quietBorder
+        ) {
+          artPixels[idx] = themeLight.r;
+          artPixels[idx + 1] = themeLight.g;
+          artPixels[idx + 2] = themeLight.b;
+          artPixels[idx + 3] = 255;
+          continue;
+        }
 
         const qrR = qrPixels[idx];
         const qrG = qrPixels[idx + 1];
         const qrB = qrPixels[idx + 2];
         const qrLum = luminance(qrR, qrG, qrB);
 
-        const isDarkModule = qrLum < 200; // dark modules vs light background
+        const isDarkModule = qrLum < 128; // stronger binary separation
 
-        let r = artPixels[idx];
-        let g = artPixels[idx + 1];
-        let b = artPixels[idx + 2];
+        const artR = artPixels[idx];
+        const artG = artPixels[idx + 1];
+        const artB = artPixels[idx + 2];
         const a = artPixels[idx + 3];
 
+        let r, g, b;
+
         if (isDarkModule) {
-          // Darken heavily to form QR modules but keep hue from the art
-          const factor = 0.25;
-          r = r * factor;
-          g = g * factor;
-          b = b * factor;
+          // Dark modules: mostly theme.dark with a hint of art color for texture
+          const mix = 0.18;
+          r = themeDark.r * (1 - mix) + artR * mix;
+          g = themeDark.g * (1 - mix) + artG * mix;
+          b = themeDark.b * (1 - mix) + artB * mix;
         } else {
-          // Lighten to create a soft, airy background that contrasts with modules
-          const factor = 0.8;
-          r = 255 - (255 - r) * factor;
-          g = 255 - (255 - g) * factor;
-          b = 255 - (255 - b) * factor;
+          // Light modules: mostly theme.light but pulled slightly toward the art
+          const mix = 0.55;
+          r = themeLight.r * (1 - mix) + artR * mix;
+          g = themeLight.g * (1 - mix) + artG * mix;
+          b = themeLight.b * (1 - mix) + artB * mix;
         }
 
         artPixels[idx] = r;
