@@ -539,6 +539,7 @@ function getUserQrPrefs(userId) {
   const base = user?.qrPrefs || {};
   const themeKey = base.theme && QR_THEMES[base.theme] ? base.theme : "classic";
   const theme = QR_THEMES[themeKey];
+  const logoEnabled = base.logoEnabled === true;
   return {
     themeKey,
     theme,
@@ -546,6 +547,7 @@ function getUserQrPrefs(userId) {
     errorCorrectionLevel:
       base.errorCorrectionLevel || theme.errorCorrectionLevel || "L",
     margin: base.margin ?? theme.margin ?? 4,
+    logoEnabled,
   };
 }
 
@@ -558,6 +560,7 @@ function buildQrSettingsView(userId) {
   user.qrPrefs.size = prefs.size;
   user.qrPrefs.errorCorrectionLevel = prefs.errorCorrectionLevel;
   user.qrPrefs.margin = prefs.margin;
+  user.qrPrefs.logoEnabled = prefs.logoEnabled;
   saveUsers();
 
   const theme = prefs.theme;
@@ -572,6 +575,9 @@ function buildQrSettingsView(userId) {
     )}</b>`
   );
   lines.push(`Margin: <code>${prefs.margin}</code>`);
+  lines.push(
+    `Logo: <b>${prefs.logoEnabled ? "Enabled (center overlay)" : "Disabled"}</b>`
+  );
   lines.push("");
   lines.push("<b>Themes:</b>");
 
@@ -587,7 +593,7 @@ function buildQrSettingsView(userId) {
 
   lines.push("");
   lines.push(
-    "Tap a theme below to switch. Use advanced buttons to tweak resolution and error correction."
+    "Tap a theme below to switch. Use advanced buttons to tweak resolution, error correction, and logo overlay."
   );
 
   const kb = new InlineKeyboard();
@@ -639,9 +645,96 @@ function buildQrSettingsView(userId) {
   });
   kb.row();
 
+  // Logo toggle row
+  const logoLabel = prefs.logoEnabled ? "✅ Logo: On" : "✨ Logo: Off";
+  kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`);
+  kb.row();
+
   kb.text("↩️ Reset", "qs_reset");
 
   return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Fetch QR logo buffer from Telegram (owner-set)
+async function getQrLogoBuffer(botApi) {
+  if (!prefsDb.qrLogo || !prefsDb.qrLogo.fileId) {
+    return null;
+  }
+  try {
+    const file = await botApi.getFile(prefsDb.qrLogo.fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    return await response.buffer();
+  } catch (e) {
+    console.error("QR logo fetch error:", e);
+    return null;
+  }
+}
+
+// Render QR with centered logo overlay, matching theme colors
+async function renderQrWithLogo(qrBuffer, theme, botApi) {
+  try {
+    const logoBuffer = await getQrLogoBuffer(botApi);
+    if (!logoBuffer) return qrBuffer;
+
+    const { createCanvas, loadImage } = await import("canvas");
+    const qrImg = await loadImage(qrBuffer);
+    const logoImg = await loadImage(logoBuffer);
+
+    const size = qrImg.width;
+    const canvas = createCanvas(size, size);
+    const ctx2d = canvas.getContext("2d");
+
+    // Draw base QR
+    ctx2d.drawImage(qrImg, 0, 0, size, size);
+
+    // Logo sizing and position
+    const logoScale = 0.22; // 22% of QR size
+    const logoSize = Math.floor(size * logoScale);
+    const x = Math.floor((size - logoSize) / 2);
+    const y = Math.floor((size - logoSize) / 2);
+
+    const radius = Math.floor(logoSize * 0.3);
+    const bgColor = theme.light || "#ffffff";
+    const borderColor = theme.dark || "#000000";
+    const borderWidth = Math.max(4, Math.floor(size * 0.01));
+
+    function drawRoundedRectPath(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    // Background pad
+    ctx2d.save();
+    drawRoundedRectPath(ctx2d, x, y, logoSize, logoSize, radius);
+    ctx2d.fillStyle = bgColor;
+    ctx2d.fill();
+    ctx2d.lineWidth = borderWidth;
+    ctx2d.strokeStyle = borderColor;
+    ctx2d.stroke();
+    ctx2d.restore();
+
+    // Logo clipped inside slightly smaller rounded rect
+    ctx2d.save();
+    drawRoundedRectPath(ctx2d, x, y, logoSize, logoSize, Math.floor(radius * 0.9));
+    ctx2d.clip();
+    ctx2d.drawImage(logoImg, x, y, logoSize, logoSize);
+    ctx2d.restore();
+
+    return canvas.toBuffer("image/png");
+  } catch (e) {
+    console.error("QR logo overlay error:", e);
+    return qrBuffer;
+  }
 }
 
 // =====================
@@ -2041,7 +2134,7 @@ function isUserBanned(userId) {
 // Check if a user is trusted (skip spam checks for performance)
 function isTrustedUser(userId) {
   // Owners are always trusted
-  if (OWNER_IDS.includes(String(userId))) {
+  if (OWNER_IDS.has(String(userId))) {
     return true;
   }
   
@@ -11850,6 +11943,45 @@ bot.command("gstat", async (ctx) => {
   await sendOwnerStatus(ctx);
 });
 
+// /qrlogo - set global QR center logo (owner only)
+bot.command("qrlogo", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const photos = replied?.photo;
+
+  if (!photos || photos.length === 0) {
+    return ctx.reply(
+      "🖼️ Reply to a photo with <code>/qrlogo</code> to set it as the global QR logo.\n\n" +
+        "This logo will appear in the center of QR codes when the logo overlay is enabled in <code>/qs</code>.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  try {
+    const largest = photos[photos.length - 1];
+    // We only need the file_id; Telegram will handle caching
+    prefsDb.qrLogo = {
+      fileId: largest.file_id,
+      updatedAt: new Date().toISOString(),
+      setBy: String(ctx.from?.id || ""),
+    };
+    savePrefs();
+
+    await ctx.reply(
+      "✅ QR logo updated.\n\n" +
+        "When users enable the logo overlay in <code>/qs</code>, this image will appear in the center of generated QR codes.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  } catch (e) {
+    console.error("QR logo update error:", e);
+    await ctx.reply("❌ Failed to set QR logo. Please try again.", {
+      reply_to_message_id: msg?.message_id,
+    });
+  }
+});
+
 // Dev Status callback - detailed API diagnostics (owner only)
 bot.callbackQuery("dev_status", async (ctx) => {
   const userId = ctx.from?.id;
@@ -13573,12 +13705,13 @@ bot.command("qr", async (ctx) => {
       '<b>Examples:</b>\n' +
       '<code>/qr https://example.com</code>\n' +
       '<code>/qr Hello World!</code>\n\n' +
-      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level).',
+      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay).',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
   
-  const { themeKey, theme, size, errorCorrectionLevel, margin } = getUserQrPrefs(ctx.from.id);
+  const { themeKey, theme, size, errorCorrectionLevel, margin, logoEnabled } =
+    getUserQrPrefs(ctx.from.id);
 
   const result = await generateQR(text, {
     width: size || theme.width,
@@ -13594,13 +13727,19 @@ bot.command("qr", async (ctx) => {
     });
   }
 
+  let qrBuffer = result.buffer;
+  if (logoEnabled) {
+    qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
+  }
+
   const themeLabel = `${theme.icon} ${theme.label}`;
   
-  await ctx.replyWithPhoto(new InputFile(result.buffer, 'qrcode.png'), {
+  await ctx.replyWithPhoto(new InputFile(qrBuffer, 'qrcode.png'), {
     caption:
       `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>\n\n` +
       `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
-      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(errorCorrectionLevel)}</b>`,
+      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(errorCorrectionLevel)}</b>` +
+      (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
@@ -13683,6 +13822,137 @@ bot.command("rename", async (ctx) => {
       '❌ Failed to rename file. Please try again.',
       { reply_to_message_id: msg?.message_id }
     );
+  }
+});
+
+// /qs - QR settings (themes, resolution, error correction, logo)
+bot.command("qs", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+
+  const userId = ctx.from.id;
+  const { text, keyboard } = buildQrSettingsView(userId);
+
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    reply_markup: keyboard,
+    reply_to_message_id: ctx.message?.message_id,
+  });
+});
+
+// QR settings callbacks
+bot.callbackQuery(/^qs_theme:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const match = ctx.match;
+  const themeKey = match && match[1] ? match[1] : null;
+  if (!themeKey || !QR_THEMES[themeKey]) {
+    return ctx.answerCallbackQuery({ text: "Invalid theme.", show_alert: true });
+  }
+
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.theme = themeKey;
+  const theme = QR_THEMES[themeKey];
+  if (!user.qrPrefs.size) user.qrPrefs.size = theme.width || 2048;
+  if (!user.qrPrefs.errorCorrectionLevel) {
+    user.qrPrefs.errorCorrectionLevel = theme.errorCorrectionLevel || "L";
+  }
+  if (user.qrPrefs.margin === undefined) {
+    user.qrPrefs.margin = theme.margin ?? 4;
+  }
+  saveUsers();
+
+  await ctx.answerCallbackQuery({ text: `Theme: ${theme.label} ✅` });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_size:(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const size = parseInt(ctx.match[1], 10);
+  if (![1024, 2048, 4096].includes(size)) {
+    return ctx.answerCallbackQuery({ text: "Invalid size.", show_alert: true });
+  }
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.size = size;
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: `Size set to ${size}×${size}`, show_alert: false });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_level:([LMQH])$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const level = ctx.match[1];
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.errorCorrectionLevel = level;
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: `Error correction: ${level}`, show_alert: false });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_logo:(0|1)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const enable = ctx.match[1] === "1";
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.logoEnabled = enable;
+  saveUsers();
+  await ctx.answerCallbackQuery({
+    text: enable ? "Logo overlay enabled" : "Logo overlay disabled",
+    show_alert: false,
+  });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery("qs_reset", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const user = getUserRecord(userId);
+  user.qrPrefs = {
+    theme: "classic",
+    size: 2048,
+    errorCorrectionLevel: "L",
+    margin: 4,
+    logoEnabled: false,
+  };
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: "QR settings reset.", show_alert: false });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
   }
 });
 
