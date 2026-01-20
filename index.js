@@ -16496,7 +16496,10 @@ bot.on("message:photo", async (ctx) => {
 
       if (attachFile) {
         const fileBuffer = Buffer.from(rawData, "utf8");
-        await ctx.replyWithDocument(new InputFile(fileBuffer, "qr-data.txt"), {
+        // Use a custom filename per QR to avoid duplicate names (include length + hash)
+        const shortHash = crypto.createHash("sha1").update(rawData).digest("hex").slice(0, 8);
+        const fileName = `qr_${dataLength}chars_${shortHash}.txt`;
+        await ctx.replyWithDocument(new InputFile(fileBuffer, fileName), {
           caption: "📄 Full QR content (copyable text file)",
           reply_to_message_id: ctx.message?.message_id,
         });
