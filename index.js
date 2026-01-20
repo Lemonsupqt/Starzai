@@ -541,6 +541,7 @@ function getUserQrPrefs(userId) {
   const theme = QR_THEMES[themeKey];
   const logoEnabled = base.logoEnabled === true;
   const reencodeOnScan = base.reencodeOnScan !== false; // default: true
+  const artMode = base.artMode === true; // default: false
   return {
     themeKey,
     theme,
@@ -550,6 +551,7 @@ function getUserQrPrefs(userId) {
     margin: base.margin ?? theme.margin ?? 4,
     logoEnabled,
     reencodeOnScan,
+    artMode,
   };
 }
 
@@ -564,6 +566,7 @@ function buildQrSettingsView(userId) {
   user.qrPrefs.margin = prefs.margin;
   user.qrPrefs.logoEnabled = prefs.logoEnabled;
   user.qrPrefs.reencodeOnScan = prefs.reencodeOnScan;
+  user.qrPrefs.artMode = prefs.artMode;
   saveUsers();
 
   const theme = prefs.theme;
@@ -583,6 +586,9 @@ function buildQrSettingsView(userId) {
   );
   lines.push(
     `Re-encode on scan: <b>${prefs.reencodeOnScan ? "Enabled" : "Disabled"}</b>`
+  );
+  lines.push(
+    `Art mode: <b>${prefs.artMode ? "Enabled" : "Disabled"}</b>`
   );
   lines.push("");
   lines.push("<b>Themes:</b>");
@@ -663,21 +669,28 @@ function buildQrSettingsView(userId) {
   kb.text(reLabel, `qs_reencode:${prefs.reencodeOnScan ? "0" : "1"}`);
   kb.row();
 
+  // Art mode toggle row
+  const artLabel = prefs.artMode
+    ? "🎨 Art mode: On"
+    : "🎨 Art mode: Off";
+  kb.text(artLabel, `qs_art:${prefs.artMode ? "0" : "1"}`);
+  kb.row();
+
   kb.text("↩️ Reset", "qs_reset");
 
   return { text: lines.join("\n"), keyboard: kb, prefs };
 }
 
-// Adjust error correction when using logo overlay
-function getEffectiveQrErrorCorrection(level, logoEnabled) {
+// Adjust error correction when using logo overlay or art mode that disturbs central modules
+function getEffectiveQrErrorCorrection(level, needsHighEc) {
   const order = ["L", "M", "Q", "H"];
   const requested = (level || "L").toUpperCase();
   const idx = order.indexOf(requested);
   const baseLevel = idx === -1 ? "L" : order[idx];
-  if (!logoEnabled) return baseLevel;
-  // With a center logo, require at least Q-level error correction
-  const minIndexForLogo = 2; // Q
-  const effectiveIdx = Math.max(order.indexOf(baseLevel), minIndexForLogo);
+  if (!needsHighEc) return baseLevel;
+  // With visual overlays, require at least Q-level error correction
+  const minIndexForOverlay = 2; // Q
+  const effectiveIdx = Math.max(order.indexOf(baseLevel), minIndexForOverlay);
   return order[effectiveIdx];
 }
 
@@ -772,6 +785,96 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
     return canvas.toBuffer("image/png");
   } catch (e) {
     console.error("QR logo overlay error:", e);
+    return qrBuffer;
+  }
+}
+
+// QArt-inspired full-canvas art rendering: blend QR modules with logo image or gradient
+async function renderQrArt(qrBuffer, theme, botApi) {
+  try {
+    const { createCanvas, loadImage } = await import("canvas");
+
+    const qrImg = await loadImage(qrBuffer);
+    const size = qrImg.width;
+
+    // Canvas with QR mask
+    const qrCanvas = createCanvas(size, size);
+    const qrCtx = qrCanvas.getContext("2d");
+    qrCtx.drawImage(qrImg, 0, 0, size, size);
+    const qrData = qrCtx.getImageData(0, 0, size, size);
+    const qrPixels = qrData.data;
+
+    // Canvas with background art
+    const artCanvas = createCanvas(size, size);
+    const artCtx = artCanvas.getContext("2d");
+
+    // Try to use QR logo as full-canvas art; fallback to gradient
+    const logoBuffer = await getQrLogoBuffer(botApi);
+    if (logoBuffer) {
+      const artImg = await loadImage(logoBuffer);
+      const scale = Math.max(size / artImg.width, size / artImg.height);
+      const drawW = artImg.width * scale;
+      const drawH = artImg.height * scale;
+      const dx = (size - drawW) / 2;
+      const dy = (size - drawH) / 2;
+      artCtx.drawImage(artImg, dx, dy, drawW, drawH);
+    } else {
+      const grad = artCtx.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, theme.light || "#ffffff");
+      grad.addColorStop(1, theme.dark || "#000000");
+      artCtx.fillStyle = grad;
+      artCtx.fillRect(0, 0, size, size);
+    }
+
+    const artData = artCtx.getImageData(0, 0, size, size);
+    const artPixels = artData.data;
+
+    function luminance(r, g, b) {
+      return 0.299 * r + 0.587 * g + 0.114 * b;
+    }
+
+    // Modulate background image brightness based on QR mask to preserve readability
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = (y * size + x) * 4;
+
+        const qrR = qrPixels[idx];
+        const qrG = qrPixels[idx + 1];
+        const qrB = qrPixels[idx + 2];
+        const qrLum = luminance(qrR, qrG, qrB);
+
+        const isDarkModule = qrLum < 200; // dark modules vs light background
+
+        let r = artPixels[idx];
+        let g = artPixels[idx + 1];
+        let b = artPixels[idx + 2];
+        const a = artPixels[idx + 3];
+
+        if (isDarkModule) {
+          // Darken heavily to form QR modules but keep hue from the art
+          const factor = 0.25;
+          r = r * factor;
+          g = g * factor;
+          b = b * factor;
+        } else {
+          // Lighten to create a soft, airy background that contrasts with modules
+          const factor = 0.8;
+          r = 255 - (255 - r) * factor;
+          g = 255 - (255 - g) * factor;
+          b = 255 - (255 - b) * factor;
+        }
+
+        artPixels[idx] = r;
+        artPixels[idx + 1] = g;
+        artPixels[idx + 2] = b;
+        artPixels[idx + 3] = a;
+      }
+    }
+
+    artCtx.putImageData(artData, 0, 0);
+    return artCanvas.toBuffer("image/png");
+  } catch (e) {
+    console.error("QR art render error:", e);
     return qrBuffer;
   }
 }
@@ -13744,17 +13847,25 @@ bot.command("qr", async (ctx) => {
       '<b>Examples:</b>\n' +
       '<code>/qr https://example.com</code>\n' +
       '<code>/qr Hello World!</code>\n\n' +
-      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay).',
+      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay, art mode).',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
   
-  const { themeKey, theme, size, errorCorrectionLevel, margin, logoEnabled } =
-    getUserQrPrefs(ctx.from.id);
+  const {
+    themeKey,
+    theme,
+    size,
+    errorCorrectionLevel,
+    margin,
+    logoEnabled,
+    artMode,
+  } = getUserQrPrefs(ctx.from.id);
 
+  const needsHighEc = logoEnabled || artMode;
   const effectiveLevel = getEffectiveQrErrorCorrection(
     errorCorrectionLevel,
-    logoEnabled
+    needsHighEc
   );
 
   const result = await generateQR(text, {
@@ -13772,7 +13883,9 @@ bot.command("qr", async (ctx) => {
   }
 
   let qrBuffer = result.buffer;
-  if (logoEnabled) {
+  if (artMode) {
+    qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api);
+  } else if (logoEnabled) {
     qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
   }
 
@@ -13783,7 +13896,8 @@ bot.command("qr", async (ctx) => {
       `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>\n\n` +
       `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
       `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(effectiveLevel)}</b>` +
-      (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
+      (logoEnabled && !artMode ? `\n🔷 Logo: <b>Enabled</b>` : "") +
+      (artMode ? `\n🖼️ Style: <b>Art mode</b>` : ""),
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
@@ -13999,6 +14113,27 @@ bot.callbackQuery(/^qs_reencode:(0|1)$/, async (ctx) => {
   }
 });
 
+bot.callbackQuery(/^qs_art:(0|1)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const enable = ctx.match[1] === "1";
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.artMode = enable;
+  saveUsers();
+  await ctx.answerCallbackQuery({
+    text: enable ? "Art mode enabled" : "Art mode disabled",
+    show_alert: false,
+  });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
 bot.callbackQuery("qs_reset", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   const userId = ctx.from.id;
@@ -14010,6 +14145,7 @@ bot.callbackQuery("qs_reset", async (ctx) => {
     margin: 4,
     logoEnabled: false,
     reencodeOnScan: true,
+    artMode: false,
   };
   saveUsers();
   await ctx.answerCallbackQuery({ text: "QR settings reset.", show_alert: false });
@@ -17127,15 +17263,17 @@ bot.on("message:photo", async (ctx) => {
           margin,
           logoEnabled,
           reencodeOnScan,
+          artMode,
         } = getUserQrPrefs(u.id);
 
         if (!reencodeOnScan) {
           return;
         }
 
+        const needsHighEc = logoEnabled || artMode;
         const effectiveLevel = getEffectiveQrErrorCorrection(
           errorCorrectionLevel,
-          logoEnabled
+          needsHighEc
         );
 
         const genResult = await generateQR(rawData, {
@@ -17148,7 +17286,9 @@ bot.on("message:photo", async (ctx) => {
 
         if (genResult.success) {
           let qrBuffer = genResult.buffer;
-          if (logoEnabled) {
+          if (artMode) {
+            qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api);
+          } else if (logoEnabled) {
             qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
           }
 
@@ -17160,7 +17300,8 @@ bot.on("message:photo", async (ctx) => {
               `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(
                 effectiveLevel
               )}</b>` +
-              (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
+              (logoEnabled && !artMode ? `\n🔷 Logo: <b>Enabled</b>` : "") +
+              (artMode ? `\n🖼️ Style: <b>Art mode</b>` : ""),
             parse_mode: "HTML",
             reply_to_message_id: ctx.message?.message_id,
           });
