@@ -596,7 +596,7 @@ function buildQrSettingsView(userId) {
   );
   lines.push("");
   lines.push(
-    "<i>Art mode draws a dot-style QR over an image set with <code>/qa</code>. "
+    "<i>Art mode renders a dot-style QR using colors sampled from the image set with <code>/qa</code>. "
     + "Logo overlay and art mode are mutually exclusive to keep codes scannable.</i>"
   );
   lines.push("");
@@ -772,7 +772,7 @@ function buildQrOverlayView(userId) {
     "<i>Logo overlay uses the image set with <code>/qrlogo</code> in the center.</i>"
   );
   lines.push(
-    "<i>Art mode uses the image from <code>/qa</code> to color dot-style modules.</i>"
+    "<i>Art mode uses the image from <code>/qa</code> to color dot-style modules on a clean background.</i>"
   );
   lines.push(
     "<i>To keep codes scannable, logo overlay and art mode cannot be enabled together.</i>"
@@ -1010,34 +1010,31 @@ async function renderQrArtFromData(rawData, options, botApi) {
   const darkRgb = hexToRgb(theme?.dark || "#000000");
   const lightRgb = hexToRgb(theme?.light || "#ffffff");
 
-  // Draw art background (if configured) or plain light background
+  // Always start from a clean, uniform light background inside the QR region.
+  // This maximizes contrast for scanners; art is only used to tint dark modules.
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.fillRect(0, 0, size, size);
+
+  // Load art into an offscreen canvas purely for color sampling.
   const artBuffer =
     (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
-  let artData = null;
+  let artPixels = null;
 
   if (artBuffer) {
     const artImg = await loadImage(artBuffer);
+    const artCanvas = createCanvas(size, size);
+    const artCtx = artCanvas.getContext("2d");
+
     const artScale = Math.max(size / artImg.width, size / artImg.height);
     const w = artImg.width * artScale;
     const h = artImg.height * artScale;
     const dx = (size - w) / 2;
     const dy = (size - h) / 2;
 
-    ctx.drawImage(artImg, dx, dy, w, h);
-
-    // Soft light overlay so background stays bright enough for contrast
-    ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
-    ctx.globalAlpha = 0.25;
-    ctx.fillRect(0, 0, size, size);
-    ctx.globalAlpha = 1;
-
-    artData = ctx.getImageData(0, 0, size, size);
-  } else {
-    ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
-    ctx.fillRect(0, 0, size, size);
+    artCtx.drawImage(artImg, dx, dy, w, h);
+    const artData = artCtx.getImageData(0, 0, size, size);
+    artPixels = artData.data;
   }
-
-  const artPixels = artData ? artData.data : null;
 
   function sampleArtColor(px, py) {
     if (!artPixels) return darkRgb;
@@ -1052,16 +1049,16 @@ async function renderQrArtFromData(rawData, options, botApi) {
   }
 
   function mixWithThemeDark(sample) {
-    // Weighted blend: keep enough of theme.dark to stay "QR-looking"
-    const mix = 0.55;
+    // Weighted blend: keep modules clearly in the "dark" range.
+    const mix = 0.4;
     let r = darkRgb.r * mix + sample.r * (1 - mix);
     let g = darkRgb.g * mix + sample.g * (1 - mix);
     let b = darkRgb.b * mix + sample.b * (1 - mix);
 
-    // Enforce sufficient contrast vs light background
+    // Enforce strong contrast vs light background.
     const lumBg = getLuminance(lightRgb.r, lightRgb.g, lightRgb.b);
     const lumDot = getLuminance(r, g, b);
-    const maxLum = lumBg * 0.65; // dot must be clearly darker than background
+    const maxLum = Math.min(lumBg * 0.35, 0.35); // keep dots quite dark
 
     if (lumDot > maxLum) {
       const factor = maxLum / (lumDot || 1);
@@ -1076,8 +1073,6 @@ async function renderQrArtFromData(rawData, options, botApi) {
       b: Math.round(Math.max(0, Math.min(255, b))),
     };
   }
-
-  const quietZone = marginModules * scale;
 
   function isInFinder(row, col) {
     const inTopLeft = row <= 6 && col <= 6;
@@ -1107,7 +1102,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
       const dot = mixWithThemeDark(sample);
       ctx.fillStyle = `rgb(${dot.r},${dot.g},${dot.b})`;
 
-      const radius = scale * 0.42;
+      const radius = scale * 0.48;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
