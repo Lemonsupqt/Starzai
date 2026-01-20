@@ -987,9 +987,16 @@ async function renderQrArtFromData(rawData, options, botApi) {
   const QRCodeModule = await import("qrcode");
   const QRCode = QRCodeModule.default || QRCodeModule;
 
-  // Use high ECC inside art mode to tolerate stylization
+  // Use high ECC inside art mode to tolerate stylization.
+  // Force a higher QR version to get a denser grid of modules (Starbucks-style speckle).
   const ecc = (errorCorrectionLevel || "H").toUpperCase();
-  const qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
+  let qr;
+  try {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc, version: 10 });
+  } catch {
+    // Fallback to auto version if data is too large for version 10
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
+  }
 
   const modules = qr.modules;
   const n = modules.size;
@@ -1127,8 +1134,9 @@ async function renderQrArtFromData(rawData, options, botApi) {
     ctx.fill();
   }
 
-  // Draw dots for all dark modules except finder zones
+  // 5) Draw QR dots (skip finder areas)
   ctx.fillStyle = dotColor;
+  const radius = moduleSize * 0.25; // smaller dots, more "speckle" like Starbucks
   for (let row = 0; row < n; row++) {
     for (let col = 0; col < n; col++) {
       if (!modules.get(row, col)) continue;
@@ -1136,17 +1144,17 @@ async function renderQrArtFromData(rawData, options, botApi) {
 
       const x = (col + quiet) * moduleSize;
       const y = (row + quiet) * moduleSize;
+
       const cx = x + moduleSize / 2;
       const cy = y + moduleSize / 2;
 
-      const radius = moduleSize * 0.38;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 
-  // Draw the three finder patterns last so they sit cleanly on top of art
+  // 6) Draw custom finder patterns last so they are clean and solid
   drawFinder(0, 0);
   drawFinder(0, n - 7);
   drawFinder(n - 7, 0);
