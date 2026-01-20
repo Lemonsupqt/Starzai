@@ -16999,7 +16999,7 @@ bot.on("message:photo", async (ctx) => {
   try {
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const response = await fetch(fileUrl);
     const buffer = await response.buffer();
     
@@ -17050,6 +17050,43 @@ bot.on("message:photo", async (ctx) => {
           caption: "📄 Full QR content (copyable text file)",
           reply_to_message_id: ctx.message?.message_id,
         });
+      }
+
+      // Also re-encode the content as a fresh QR using the user's current /qs settings
+      try {
+        const { theme, size, errorCorrectionLevel, margin, logoEnabled } =
+          getUserQrPrefs(u.id);
+
+        const genResult = await generateQR(rawData, {
+          width: size || theme.width,
+          margin,
+          errorCorrectionLevel,
+          dark: theme.dark,
+          light: theme.light,
+        });
+
+        if (genResult.success) {
+          let qrBuffer = genResult.buffer;
+          if (logoEnabled) {
+            qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
+          }
+
+          const themeLabel = `${theme.icon} ${theme.label}`;
+          await ctx.replyWithPhoto(new InputFile(qrBuffer, "qrcode.png"), {
+            caption:
+              `🔁 Re-encoded with your QR settings\n\n` +
+              `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
+              `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(
+                errorCorrectionLevel
+              )}</b>` +
+              (logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : ""),
+            parse_mode: "HTML",
+            reply_to_message_id: ctx.message?.message_id,
+          });
+        }
+      } catch (e) {
+        // If re-encoding fails, just ignore; text + file already sent
+        console.error("QR re-encode after scan failed:", e);
       }
 
       return;
