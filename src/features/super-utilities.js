@@ -1023,6 +1023,9 @@ async function generateQR(text, options = {}) {
 
 /**
  * Scan QR code from image
+ *
+ * Uses jsQR with a second high-contrast fallback pass to better handle
+ * stylized / art-mode QR codes and Telegram-compressed images.
  */
 async function scanQR(imageBuffer) {
   try {
@@ -1031,21 +1034,65 @@ async function scanQR(imageBuffer) {
     
     // Load image
     const img = await loadImage(imageBuffer);
-    const canvas = createCanvas(img.width, img.height);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    
-    // Get image data
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
-    // Scan QR code
-    const code = jsQR(imageData.data, imageData.width, imageData.height);
-    
-    if (code) {
+    const width = img.width;
+    const height = img.height;
+
+    // First pass: raw image
+    let canvas = createCanvas(width, height);
+    let ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, width, height);
+    let imageData = ctx.getImageData(0, 0, width, height);
+
+    let code = jsQR(imageData.data, imageData.width, imageData.height);
+    if (code && code.data) {
       return { success: true, data: code.data };
-    } else {
-      return { success: false, error: 'No QR code found in image' };
     }
+
+    // Second pass: grayscale + adaptive threshold to boost contrast
+    // This helps with dot-style and art-mode QRs that phone scanners can read
+    // but jsQR struggles with due to compression noise.
+    canvas = createCanvas(width, height);
+    ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, width, height);
+    imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+
+    // Compute average luminance
+    let sumLum = 0;
+    const len = data.length / 4;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      sumLum += lum;
+    }
+    const avgLum = sumLum / len;
+    // Slightly bias threshold darker so dots become solid
+    const threshold = avgLum * 0.95;
+
+    // Apply threshold
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const v = lum > threshold ? 255 : 0;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    const highContrast = ctx.getImageData(0, 0, width, height);
+    code = jsQR(highContrast.data, highContrast.width, highContrast.height);
+
+    if (code && code.data) {
+      return { success: true, data: code.data };
+    }
+
+    return { success: false, error: 'No QR code found in image' };
   } catch (error) {
     return { success: false, error: error.message };
   }
