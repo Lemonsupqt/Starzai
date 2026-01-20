@@ -1012,10 +1012,10 @@ function getLuminance(r, g, b) {
   return 0.2126 * R + 0.7152 * G + 0.0722 * B;
 }
 
-// Core art renderer: KFC-style full-image QR:
-// - full illustration drawn underneath
-// - dark semi-transparent dots for modules
-// - custom rounded finder squares
+// Core art renderer v1: safe overlay QR
+// - circular illustration background
+// - light masking in quiet zone + modules area
+// - themed dark dots on top (good contrast, fast + reliable)
 async function renderQrArtFromData(rawData, options, botApi) {
   const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
 
@@ -1023,22 +1023,21 @@ async function renderQrArtFromData(rawData, options, botApi) {
   const QRCodeModule = await import("qrcode");
   const QRCode = QRCodeModule.default || QRCodeModule;
 
-  // Use high ECC inside art mode to tolerate stylization.
-  // Force a higher QR version to get a denser grid of modules (Starbucks-style speckle).
   const ecc = (errorCorrectionLevel || "H").toUpperCase();
   let qr;
   try {
     qr = QRCode.create(rawData, { errorCorrectionLevel: ecc, version: 10 });
   } catch {
-    // Fallback to auto version if data is too large for version 10
     qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
   }
 
   const modules = qr.modules;
   const n = modules.size;
 
-  // Quiet zone in module units
-  const quiet = typeof margin === "number" && Number.isFinite(margin) ? Math.max(0, margin) : 4;
+  const quiet =
+    typeof margin === "number" && Number.isFinite(margin)
+      ? Math.max(0, margin)
+      : 4;
   const totalModules = n + quiet * 2;
 
   const baseSize =
@@ -1058,7 +1057,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
   ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
   ctx.fillRect(0, 0, size, size);
 
-  // Draw full-canvas art with circular mask (Starbucks/KFC-style framing)
+  // Draw full-canvas art with circular mask
   const artBuffer =
     (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
   if (artBuffer) {
@@ -1089,32 +1088,23 @@ async function renderQrArtFromData(rawData, options, botApi) {
   ctx.fillRect(0, 0, size, size);
   ctx.restore();
 
-  // Targeted white mask:
-  // - Quiet zone ring: strong mask for clean margins
-  // - Inner modules area: lighter mask so artwork stays vivid
+  // Quiet zone + gentle modules mask
   const quietPx = quiet * moduleSize;
   const innerSize = n * moduleSize;
 
-  // Quiet zone (top, bottom, left, right)
   ctx.save();
   ctx.fillStyle = "rgba(255,255,255,0.85)";
-  // Top
   ctx.fillRect(0, 0, size, quietPx);
-  // Bottom
   ctx.fillRect(0, size - quietPx, size, quietPx);
-  // Left
   ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
-  // Right
   ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
   ctx.restore();
 
-  // Modules area: gentler mask so art remains visible
   ctx.save();
   ctx.fillStyle = "rgba(255,255,255,0.2)";
   ctx.fillRect(quietPx, quietPx, innerSize, innerSize);
   ctx.restore();
 
-  // Dot color: strong themed dark with transparency so illustration is still visible
   const dotColor = `rgba(${darkRgb.r},${darkRgb.g},${darkRgb.b},0.9)`;
 
   function inFinder(row, col) {
@@ -1124,7 +1114,6 @@ async function renderQrArtFromData(rawData, options, botApi) {
     return tl || tr || bl;
   }
 
-  // Helper for rounded rectangles (finder patterns)
   function roundedRect(x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -1140,12 +1129,10 @@ async function renderQrArtFromData(rawData, options, botApi) {
     const y0 = (topLeftRow + quiet) * moduleSize;
     const outer = 7 * moduleSize;
 
-    // Outer dark rounded square
     ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
     roundedRect(x0, y0, outer, outer, moduleSize * 1.4);
     ctx.fill();
 
-    // Inner light rounded square
     const pad1 = 1 * moduleSize;
     ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
     roundedRect(
@@ -1157,7 +1144,6 @@ async function renderQrArtFromData(rawData, options, botApi) {
     );
     ctx.fill();
 
-    // Center dark rounded square
     const pad2 = 2 * moduleSize;
     ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
     roundedRect(
@@ -1170,9 +1156,8 @@ async function renderQrArtFromData(rawData, options, botApi) {
     ctx.fill();
   }
 
-  // 5) Draw QR dots (skip finder areas)
   ctx.fillStyle = dotColor;
-  const radius = moduleSize * 0.25; // smaller dots, more "speckle" like Starbucks
+  const radius = moduleSize * 0.25;
   for (let row = 0; row < n; row++) {
     for (let col = 0; col < n; col++) {
       if (!modules.get(row, col)) continue;
@@ -1180,7 +1165,6 @@ async function renderQrArtFromData(rawData, options, botApi) {
 
       const x = (col + quiet) * moduleSize;
       const y = (row + quiet) * moduleSize;
-
       const cx = x + moduleSize / 2;
       const cy = y + moduleSize / 2;
 
@@ -1190,7 +1174,207 @@ async function renderQrArtFromData(rawData, options, botApi) {
     }
   }
 
-  // 6) Draw custom finder patterns last so they are clean and solid
+  drawFinder(0, 0);
+  drawFinder(0, n - 7);
+  drawFinder(n - 7, 0);
+
+  return canvas.toBuffer("image/png");
+}
+
+// Core art renderer v2: more image-driven, logo-style look
+// - uses art colors for dots
+// - minimal masking in module area, stronger only in quiet zone
+// - still keeps high contrast for scanners
+async function renderQrArtV2FromData(rawData, options, botApi) {
+  const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
+
+  const { createCanvas, loadImage } = await import("canvas");
+  const QRCodeModule = await import("qrcode");
+  const QRCode = QRCodeModule.default || QRCodeModule;
+
+  const ecc = (errorCorrectionLevel || "H").toUpperCase();
+  let qr;
+  try {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc, version: 10 });
+  } catch {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
+  }
+
+  const modules = qr.modules;
+  const n = modules.size;
+
+  const quiet =
+    typeof margin === "number" && Number.isFinite(margin)
+      ? Math.max(0, margin)
+      : 4;
+  const totalModules = n + quiet * 2;
+
+  const baseSize =
+    (typeof targetSize === "number" && targetSize > 0
+      ? targetSize
+      : theme?.width) || 2048;
+
+  const moduleSize = Math.floor(baseSize / totalModules);
+  const size = moduleSize * totalModules;
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+
+  const darkRgb = hexToRgb(theme?.dark || "#000000");
+  const lightRgb = hexToRgb(theme?.light || "#ffffff");
+
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.fillRect(0, 0, size, size);
+
+  const artBuffer =
+    (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
+  if (artBuffer) {
+    const artImg = await loadImage(artBuffer);
+    ctx.save();
+    const radius = size * 0.5;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, radius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.globalAlpha = 0.95;
+    const s = Math.max(size / artImg.width, size / artImg.height);
+    const w = artImg.width * s;
+    const h = artImg.height * s;
+    const dx = (size - w) / 2;
+    const dy = (size - h) / 2;
+    ctx.drawImage(artImg, dx, dy, w, h);
+    ctx.restore();
+  }
+
+  // Very light global wash so art stays vivid
+  ctx.save();
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.globalAlpha = 0.08;
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  // Quiet zone: strong mask only around edges
+  const quietPx = quiet * moduleSize;
+  const innerSize = n * moduleSize;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillRect(0, 0, size, quietPx);
+  ctx.fillRect(0, size - quietPx, size, quietPx);
+  ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
+  ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
+  ctx.restore();
+
+  // Sample art colors from the current canvas
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const pixels = imgData.data;
+
+  function sampleColor(px, py) {
+    const x = Math.max(0, Math.min(size - 1, Math.round(px)));
+    const y = Math.max(0, Math.min(size - 1, Math.round(py)));
+    const idx = (y * size + x) * 4;
+    return {
+      r: pixels[idx],
+      g: pixels[idx + 1],
+      b: pixels[idx + 2],
+    };
+  }
+
+  const bgLum = getLuminance(lightRgb.r, lightRgb.g, lightRgb.b);
+  const maxDotLum = Math.min(bgLum * 0.55, 0.55);
+
+  function mixWithThemeDark(sample) {
+    const mix = 0.45;
+    let r = darkRgb.r * mix + sample.r * (1 - mix);
+    let g = darkRgb.g * mix + sample.g * (1 - mix);
+    let b = darkRgb.b * mix + sample.b * (1 - mix);
+
+    const lum = getLuminance(r, g, b);
+    if (lum > maxDotLum) {
+      const factor = maxDotLum / (lum || 1);
+      r *= factor;
+      g *= factor;
+      b *= factor;
+    }
+
+    return {
+      r: Math.round(Math.max(0, Math.min(255, r))),
+      g: Math.round(Math.max(0, Math.min(255, g))),
+      b: Math.round(Math.max(0, Math.min(255, b))),
+    };
+  }
+
+  function inFinder(row, col) {
+    const tl = row < 7 && col < 7;
+    const tr = row < 7 && col >= n - 7;
+    const bl = row >= n - 7 && col < 7;
+    return tl || tr || bl;
+  }
+
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawFinder(topLeftRow, topLeftCol) {
+    const x0 = (topLeftCol + quiet) * moduleSize;
+    const y0 = (topLeftRow + quiet) * moduleSize;
+    const outer = 7 * moduleSize;
+
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(x0, y0, outer, outer, moduleSize * 1.4);
+    ctx.fill();
+
+    const pad1 = 1 * moduleSize;
+    ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+    roundedRect(
+      x0 + pad1,
+      y0 + pad1,
+      outer - 2 * pad1,
+      outer - 2 * pad1,
+      moduleSize * 1.1
+    );
+    ctx.fill();
+
+    const pad2 = 2 * moduleSize;
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(
+      x0 + pad2,
+      y0 + pad2,
+      outer - 2 * pad2,
+      outer - 2 * pad2,
+      moduleSize * 0.9
+    );
+    ctx.fill();
+  }
+
+  // Draw tinted dots using sampled art colors
+  const dotRadius = moduleSize * 0.24;
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      if (!modules.get(row, col)) continue;
+      if (inFinder(row, col)) continue;
+
+      const x = (col + quiet) * moduleSize;
+      const y = (row + quiet) * moduleSize;
+      const cx = x + moduleSize / 2;
+      const cy = y + moduleSize / 2;
+
+      const sample = sampleColor(cx, cy);
+      const dot = mixWithThemeDark(sample);
+
+      ctx.fillStyle = `rgb(${dot.r},${dot.g},${dot.b})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   drawFinder(0, 0);
   drawFinder(0, n - 7);
   drawFinder(n - 7, 0);
@@ -1233,8 +1417,8 @@ async function renderQrArtFallback(qrBuffer, theme, botApi) {
 }
 
 // Art mode entry point used by existing call sites that only have a QR buffer.
-// We scan the QR to recover its data, then re-render it with the dot-style art renderer.
-async function renderQrArt(qrBuffer, theme, botApi) {
+// We scan the QR to recover its data, then re-render it with the chosen art renderer.
+async function renderQrArt(qrBuffer, theme, botApi, artStyle = "v1") {
   try {
     const qrResult = await scanQR(qrBuffer);
     if (!qrResult.success || !qrResult.data) {
@@ -1245,17 +1429,19 @@ async function renderQrArt(qrBuffer, theme, botApi) {
     const qrImg = await loadImage(qrBuffer);
     const size = qrImg.width || theme?.width || 2048;
 
-    return await renderQrArtFromData(
-      qrResult.data,
-      {
-        theme,
-        size,
-        // We don't know the original margin / EC here; choose a safer default for art.
-        margin: 4,
-        errorCorrectionLevel: "Q",
-      },
-      botApi
-    );
+    const options = {
+      theme,
+      size,
+      // We don't know the original margin / EC here; choose a safer default for art.
+      margin: 4,
+      errorCorrectionLevel: "Q",
+    };
+
+    if (artStyle === "v2") {
+      return await renderQrArtV2FromData(qrResult.data, options, botApi);
+    }
+
+    return await renderQrArtFromData(qrResult.data, options, botApi);
   } catch (e) {
     console.error("QR art render error:", e);
     return await renderQrArtFallback(qrBuffer, theme, botApi);
@@ -14314,19 +14500,19 @@ bot.command("qr", async (ctx) => {
   let qrBuffer;
 
   if (artStyle === "v1" || artStyle === "v2") {
-    // Direct art-mode render: dot-style / QArt-style QR over art/background
+    // Direct art-mode render: v1 (safe overlay) or v2 (more image-driven)
     try {
-      // For now art v2 shares the same renderer; solver-backed QArt can be plugged in here
-      qrBuffer = await renderQrArtFromData(
-        text,
-        {
-          theme,
-          size: size || theme.width,
-          margin,
-          errorCorrectionLevel: effectiveLevel,
-        },
-        ctx.api
-      );
+      const options = {
+        theme,
+        size: size || theme.width,
+        margin,
+        errorCorrectionLevel: effectiveLevel,
+      };
+      if (artStyle === "v2") {
+        qrBuffer = await renderQrArtV2FromData(text, options, ctx.api);
+      } else {
+        qrBuffer = await renderQrArtFromData(text, options, ctx.api);
+      }
     } catch (e) {
       console.error("Art mode generation failed, falling back to standard QR:", e);
       const result = await generateQR(text, {
@@ -17826,7 +18012,7 @@ bot.on("message:photo", async (ctx) => {
         if (genResult.success) {
           let qrBuffer = genResult.buffer;
           if (artStyle === "v1" || artStyle === "v2") {
-            qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api);
+            qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api, artStyle);
           } else if (logoEnabled) {
             qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
           }
