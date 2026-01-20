@@ -999,11 +999,17 @@ async function getTrailers(id, type = 'movie') {
  */
 async function generateQR(text, options = {}) {
   try {
+    // Optimized settings for large data (up to ~4,000 characters)
+    // - PNG format for lossless quality
+    // - 4096x4096 ULTRA-HIGH resolution for maximum scannability
+    // - Error correction Level L (Low) for less density with large data
+    // - Larger margin for better scanning
     const qrBuffer = await QRCode.toBuffer(text, {
-      errorCorrectionLevel: 'M',
-      type: 'png',
-      margin: 2,
-      width: options.width || 300,
+      errorCorrectionLevel: options.errorCorrectionLevel || 'L', // Low for large data
+      type: 'png', // Lossless format
+      margin: options.margin || 4, // Larger margin for better scanning
+      width: options.width || 4096, // Ultra-high resolution (4096x4096) for maximum scannability
+      quality: 1.0, // Maximum quality
       color: {
         dark: options.dark || '#000000',
         light: options.light || '#ffffff'
