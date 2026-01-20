@@ -16456,9 +16456,11 @@ bot.on("message:photo", async (ctx) => {
     
     const qrResult = await scanQR(buffer);
     if (qrResult.success) {
+      const dataLength = qrResult.data.length;
       return ctx.reply(
-        `📱 <b>QR Code Detected!</b>\n\n` +
-        `<code>${escapeHTML(qrResult.data)}</code>`,
+        `📱 <b>QR Code Scanned Successfully!</b>\n\n` +
+        `📊 <b>Data Length:</b> ${dataLength} characters\n\n` +
+        `📄 <b>Content:</b>\n<code>${escapeHTML(qrResult.data)}</code>`,
         { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
       );
     }
