@@ -694,7 +694,7 @@ function getEffectiveQrErrorCorrection(level, needsHighEc) {
   return order[effectiveIdx];
 }
 
-// Fetch QR logo buffer from Telegram (owner-set)
+// Fetch QR logo buffer from Telegram (center logo)
 async function getQrLogoBuffer(botApi) {
   if (!prefsDb.qrLogo || !prefsDb.qrLogo.fileId) {
     return null;
@@ -706,6 +706,22 @@ async function getQrLogoBuffer(botApi) {
     return await response.buffer();
   } catch (e) {
     console.error("QR logo fetch error:", e);
+    return null;
+  }
+}
+
+// Fetch QR art background buffer from Telegram (full-canvas art)
+async function getQrArtBuffer(botApi) {
+  if (!prefsDb.qrArt || !prefsDb.qrArt.fileId) {
+    return null;
+  }
+  try {
+    const file = await botApi.getFile(prefsDb.qrArt.fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    return await response.buffer();
+  } catch (e) {
+    console.error("QR art fetch error:", e);
     return null;
   }
 }
@@ -789,124 +805,40 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
   }
 }
 
-// QArt-inspired full-canvas art rendering: blend QR modules with logo image or gradient
-// but keep a very strong binary contrast so scanners (including jsQR) can still read it.
+// Art mode: draw the QR normally, then place an art image BEHIND it.
+// This keeps the QR modules unchanged, so scanners (jsQR, phone cameras) still see a standard code.
 async function renderQrArt(qrBuffer, theme, botApi) {
   try {
+    const artBuffer = (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
+    if (!artBuffer) {
+      // No custom art set; just return the original QR
+      return qrBuffer;
+    }
+
     const { createCanvas, loadImage } = await import("canvas");
-
     const qrImg = await loadImage(qrBuffer);
+    const artImg = await loadImage(artBuffer);
+
     const size = qrImg.width;
+    const canvas = createCanvas(size, size);
+    const ctx = canvas.getContext("2d");
 
-    // Canvas with QR mask
-    const qrCanvas = createCanvas(size, size);
-    const qrCtx = qrCanvas.getContext("2d");
-    qrCtx.drawImage(qrImg, 0, 0, size, size);
-    const qrData = qrCtx.getImageData(0, 0, size, size);
-    const qrPixels = qrData.data;
+    // Draw the QR code exactly as generated (preserves all modules, finders, quiet zone)
+    ctx.drawImage(qrImg, 0, 0, size, size);
 
-    // Canvas with background art
-    const artCanvas = createCanvas(size, size);
-    const artCtx = artCanvas.getContext("2d");
+    // Draw the art behind the QR using destination-over.
+    // Dark modules stay intact; art shows through in light areas and around the QR.
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-over";
+    const scale = Math.max(size / artImg.width, size / artImg.height);
+    const drawW = artImg.width * scale;
+    const drawH = artImg.height * scale;
+    const dx = (size - drawW) / 2;
+    const dy = (size - drawH) / 2;
+    ctx.drawImage(artImg, dx, dy, drawW, drawH);
+    ctx.restore();
 
-    // Try to use QR logo as full-canvas art; fallback to gradient
-    const logoBuffer = await getQrLogoBuffer(botApi);
-    if (logoBuffer) {
-      const artImg = await loadImage(logoBuffer);
-      const scale = Math.max(size / artImg.width, size / artImg.height);
-      const drawW = artImg.width * scale;
-      const drawH = artImg.height * scale;
-      const dx = (size - drawW) / 2;
-      const dy = (size - drawH) / 2;
-      artCtx.drawImage(artImg, dx, dy, drawW, drawH);
-    } else {
-      const grad = artCtx.createLinearGradient(0, 0, size, size);
-      grad.addColorStop(0, theme.light || "#ffffff");
-      grad.addColorStop(1, theme.dark || "#000000");
-      artCtx.fillStyle = grad;
-      artCtx.fillRect(0, 0, size, size);
-    }
-
-    const artData = artCtx.getImageData(0, 0, size, size);
-    const artPixels = artData.data;
-
-    function luminance(r, g, b) {
-      return 0.299 * r + 0.587 * g + 0.114 * b;
-    }
-
-    function hexToRgb(hex) {
-      if (!hex) return { r: 0, g: 0, b: 0 };
-      const m = hex.replace("#", "").match(/^([0-9a-fA-F]{6})$/);
-      if (!m) return { r: 0, g: 0, b: 0 };
-      const intVal = parseInt(m[1], 16);
-      return {
-        r: (intVal >> 16) & 0xff,
-        g: (intVal >> 8) & 0xff,
-        b: intVal & 0xff,
-      };
-    }
-
-    const themeDark = hexToRgb(theme.dark || "#000000");
-    const themeLight = hexToRgb(theme.light || "#ffffff");
-
-    const quietBorder = Math.floor(size * 0.06); // enforce a clean quiet zone near edges
-
-    // Blend art with a strong binary QR mask
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const idx = (y * size + x) * 4;
-
-        // Enforce quiet zone
-        if (
-          x < quietBorder ||
-          y < quietBorder ||
-          x >= size - quietBorder ||
-          y >= size - quietBorder
-        ) {
-          artPixels[idx] = themeLight.r;
-          artPixels[idx + 1] = themeLight.g;
-          artPixels[idx + 2] = themeLight.b;
-          artPixels[idx + 3] = 255;
-          continue;
-        }
-
-        const qrR = qrPixels[idx];
-        const qrG = qrPixels[idx + 1];
-        const qrB = qrPixels[idx + 2];
-        const qrLum = luminance(qrR, qrG, qrB);
-
-        const isDarkModule = qrLum < 128; // stronger binary separation
-
-        const artR = artPixels[idx];
-        const artG = artPixels[idx + 1];
-        const artB = artPixels[idx + 2];
-        const a = artPixels[idx + 3];
-
-        let r, g, b;
-
-        if (isDarkModule) {
-          // Dark modules: mostly theme.dark with a hint of art color for texture
-          const mix = 0.18;
-          r = themeDark.r * (1 - mix) + artR * mix;
-          g = themeDark.g * (1 - mix) + artG * mix;
-          b = themeDark.b * (1 - mix) + artB * mix;
-        } else {
-          // Light modules: mostly theme.light but pulled slightly toward the art
-          const mix = 0.55;
-          r = themeLight.r * (1 - mix) + artR * mix;
-          g = themeLight.g * (1 - mix) + artG * mix;
-          b = themeLight.b * (1 - mix) + artB * mix;
-        }
-
-        artPixels[idx] = r;
-        artPixels[idx + 1] = g;
-        artPixels[idx + 2] = b;
-        artPixels[idx + 3] = a;
-      }
-    }
-
-    artCtx.putImageData(artData, 0, 0);
-    return artCanvas.toBuffer("image/png");
+    return canvas.toBuffer("image/png");
   } catch (e) {
     console.error("QR art render error:", e);
     return qrBuffer;
@@ -12156,6 +12088,59 @@ bot.command("qrlogo", async (ctx) => {
       reply_to_message_id: msg?.message_id,
     });
   }
+});
+
+// /qa - set global QR art background (owner only)
+bot.command("qa", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const photos = replied?.photo;
+
+  if (!photos || photos.length === 0) {
+    return ctx.reply(
+      "🎨 Reply to a photo with <code>/qa</code> to set it as the global QR art background.\n\n" +
+        "This image will be used as the full-canvas art in Art mode (see <code>/qs</code>). " +
+        "The underlying QR pattern stays intact for reliable scanning.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  try {
+    const largest = photos[photos.length - 1];
+    prefsDb.qrArt = {
+      fileId: largest.file_id,
+      updatedAt: new Date().toISOString(),
+      setBy: String(ctx.from?.id || ""),
+    };
+    savePrefs();
+
+    await ctx.reply(
+      "✅ QR art background updated.\n\n" +
+        "When Art mode is enabled in <code>/qs</code>, this image will appear behind your QR codes.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  } catch (e) {
+    console.error("QR art update error:", e);
+    await ctx.reply("❌ Failed to set QR art background. Please try again.", {
+      reply_to_message_id: msg?.message_id,
+    });
+  }
+});
+
+// /qaclear - clear QR art background (owner only)
+bot.command("qaclear", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  delete prefsDb.qrArt;
+  savePrefs();
+
+  await ctx.reply(
+    "🧹 QR art background cleared.\n\n" +
+      "Art mode will now fall back to a simple themed background until you set a new image with <code>/qa</code>.",
+    { parse_mode: "HTML", reply_to_message_id: ctx.message?.message_id }
+  );
 });
 
 // Dev Status callback - detailed API diagnostics (owner only)
