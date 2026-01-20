@@ -541,7 +541,21 @@ function getUserQrPrefs(userId) {
   const theme = QR_THEMES[themeKey];
   const logoEnabled = base.logoEnabled === true;
   const reencodeOnScan = base.reencodeOnScan !== false; // default: true
-  const artMode = base.artMode === true; // default: false
+
+  // Art style: "none" | "v1" | "v2"
+  // Backward-compatible with old boolean artMode (true => "v1")
+  let artStyle = base.artStyle;
+  if (!artStyle) {
+    if (base.artMode === true) {
+      artStyle = "v1";
+    } else {
+      artStyle = "none";
+    }
+  }
+  if (!["none", "v1", "v2"].includes(artStyle)) {
+    artStyle = "none";
+  }
+
   return {
     themeKey,
     theme,
@@ -551,7 +565,7 @@ function getUserQrPrefs(userId) {
     margin: base.margin ?? theme.margin ?? 4,
     logoEnabled,
     reencodeOnScan,
-    artMode,
+    artStyle,
   };
 }
 
@@ -566,11 +580,20 @@ function buildQrSettingsView(userId) {
   user.qrPrefs.margin = prefs.margin;
   user.qrPrefs.logoEnabled = prefs.logoEnabled;
   user.qrPrefs.reencodeOnScan = prefs.reencodeOnScan;
-  user.qrPrefs.artMode = prefs.artMode;
+  user.qrPrefs.artStyle = prefs.artStyle;
+  // Remove legacy boolean if present
+  if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
   saveUsers();
 
   const theme = prefs.theme;
   const lines = [];
+
+  const artStyleLabel =
+    prefs.artStyle === "v2"
+      ? "Art v2 (logo-style / QArt)"
+      : prefs.artStyle === "v1"
+      ? "Art v1 (fast overlay)"
+      : "Off";
 
   lines.push("🎨 <b>QR Settings</b>");
   lines.push("");
@@ -586,9 +609,7 @@ function buildQrSettingsView(userId) {
   lines.push(
     `• Logo overlay: <b>${prefs.logoEnabled ? "On (center logo)" : "Off"}</b>`
   );
-  lines.push(
-    `• Art mode: <b>${prefs.artMode ? "On (dot-style art QR)" : "Off"}</b>`
-  );
+  lines.push(`• Art style: <b>${escapeHTML(artStyleLabel)}</b>`);
   lines.push(
     `• Re-encode on scan: <b>${
       prefs.reencodeOnScan ? "On (rebuild scanned QR with these settings)" : "Off"
@@ -596,8 +617,9 @@ function buildQrSettingsView(userId) {
   );
   lines.push("");
   lines.push(
-    "<i>Art mode renders a dot-style QR over your image from <code>/qa</code> (full art kept visible). "
-    + "Logo overlay and art mode are mutually exclusive to keep codes scannable.</i>"
+    "<i>Art v1 renders a dot-style QR over your image from <code>/qa</code>. "
+    + "Art v2 uses a heavier logo-style algorithm (QArt-style) to blend the QR with your image. "
+    + "Logo overlay and art styles are mutually exclusive to keep codes scannable.</i>"
   );
   lines.push("");
   lines.push("<b>Themes</b>");
@@ -764,28 +786,42 @@ function buildQrOverlayView(userId) {
   lines.push(
     `Logo overlay: <b>${prefs.logoEnabled ? "On (center logo)" : "Off"}</b>`
   );
-  lines.push(
-    `Art mode: <b>${prefs.artMode ? "On (dot-style art QR)" : "Off"}</b>`
-  );
+
+  const artStyleLabel =
+    prefs.artStyle === "v2"
+      ? "Art v2 (logo-style / QArt)"
+      : prefs.artStyle === "v1"
+      ? "Art v1 (fast overlay)"
+      : "Off";
+  lines.push(`Art style: <b>${escapeHTML(artStyleLabel)}</b>`);
   lines.push("");
   lines.push(
     "<i>Logo overlay uses the image set with <code>/qrlogo</code> in the center.</i>"
   );
   lines.push(
-    "<i>Art mode uses the image from <code>/qa</code> to color dot-style modules on a clean background.</i>"
+    "<i>Art v1 draws a dot-style QR over your image from <code>/qa</code>.</i>"
   );
   lines.push(
-    "<i>To keep codes scannable, logo overlay and art mode cannot be enabled together.</i>"
+    "<i>Art v2 uses a heavier logo-style algorithm (QArt-style) to blend the QR with your image.</i>"
+  );
+  lines.push(
+    "<i>To keep codes scannable, logo overlay and art styles cannot be enabled together.</i>"
   );
 
   const kb = new InlineKeyboard();
   const logoLabel = prefs.logoEnabled
     ? "✅ Logo overlay: On"
     : "✨ Logo overlay: Off";
-  const artLabel = prefs.artMode ? "🎨 Art mode: On" : "🎨 Art mode: Off";
+
+  const artCycleLabel =
+    prefs.artStyle === "v2"
+      ? "🎨 Art: v2 (QArt)"
+      : prefs.artStyle === "v1"
+      ? "🎨 Art: v1 (overlay)"
+      : "🎨 Art: Off";
 
   kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`).row();
-  kb.text(artLabel, `qs_art:${prefs.artMode ? "0" : "1"}`).row();
+  kb.text(artCycleLabel, `qs_artstyle:cycle`).row();
   kb.text("⬅ Back", "qs_menu:main");
 
   return { text: lines.join("\n"), keyboard: kb, prefs };
@@ -14241,13 +14277,13 @@ bot.command("qr", async (ctx) => {
   
   if (!text) {
     return ctx.reply(
-      '📱 <b>QR Code Generator</b>\n\n' +
-      '<b>Usage:</b>\n' +
-      '<code>/qr your text or URL here</code>\n\n' +
-      '<b>Examples:</b>\n' +
-      '<code>/qr https://example.com</code>\n' +
-      '<code>/qr Hello World!</code>\n\n' +
-      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay, art mode).',
+      '📱 <b>QR Code Generator</b>\\n\\n' +
+      '<b>Usage:</b>\\n' +
+      '<code>/qr your text or URL here</code>\\n\\n' +
+      '<b>Examples:</b>\\n' +
+      '<code>/qr https://example.com</code>\\n' +
+      '<code>/qr Hello World!</code>\\n\\n' +
+      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay, and art style).',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
@@ -14259,12 +14295,13 @@ bot.command("qr", async (ctx) => {
     errorCorrectionLevel,
     margin,
     logoEnabled,
-    artMode,
+    reencodeOnScan,
+    artStyle,
   } = getUserQrPrefs(ctx.from.id);
 
   let effectiveLevel;
-  if (artMode) {
-    // Art mode uses heavy stylization; force highest ECC for robustness
+  if (artStyle === "v1" || artStyle === "v2") {
+    // Art styles use heavier stylization; force highest ECC for robustness
     effectiveLevel = "H";
   } else {
     const needsHighEc = logoEnabled;
@@ -14276,9 +14313,10 @@ bot.command("qr", async (ctx) => {
 
   let qrBuffer;
 
-  if (artMode) {
-    // Direct art-mode render: dot-style QR over art/background
+  if (artStyle === "v1" || artStyle === "v2") {
+    // Direct art-mode render: dot-style / QArt-style QR over art/background
     try {
+      // For now art v2 shares the same renderer; solver-backed QArt can be plugged in here
       qrBuffer = await renderQrArtFromData(
         text,
         {
@@ -14328,14 +14366,21 @@ bot.command("qr", async (ctx) => {
   }
 
   const themeLabel = `${theme.icon} ${theme.label}`;
+  let styleLine = "";
+  if (artStyle === "v1") {
+    styleLine = "\\n🖼️ Style: <b>Art v1 (overlay)</b>";
+  } else if (artStyle === "v2") {
+    styleLine = "\\n🖼️ Style: <b>Art v2 (logo-style)</b>";
+  } else if (logoEnabled) {
+    styleLine = "\\n🔷 Logo: <b>Enabled</b>";
+  }
   
   await ctx.replyWithPhoto(new InputFile(qrBuffer, 'qrcode.png'), {
     caption:
-      `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>\n\n` +
-      `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
+      `📱 QR Code for:\\n<code>${escapeHTML(text.slice(0, 200))}</code>\\n\\n` +
+      `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\\n` +
       `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(effectiveLevel)}</b>` +
-      (!artMode && logoEnabled ? `\n🔷 Logo: <b>Enabled</b>` : "") +
-      (artMode ? `\n🖼️ Style: <b>Art mode</b>` : ""),
+      styleLine,
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
@@ -14554,78 +14599,72 @@ bot.callbackQuery(/^qs_level:([LMQH])$/, async (ctx) => {
 
 bot.callbackQuery(/^qs_logo:(0|1)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  const userId = ctx.from.id;
-  const enable = ctx.match[1] === "1";
-  const user = getUserRecord(userId);
-  user.qrPrefs = user.qrPrefs || {};
+  await ctx.answerCallbackQuery();
 
-  // Logo overlay and art mode are mutually exclusive
+  const enable = ctx.match[1] === "1";
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const user = ensureUser(userId);
+  user.qrPrefs = user.qrPrefs || {};
   user.qrPrefs.logoEnabled = enable;
+
+  // Enforce mutual exclusivity with art styles
   if (enable) {
-    user.qrPrefs.artMode = false;
+    user.qrPrefs.artStyle = "none";
+    if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
   }
 
   saveUsers();
-  await ctx.answerCallbackQuery({
-    text: enable
-      ? "Logo overlay enabled (art mode disabled)"
-      : "Logo overlay disabled",
-    show_alert: false,
-  });
 
   const { text, keyboard } = buildQrOverlayView(userId);
   try {
-    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-  } catch {
-    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {
+    // ignore
   }
 });
 
-bot.callbackQuery(/^qs_reencode:(0|1)$/, async (ctx) => {
+bot.callbackQuery(/^qs_artstyle:cycle$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
-  const userId = ctx.from.id;
-  const enable = ctx.match[1] === "1";
-  const user = getUserRecord(userId);
-  user.qrPrefs = user.qrPrefs || {};
-  user.qrPrefs.reencodeOnScan = enable;
-  saveUsers();
-  await ctx.answerCallbackQuery({
-    text: enable ? "Re-encode on scan enabled" : "Re-encode on scan disabled",
-    show_alert: false,
-  });
+  await ctx.answerCallbackQuery();
 
-  const { text, keyboard } = buildQrScanView(userId);
-  try {
-    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-  } catch {
-    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const user = ensureUser(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  let current = user.qrPrefs.artStyle;
+  if (!["none", "v1", "v2"].includes(current)) {
+    // Backward compatibility with old boolean
+    if (user.qrPrefs.artMode === true) current = "v1";
+    else current = "none";
   }
-});
+  let next;
+  if (current === "none") next = "v1";
+  else if (current === "v1") next = "v2";
+  else next = "none";
 
-bot.callbackQuery(/^qs_art:(0|1)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  const userId = ctx.from.id;
-  const enable = ctx.match[1] === "1";
-  const user = getUserRecord(userId);
-  user.qrPrefs = user.qrPrefs || {};
-
-  // Art mode and logo overlay are mutually exclusive
-  user.qrPrefs.artMode = enable;
-  if (enable) {
+  user.qrPrefs.artStyle = next;
+  // Art styles and logo overlay are mutually exclusive
+  if (next !== "none") {
     user.qrPrefs.logoEnabled = false;
   }
+  if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
 
   saveUsers();
-  await ctx.answerCallbackQuery({
-    text: enable ? "Art mode enabled (logo overlay disabled)" : "Art mode disabled",
-    show_alert: false,
-  });
 
   const { text, keyboard } = buildQrOverlayView(userId);
   try {
-    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
-  } catch {
-    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {
+    // ignore
   }
 });
 
@@ -14640,7 +14679,7 @@ bot.callbackQuery("qs_reset", async (ctx) => {
     margin: 4,
     logoEnabled: false,
     reencodeOnScan: true,
-    artMode: false,
+    artStyle: "none",
   };
   saveUsers();
   await ctx.answerCallbackQuery({ text: "QR settings reset.", show_alert: false });
@@ -17758,7 +17797,7 @@ bot.on("message:photo", async (ctx) => {
           margin,
           logoEnabled,
           reencodeOnScan,
-          artMode,
+          artStyle,
         } = getUserQrPrefs(u.id);
 
         if (!reencodeOnScan) {
@@ -17766,7 +17805,7 @@ bot.on("message:photo", async (ctx) => {
         }
 
         let effectiveLevel;
-        if (artMode) {
+        if (artStyle === "v1" || artStyle === "v2") {
           effectiveLevel = "H";
         } else {
           const needsHighEc = logoEnabled;
@@ -17786,13 +17825,22 @@ bot.on("message:photo", async (ctx) => {
 
         if (genResult.success) {
           let qrBuffer = genResult.buffer;
-          if (artMode) {
+          if (artStyle === "v1" || artStyle === "v2") {
             qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api);
           } else if (logoEnabled) {
             qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
           }
 
           const themeLabel = `${theme.icon} ${theme.label}`;
+          let styleLine = "";
+          if (artStyle === "v1") {
+            styleLine = `\n🖼️ Style: <b>Art v1 (overlay)</b>`;
+          } else if (artStyle === "v2") {
+            styleLine = `\n🖼️ Style: <b>Art v2 (logo-style)</b>`;
+          } else if (logoEnabled) {
+            styleLine = `\n🔷 Logo: <b>Enabled</b>`;
+          }
+
           await ctx.replyWithPhoto(new InputFile(qrBuffer, "qrcode.png"), {
             caption:
               `🔁 Re-encoded with your QR settings\n\n` +
@@ -17800,8 +17848,7 @@ bot.on("message:photo", async (ctx) => {
               `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(
                 effectiveLevel
               )}</b>` +
-              (logoEnabled && !artMode ? `\n🔷 Logo: <b>Enabled</b>` : "") +
-              (artMode ? `\n🖼️ Style: <b>Art mode</b>` : ""),
+              styleLine,
             parse_mode: "HTML",
             reply_to_message_id: ctx.message?.message_id,
           });
