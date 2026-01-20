@@ -16457,14 +16457,52 @@ bot.on("message:photo", async (ctx) => {
     const buffer = await response.buffer();
     
     const qrResult = await scanQR(buffer);
-    if (qrResult.success) {
-      const dataLength = qrResult.data.length;
-      return ctx.reply(
+    if (qrResult.success && typeof qrResult.data === "string") {
+      const rawData = qrResult.data;
+      const dataLength = rawData.length;
+      const escaped = escapeHTML(rawData) || "";
+
+      const header =
         `📱 <b>QR Code Scanned Successfully!</b>\n\n` +
-        `📊 <b>Data Length:</b> ${dataLength} characters\n\n` +
-        `📄 <b>Content:</b>\n<code>${escapeHTML(qrResult.data)}</code>`,
-        { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
-      );
+        `📊 <b>Data Length:</b> ${dataLength} characters\n\n`;
+
+      const maxMessageChars = 3500;
+
+      // First try to send full content; if too long, fall back to preview + txt file
+      const fullPrefix = header + `📄 <b>Content:</b>\n<pre><code>`;
+      const fullSuffix = `</code></pre>`;
+      let contentHtml = escaped;
+      let messageText = fullPrefix + contentHtml + fullSuffix;
+      let attachFile = false;
+
+      if (messageText.length > maxMessageChars) {
+        // Build a safe preview message and attach full content as a text file
+        const previewPrefix = header + `📄 <b>Content (preview):</b>\n<pre><code>`;
+        const previewSuffix = `</code></pre>\n\n<i>Full content is attached as a text file below.</i>`;
+
+        const availableForContent =
+          maxMessageChars - previewPrefix.length - previewSuffix.length - 50;
+
+        const maxContentLen = availableForContent > 500 ? availableForContent : 500;
+        contentHtml = escaped.slice(0, maxContentLen) + "…";
+        messageText = previewPrefix + contentHtml + previewSuffix;
+        attachFile = true;
+      }
+
+      await ctx.reply(messageText, {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      });
+
+      if (attachFile) {
+        const fileBuffer = Buffer.from(rawData, "utf8");
+        await ctx.replyWithDocument(new InputFile(fileBuffer, "qr-data.txt"), {
+          caption: "📄 Full QR content (copyable text file)",
+          reply_to_message_id: ctx.message?.message_id,
+        });
+      }
+
+      return;
     }
   } catch (error) {
     // Silently continue to normal photo processing if QR scan fails
