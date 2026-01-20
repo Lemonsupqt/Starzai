@@ -13409,6 +13409,86 @@ bot.command("qr", async (ctx) => {
   });
 });
 
+// /rename - Rename replied text document (e.g. QR export)
+bot.command("rename", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const doc = replied?.document;
+
+  if (!doc) {
+    return ctx.reply(
+      '✏️ <b>Rename file</b>\n\n' +
+      'Reply to a text document and use:\n' +
+      '<code>/rename My Name</code>\n\n' +
+      'This will resend it as <code>My Name.txt</code>.\n' +
+      'If you do not use /rename, the default filename is kept.',
+      { parse_mode: 'HTML', reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  const origName = doc.file_name || 'file.txt';
+  const isTextDoc =
+    (doc.mime_type && doc.mime_type.startsWith('text/')) ||
+    origName.toLowerCase().endsWith('.txt');
+
+  if (!isTextDoc) {
+    return ctx.reply(
+      '❌ This command currently supports only text files (.txt).',
+      { reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  // Parse desired name from command
+  const rawName = msg.text.replace(/^\/rename(@\w+)?\s*/i, '').trim();
+  if (!rawName) {
+    return ctx.reply(
+      '❌ Please provide a name.\n\n' +
+      'Example:\n<code>/rename My QR Backup</code>',
+      { parse_mode: 'HTML', reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  let desired = rawName;
+  const quoteMatch = rawName.match(/^\"(.+)\"$/);
+  if (quoteMatch) {
+    desired = quoteMatch[1];
+  }
+
+  // Sanitize filename (basic)
+  desired = desired.replace(/[\\\/:*?"<>|]+/g, '').trim();
+  if (!desired) desired = 'renamed';
+
+  let fileName = desired;
+  // If no extension provided, use .txt
+  if (!/\.[^.\s]{1,10}$/.test(desired)) {
+    fileName = `${desired}.txt`;
+  }
+
+  try {
+    // Download the original file from Telegram and re-upload with new name
+    const file = await ctx.api.getFile(doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    const buffer = await response.buffer();
+
+    await ctx.replyWithDocument(new InputFile(buffer, fileName), {
+      caption: `📄 Renamed file: <code>${escapeHTML(fileName)}</code>`,
+      parse_mode: 'HTML',
+      reply_to_message_id: msg?.message_id,
+    });
+  } catch (e) {
+    console.error('Rename error:', e);
+    await ctx.reply(
+      '❌ Failed to rename file. Please try again.',
+      { reply_to_message_id: msg?.message_id }
+    );
+  }
+});
+
 // /short - URL shortener
 bot.command("short", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
