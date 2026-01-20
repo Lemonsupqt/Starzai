@@ -1014,8 +1014,8 @@ function getLuminance(r, g, b) {
 
 // Core art renderer v1: safe overlay QR
 // - circular illustration background
-// - light masking in quiet zone + modules area
-// - themed dark dots on top (good contrast, fast + reliable)
+// - strong, clean QR area
+// - solid themed modules (very close to standard QR, but with art around/behind)
 async function renderQrArtFromData(rawData, options, botApi) {
   const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
 
@@ -1057,7 +1057,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
   ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
   ctx.fillRect(0, 0, size, size);
 
-  // Draw full-canvas art with circular mask
+  // Draw full-canvas art with circular mask (outside QR area will show it strongly)
   const artBuffer =
     (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
   if (artBuffer) {
@@ -1071,7 +1071,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
     ctx.closePath();
     ctx.clip();
 
-    ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.98;
     const s = Math.max(size / artImg.width, size / artImg.height);
     const w = artImg.width * s;
     const h = artImg.height * s;
@@ -1081,31 +1081,31 @@ async function renderQrArtFromData(rawData, options, botApi) {
     ctx.restore();
   }
 
-  // Light wash over everything to keep background bright enough
+  // Very light global wash so art doesn't overpower modules
   ctx.save();
   ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
-  ctx.globalAlpha = 0.16;
+  ctx.globalAlpha = 0.12;
   ctx.fillRect(0, 0, size, size);
   ctx.restore();
 
-  // Quiet zone + gentle modules mask
+  // Quiet zone + inner QR plate: strong, clean light area
   const quietPx = quiet * moduleSize;
   const innerSize = n * moduleSize;
 
+  // Quiet ring
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
   ctx.fillRect(0, 0, size, quietPx);
   ctx.fillRect(0, size - quietPx, size, quietPx);
   ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
   ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
   ctx.restore();
 
+  // Inner QR square plate (slightly translucent so art faintly shows)
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
   ctx.fillRect(quietPx, quietPx, innerSize, innerSize);
   ctx.restore();
-
-  const dotColor = `rgba(${darkRgb.r},${darkRgb.g},${darkRgb.b},0.9)`;
 
   function inFinder(row, col) {
     const tl = row < 7 && col < 7;
@@ -1129,10 +1129,12 @@ async function renderQrArtFromData(rawData, options, botApi) {
     const y0 = (topLeftRow + quiet) * moduleSize;
     const outer = 7 * moduleSize;
 
+    // Outer dark rounded square
     ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
     roundedRect(x0, y0, outer, outer, moduleSize * 1.4);
     ctx.fill();
 
+    // Inner light rounded square
     const pad1 = 1 * moduleSize;
     ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
     roundedRect(
@@ -1144,6 +1146,7 @@ async function renderQrArtFromData(rawData, options, botApi) {
     );
     ctx.fill();
 
+    // Center dark rounded square
     const pad2 = 2 * moduleSize;
     ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
     roundedRect(
@@ -1156,8 +1159,8 @@ async function renderQrArtFromData(rawData, options, botApi) {
     ctx.fill();
   }
 
-  ctx.fillStyle = dotColor;
-  const radius = moduleSize * 0.25;
+  // Draw solid modules (squares) on clean plate for maximum scannability
+  ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
   for (let row = 0; row < n; row++) {
     for (let col = 0; col < n; col++) {
       if (!modules.get(row, col)) continue;
@@ -1165,15 +1168,11 @@ async function renderQrArtFromData(rawData, options, botApi) {
 
       const x = (col + quiet) * moduleSize;
       const y = (row + quiet) * moduleSize;
-      const cx = x + moduleSize / 2;
-      const cy = y + moduleSize / 2;
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillRect(x, y, moduleSize, moduleSize);
     }
   }
 
+  // Stylized finder patterns last
   drawFinder(0, 0);
   drawFinder(0, n - 7);
   drawFinder(n - 7, 0);
