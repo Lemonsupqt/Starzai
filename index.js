@@ -698,6 +698,7 @@ async function getQrLogoBuffer(botApi) {
 }
 
 // Render QR with centered logo overlay, matching theme colors
+// Smart mode: keep underlying QR modules partially visible (QArt-style) to aid scanners.
 async function renderQrWithLogo(qrBuffer, theme, botApi) {
   try {
     const logoBuffer = await getQrLogoBuffer(botApi);
@@ -715,7 +716,8 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
     ctx2d.drawImage(qrImg, 0, 0, size, size);
 
     // Logo sizing and position
-    const logoScale = 0.22; // 22% of QR size
+    // Slightly smaller than before to avoid covering timing/alignment patterns too aggressively
+    const logoScale = 0.18; // 18% of QR size
     const logoSize = Math.floor(size * logoScale);
     const x = Math.floor((size - logoSize) / 2);
     const y = Math.floor((size - logoSize) / 2);
@@ -723,7 +725,7 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
     const radius = Math.floor(logoSize * 0.3);
     const bgColor = theme.light || "#ffffff";
     const borderColor = theme.dark || "#000000";
-    const borderWidth = Math.max(4, Math.floor(size * 0.01));
+    const borderWidth = Math.max(3, Math.floor(size * 0.008));
 
     function drawRoundedRectPath(ctx, x, y, w, h, r) {
       ctx.beginPath();
@@ -739,11 +741,13 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
       ctx.closePath();
     }
 
-    // Background pad
+    // Background pad: semi-transparent so QR modules remain partially visible (helps jsQR + other scanners)
     ctx2d.save();
     drawRoundedRectPath(ctx2d, x, y, logoSize, logoSize, radius);
     ctx2d.fillStyle = bgColor;
+    ctx2d.globalAlpha = 0.78; // soften but do not erase underlying modules
     ctx2d.fill();
+    ctx2d.globalAlpha = 1;
     ctx2d.lineWidth = borderWidth;
     ctx2d.strokeStyle = borderColor;
     ctx2d.stroke();
@@ -751,9 +755,18 @@ async function renderQrWithLogo(qrBuffer, theme, botApi) {
 
     // Logo clipped inside slightly smaller rounded rect
     ctx2d.save();
-    drawRoundedRectPath(ctx2d, x, y, logoSize, logoSize, Math.floor(radius * 0.9));
+    drawRoundedRectPath(
+      ctx2d,
+      x,
+      y,
+      logoSize,
+      logoSize,
+      Math.floor(radius * 0.9)
+    );
     ctx2d.clip();
+    ctx2d.globalAlpha = 0.96; // allow a hint of QR pattern to bleed through
     ctx2d.drawImage(logoImg, x, y, logoSize, logoSize);
+    ctx2d.globalAlpha = 1;
     ctx2d.restore();
 
     return canvas.toBuffer("image/png");
