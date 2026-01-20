@@ -16446,6 +16446,26 @@ bot.on("message:photo", async (ctx) => {
   const u = ctx.from;
   if (!u?.id) return;
   
+  // Try QR scan first
+  try {
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const file = await ctx.api.getFile(photo.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    const buffer = await response.buffer();
+    
+    const qrResult = await scanQR(buffer);
+    if (qrResult.success) {
+      return ctx.reply(
+        `📱 <b>QR Code Detected!</b>\n\n` +
+        `<code>${escapeHTML(qrResult.data)}</code>`,
+        { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+  } catch (error) {
+    // Silently continue to normal photo processing if QR scan fails
+  }
+  
   // Anti-spam check
   const caption = ctx.message?.caption || "";
   if (!(await checkAntiSpam(ctx, caption))) return;

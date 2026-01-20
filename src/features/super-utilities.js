@@ -1022,6 +1022,36 @@ async function generateQR(text, options = {}) {
 }
 
 /**
+ * Scan QR code from image
+ */
+async function scanQR(imageBuffer) {
+  try {
+    const jsQR = (await import('jsqr')).default;
+    const { createCanvas, loadImage } = await import('canvas');
+    
+    // Load image
+    const img = await loadImage(imageBuffer);
+    const canvas = createCanvas(img.width, img.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    
+    // Get image data
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    // Scan QR code
+    const code = jsQR(imageData.data, imageData.width, imageData.height);
+    
+    if (code) {
+      return { success: true, data: code.data };
+    } else {
+      return { success: false, error: 'No QR code found in image' };
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Shorten URL using TinyURL
  */
 async function shortenURL(url) {
@@ -1603,6 +1633,7 @@ export {
   
   // Utilities
   generateQR,
+  scanQR,
   shortenURL,
   convertCurrency,
   getWeather,
