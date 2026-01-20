@@ -459,7 +459,190 @@ const DEAPI_KEY = DEAPI_KEYS[0] || "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
-if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GitHub Models will be unavailable");
+if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GITHUB Models will be unavailable");
+
+// =====================
+// QR THEMES & SETTINGS HELPERS
+// =====================
+
+const QR_THEMES = {
+  classic: {
+    key: "classic",
+    label: "Classic",
+    icon: "⬛⬜",
+    description: "High-contrast black on white. Maximum compatibility.",
+    dark: "#000000",
+    light: "#ffffff",
+    width: 2048,
+    errorCorrectionLevel: "L",
+    margin: 4,
+  },
+  midnight: {
+    key: "midnight",
+    label: "Midnight Neon",
+    icon: "🌌",
+    description: "Cyan code on deep navy background.",
+    dark: "#00ffff",
+    light: "#020617",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  sunset: {
+    key: "sunset",
+    label: "Sunset",
+    icon: "🌅",
+    description: "Warm orange on dark plum.",
+    dark: "#f97316",
+    light: "#111827",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  emerald: {
+    key: "emerald",
+    label: "Emerald Matrix",
+    icon: "💚",
+    description: "Matrix-style green on near-black.",
+    dark: "#22c55e",
+    light: "#020617",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  blossom: {
+    key: "blossom",
+    label: "Blush Blossom",
+    icon: "🌸",
+    description: "Soft rose on pale cream.",
+    dark: "#be123c",
+    light: "#fff7ed",
+    width: 2048,
+    errorCorrectionLevel: "M",
+    margin: 4,
+  },
+  ice: {
+    key: "ice",
+    label: "Ice Glass",
+    icon: "🧊",
+    description: "Cool blue on very light gray.",
+    dark: "#1d4ed8",
+    light: "#f9fafb",
+    width: 2048,
+    errorCorrectionLevel: "M",
+    margin: 4,
+  },
+};
+
+function getUserQrPrefs(userId) {
+  const user = getUserRecord(userId);
+  const base = user?.qrPrefs || {};
+  const themeKey = base.theme && QR_THEMES[base.theme] ? base.theme : "classic";
+  const theme = QR_THEMES[themeKey];
+  return {
+    themeKey,
+    theme,
+    size: base.size || theme.width || 2048,
+    errorCorrectionLevel:
+      base.errorCorrectionLevel || theme.errorCorrectionLevel || "L",
+    margin: base.margin ?? theme.margin ?? 4,
+  };
+}
+
+// Build text + keyboard for /qs and callbacks, and persist normalized prefs
+function buildQrSettingsView(userId) {
+  const prefs = getUserQrPrefs(userId);
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.theme = prefs.themeKey;
+  user.qrPrefs.size = prefs.size;
+  user.qrPrefs.errorCorrectionLevel = prefs.errorCorrectionLevel;
+  user.qrPrefs.margin = prefs.margin;
+  saveUsers();
+
+  const theme = prefs.theme;
+  const lines = [];
+
+  lines.push("🎨 <b>QR Settings</b>");
+  lines.push("");
+  lines.push(`Current Theme: ${theme.icon} <b>${escapeHTML(theme.label)}</b>`);
+  lines.push(
+    `Resolution: <code>${prefs.size}×${prefs.size}</code> • EC: <b>${escapeHTML(
+      prefs.errorCorrectionLevel
+    )}</b>`
+  );
+  lines.push(`Margin: <code>${prefs.margin}</code>`);
+  lines.push("");
+  lines.push("<b>Themes:</b>");
+
+  Object.values(QR_THEMES).forEach((t) => {
+    const isCurrent = t.key === prefs.themeKey;
+    const prefix = isCurrent ? "✅" : "▫️";
+    lines.push(
+      `${prefix} ${t.icon} <b>${escapeHTML(t.label)}</b> – ${escapeHTML(
+        t.description
+      )}`
+    );
+  });
+
+  lines.push("");
+  lines.push(
+    "Tap a theme below to switch. Use advanced buttons to tweak resolution and error correction."
+  );
+
+  const kb = new InlineKeyboard();
+  // Theme buttons (2 per row)
+  const themes = Object.values(QR_THEMES);
+  for (let i = 0; i < themes.length; i += 2) {
+    const t1 = themes[i];
+    const label1 =
+      (t1.key === prefs.themeKey ? "✅ " : "") + `${t1.icon} ${t1.label}`;
+    kb.text(label1, `qs_theme:${t1.key}`);
+    if (themes[i + 1]) {
+      const t2 = themes[i + 1];
+      const label2 =
+        (t2.key === prefs.themeKey ? "✅ " : "") + `${t2.icon} ${t2.label}`;
+      kb.text(label2, `qs_theme:${t2.key}`);
+    }
+    kb.row();
+  }
+
+  // Resolution row
+  const sizes = [1024, 2048, 4096];
+  const sizeLabels = {
+    1024: "🔹 1024",
+    2048: "🔸 2048",
+    4096: "💎 4096",
+  };
+  sizes.forEach((s) => {
+    const active = prefs.size === s;
+    kb.text(active ? `✅ ${sizeLabels[s]}` : sizeLabels[s], `qs_size:${s}`);
+  });
+  kb.row();
+
+  // Error correction row (L, M, Q, H)
+  const levels = ["L", "M", "Q", "H"];
+  levels.forEach((lvl) => {
+    const active = prefs.errorCorrectionLevel === lvl;
+    const emoji =
+      lvl === "L"
+        ? "⚡"
+        : lvl === "M"
+        ? "⭐"
+        : lvl === "Q"
+        ? "🛡️"
+        : "💎";
+    kb.text(
+      active ? `✅ ${emoji} ${lvl}` : `${emoji} ${lvl}`,
+      `qs_level:${lvl}`
+    );
+  });
+  kb.row();
+
+  kb.text("↩️ Reset", "qs_reset");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
 
 // =====================
 // BOT + LLM
@@ -13389,21 +13572,35 @@ bot.command("qr", async (ctx) => {
       '<code>/qr your text or URL here</code>\n\n' +
       '<b>Examples:</b>\n' +
       '<code>/qr https://example.com</code>\n' +
-      '<code>/qr Hello World!</code>',
+      '<code>/qr Hello World!</code>\n\n' +
+      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level).',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
   
-  const result = await generateQR(text);
+  const { themeKey, theme, size, errorCorrectionLevel, margin } = getUserQrPrefs(ctx.from.id);
+
+  const result = await generateQR(text, {
+    width: size || theme.width,
+    margin,
+    errorCorrectionLevel,
+    dark: theme.dark,
+    light: theme.light,
+  });
   
   if (!result.success) {
     return ctx.reply(`❌ Failed to generate QR: ${result.error}`, {
       reply_to_message_id: ctx.message?.message_id
     });
   }
+
+  const themeLabel = `${theme.icon} ${theme.label}`;
   
   await ctx.replyWithPhoto(new InputFile(result.buffer, 'qrcode.png'), {
-    caption: `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>`,
+    caption:
+      `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>\n\n` +
+      `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
+      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(errorCorrectionLevel)}</b>`,
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
