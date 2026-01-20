@@ -1042,15 +1042,33 @@ async function renderQrArtFromData(rawData, options, botApi) {
   // Light wash over everything to keep background bright enough
   ctx.save();
   ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
-  ctx.globalAlpha = 0.18;
+  ctx.globalAlpha = 0.16;
   ctx.fillRect(0, 0, size, size);
   ctx.restore();
 
-  // Stronger white mask under the QR area (modules + quiet zone)
-  // This significantly reduces background noise while still letting the art show through.
+  // Targeted white mask:
+  // - Quiet zone ring: strong mask for clean margins
+  // - Inner modules area: lighter mask so artwork stays vivid
+  const quietPx = quiet * moduleSize;
+  const innerSize = n * moduleSize;
+
+  // Quiet zone (top, bottom, left, right)
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.6)";
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  // Top
+  ctx.fillRect(0, 0, size, quietPx);
+  // Bottom
+  ctx.fillRect(0, size - quietPx, size, quietPx);
+  // Left
+  ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
+  // Right
+  ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
+  ctx.restore();
+
+  // Modules area: gentler mask so art remains visible
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.fillRect(quietPx, quietPx, innerSize, innerSize);
   ctx.restore();
 
   // Dot color: strong themed dark with transparency so illustration is still visible
