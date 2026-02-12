@@ -102,6 +102,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
+import fetch from "node-fetch";
 
 // Super Utilities Module (27 features)
 import {
@@ -117,6 +118,7 @@ import {
   getMediaDetails,
   getTrailers,
   generateQR,
+  scanQR,
   shortenURL,
   convertCurrency,
   getWeather,
@@ -457,7 +459,993 @@ const DEAPI_KEY = DEAPI_KEYS[0] || "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!MEGALLM_API_KEY) throw new Error("Missing MEGALLM_API_KEY");
-if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GitHub Models will be unavailable");
+if (!GITHUB_PAT) console.warn("⚠️  GITHUB_PAT not set - GITHUB Models will be unavailable");
+
+// =====================
+// QR THEMES & SETTINGS HELPERS
+// =====================
+
+const QR_THEMES = {
+  classic: {
+    key: "classic",
+    label: "Classic",
+    icon: "⬛⬜",
+    description: "High-contrast black on white. Maximum compatibility.",
+    dark: "#000000",
+    light: "#ffffff",
+    width: 2048,
+    errorCorrectionLevel: "L",
+    margin: 4,
+  },
+  midnight: {
+    key: "midnight",
+    label: "Midnight Neon",
+    icon: "🌌",
+    description: "Cyan code on deep navy background.",
+    dark: "#00ffff",
+    light: "#020617",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  sunset: {
+    key: "sunset",
+    label: "Sunset",
+    icon: "🌅",
+    description: "Warm orange on dark plum.",
+    dark: "#f97316",
+    light: "#111827",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  emerald: {
+    key: "emerald",
+    label: "Emerald Matrix",
+    icon: "💚",
+    description: "Matrix-style green on near-black.",
+    dark: "#22c55e",
+    light: "#020617",
+    width: 2048,
+    errorCorrectionLevel: "Q",
+    margin: 4,
+  },
+  blossom: {
+    key: "blossom",
+    label: "Blush Blossom",
+    icon: "🌸",
+    description: "Soft rose on pale cream.",
+    dark: "#be123c",
+    light: "#fff7ed",
+    width: 2048,
+    errorCorrectionLevel: "M",
+    margin: 4,
+  },
+  ice: {
+    key: "ice",
+    label: "Ice Glass",
+    icon: "🧊",
+    description: "Cool blue on very light gray.",
+    dark: "#1d4ed8",
+    light: "#f9fafb",
+    width: 2048,
+    errorCorrectionLevel: "M",
+    margin: 4,
+  },
+};
+
+function getUserQrPrefs(userId) {
+  const user = getUserRecord(userId);
+  const base = user?.qrPrefs || {};
+  const themeKey = base.theme && QR_THEMES[base.theme] ? base.theme : "classic";
+  const theme = QR_THEMES[themeKey];
+  const logoEnabled = base.logoEnabled === true;
+  const reencodeOnScan = base.reencodeOnScan !== false; // default: true
+
+  // Art style: "none" | "v1" | "v2"
+  // Backward-compatible with old boolean artMode (true => "v1")
+  let artStyle = base.artStyle;
+  if (!artStyle) {
+    if (base.artMode === true) {
+      artStyle = "v1";
+    } else {
+      artStyle = "none";
+    }
+  }
+  if (!["none", "v1", "v2"].includes(artStyle)) {
+    artStyle = "none";
+  }
+
+  return {
+    themeKey,
+    theme,
+    size: base.size || theme.width || 2048,
+    errorCorrectionLevel:
+      base.errorCorrectionLevel || theme.errorCorrectionLevel || "L",
+    margin: base.margin ?? theme.margin ?? 4,
+    logoEnabled,
+    reencodeOnScan,
+    artStyle,
+  };
+}
+
+// Build text + keyboard for /qs and callbacks, and persist normalized prefs
+function buildQrSettingsView(userId) {
+  const prefs = getUserQrPrefs(userId);
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.theme = prefs.themeKey;
+  user.qrPrefs.size = prefs.size;
+  user.qrPrefs.errorCorrectionLevel = prefs.errorCorrectionLevel;
+  user.qrPrefs.margin = prefs.margin;
+  user.qrPrefs.logoEnabled = prefs.logoEnabled;
+  user.qrPrefs.reencodeOnScan = prefs.reencodeOnScan;
+  user.qrPrefs.artStyle = prefs.artStyle;
+  // Remove legacy boolean if present
+  if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
+  saveUsers();
+
+  const theme = prefs.theme;
+  const lines = [];
+
+  const artStyleLabel =
+    prefs.artStyle === "v2"
+      ? "Art v2 (logo-style / QArt)"
+      : prefs.artStyle === "v1"
+      ? "Art v1 (fast overlay)"
+      : "Off";
+
+  lines.push("🎨 <b>QR Settings</b>");
+  lines.push("");
+  lines.push(`Theme: ${theme.icon} <b>${escapeHTML(theme.label)}</b>`);
+  lines.push(
+    `Size: <code>${prefs.size}×${prefs.size}</code> • Error correction: <b>${escapeHTML(
+      prefs.errorCorrectionLevel
+    )}</b>`
+  );
+  lines.push(`Quiet zone (margin modules): <code>${prefs.margin}</code>`);
+  lines.push("");
+  lines.push("<b>Overlay & Art</b>");
+  lines.push(
+    `• Logo overlay: <b>${prefs.logoEnabled ? "On (center logo)" : "Off"}</b>`
+  );
+  lines.push(`• Art style: <b>${escapeHTML(artStyleLabel)}</b>`);
+  lines.push(
+    `• Re-encode on scan: <b>${
+      prefs.reencodeOnScan ? "On (rebuild scanned QR with these settings)" : "Off"
+    }</b>`
+  );
+  lines.push("");
+  lines.push(
+    "<i>Art v1 renders a dot-style QR over your image from <code>/qa</code>. "
+    + "Art v2 uses a heavier logo-style algorithm (QArt-style) to blend the QR with your image. "
+    + "Logo overlay and art styles are mutually exclusive to keep codes scannable.</i>"
+  );
+  lines.push("");
+  lines.push("<b>Themes</b>");
+
+  Object.values(QR_THEMES).forEach((t) => {
+    const isCurrent = t.key === prefs.themeKey;
+    const prefix = isCurrent ? "✅" : "▫️";
+    lines.push(
+      `${prefix} ${t.icon} <b>${escapeHTML(t.label)}</b> – ${escapeHTML(
+        t.description
+      )}`
+    );
+  });
+
+  lines.push("");
+  lines.push(
+    "Use the buttons below to open each section: themes, resolution, error correction, overlays, and scan behaviour."
+  );
+
+  const kb = new InlineKeyboard();
+
+  // Main QR settings menu (compact, multi-section)
+  kb
+    .text("🎨 Themes", "qs_menu:themes")
+    .text("📐 Resolution", "qs_menu:size")
+    .row()
+    .text("🛡️ Error correction", "qs_menu:ec")
+    .row()
+    .text("✨ Overlay & Art", "qs_menu:overlay")
+    .text("📸 Scan behaviour", "qs_menu:scan")
+    .row()
+    .text("↩️ Reset", "qs_reset");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Theme selection
+function buildQrThemesView(userId) {
+  const prefs = getUserQrPrefs(userId);
+  const theme = prefs.theme;
+
+  const lines = [];
+  lines.push("🎨 <b>QR Themes</b>");
+  lines.push("");
+  lines.push(
+    `Current theme: ${theme.icon} <b>${escapeHTML(theme.label)}</b>`
+  );
+  lines.push("");
+
+  Object.values(QR_THEMES).forEach((t) => {
+    const isCurrent = t.key === prefs.themeKey;
+    const prefix = isCurrent ? "✅" : "▫️";
+    lines.push(
+      `${prefix} ${t.icon} <b>${escapeHTML(t.label)}</b> – ${escapeHTML(
+        t.description
+      )}`
+    );
+  });
+
+  lines.push("");
+  lines.push("<i>Tap a theme below, or go back to the main QR settings menu.</i>");
+
+  const kb = new InlineKeyboard();
+  const themes = Object.values(QR_THEMES);
+  for (let i = 0; i < themes.length; i += 2) {
+    const t1 = themes[i];
+    const label1 =
+      (t1.key === prefs.themeKey ? "✅ " : "") + `${t1.icon} ${t1.label}`;
+    kb.text(label1, `qs_theme:${t1.key}`);
+    if (themes[i + 1]) {
+      const t2 = themes[i + 1];
+      const label2 =
+        (t2.key === prefs.themeKey ? "✅ " : "") + `${t2.icon} ${t2.label}`;
+      kb.text(label2, `qs_theme:${t2.key}`);
+    }
+    kb.row();
+  }
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Resolution (size)
+function buildQrSizeView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("📐 <b>QR Resolution</b>");
+  lines.push("");
+  lines.push(
+    `Current size: <code>${prefs.size}×${prefs.size}</code>`
+  );
+  lines.push(`Quiet zone (margin modules): <code>${prefs.margin}</code>`);
+  lines.push("");
+  lines.push(
+    "<i>Bigger sizes are easier to scan, but produce larger files.</i>"
+  );
+
+  const kb = new InlineKeyboard();
+  const sizes = [1024, 2048, 4096];
+  const sizeLabels = {
+    1024: "🔹 1024",
+    2048: "🔸 2048",
+    4096: "💎 4096",
+  };
+  sizes.forEach((s) => {
+    const active = prefs.size === s;
+    kb.text(active ? `✅ ${sizeLabels[s]}` : sizeLabels[s], `qs_size:${s}`);
+  });
+  kb.row();
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Error correction level
+function buildQrEcView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("🛡️ <b>Error Correction</b>");
+  lines.push("");
+  lines.push(
+    `Current level: <b>${escapeHTML(prefs.errorCorrectionLevel)}</b>`
+  );
+  lines.push("");
+  lines.push("• ⚡ L – Lowest redundancy, smallest code");
+  lines.push("• ⭐ M – Balanced for most use-cases");
+  lines.push("• 🛡️ Q – High redundancy (better for art / logos)");
+  lines.push("• 💎 H – Maximum redundancy, densest code");
+  lines.push("");
+  lines.push("<i>Higher levels survive more distortion but require more pixels.</i>");
+
+  const kb = new InlineKeyboard();
+  const levels = ["L", "M", "Q", "H"];
+  levels.forEach((lvl) => {
+    const active = prefs.errorCorrectionLevel === lvl;
+    const emoji =
+      lvl === "L"
+        ? "⚡"
+        : lvl === "M"
+        ? "⭐"
+        : lvl === "Q"
+        ? "🛡️"
+        : "💎";
+    kb.text(
+      active ? `✅ ${emoji} ${lvl}` : `${emoji} ${lvl}`,
+      `qs_level:${lvl}`
+    );
+  });
+  kb.row();
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Overlay & Art
+function buildQrOverlayView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("✨ <b>Overlay & Art</b>");
+  lines.push("");
+  lines.push(
+    `Logo overlay: <b>${prefs.logoEnabled ? "On (center logo)" : "Off"}</b>`
+  );
+
+  const artStyleLabel =
+    prefs.artStyle === "v2"
+      ? "Art v2 (logo-style / QArt)"
+      : prefs.artStyle === "v1"
+      ? "Art v1 (fast overlay)"
+      : "Off";
+  lines.push(`Art style: <b>${escapeHTML(artStyleLabel)}</b>`);
+  lines.push("");
+  lines.push(
+    "<i>Logo overlay uses the image set with <code>/qrlogo</code> in the center.</i>"
+  );
+  lines.push(
+    "<i>Art v1 draws a dot-style QR over your image from <code>/qa</code>.</i>"
+  );
+  lines.push(
+    "<i>Art v2 uses a heavier logo-style algorithm (QArt-style) to blend the QR with your image.</i>"
+  );
+  lines.push(
+    "<i>To keep codes scannable, logo overlay and art styles cannot be enabled together.</i>"
+  );
+
+  const kb = new InlineKeyboard();
+  const logoLabel = prefs.logoEnabled
+    ? "✅ Logo overlay: On"
+    : "✨ Logo overlay: Off";
+
+  const artCycleLabel =
+    prefs.artStyle === "v2"
+      ? "🎨 Art: v2 (QArt)"
+      : prefs.artStyle === "v1"
+      ? "🎨 Art: v1 (overlay)"
+      : "🎨 Art: Off";
+
+  kb.text(logoLabel, `qs_logo:${prefs.logoEnabled ? "0" : "1"}`).row();
+  kb.text(artCycleLabel, `qs_artstyle:cycle`).row();
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Sub-view: Scan behaviour (re-encode)
+function buildQrScanView(userId) {
+  const prefs = getUserQrPrefs(userId);
+
+  const lines = [];
+  lines.push("📸 <b>Scan Behaviour</b>");
+  lines.push("");
+  lines.push(
+    `Re-encode on scan: <b>${
+      prefs.reencodeOnScan ? "On" : "Off"
+    }</b>`
+  );
+  lines.push("");
+  lines.push(
+    "<i>When enabled, sending a QR photo will re-scan and rebuild it with your current theme, size, and art settings.</i>"
+  );
+
+  const kb = new InlineKeyboard();
+  const reLabel = prefs.reencodeOnScan
+    ? "✅ Re-encode on scan: On"
+    : "📸 Re-encode on scan: Off";
+  kb.text(reLabel, `qs_reencode:${prefs.reencodeOnScan ? "0" : "1"}`).row();
+  kb.text("⬅ Back", "qs_menu:main");
+
+  return { text: lines.join("\n"), keyboard: kb, prefs };
+}
+
+// Adjust error correction when using logo overlay or art mode that disturbs central modules
+function getEffectiveQrErrorCorrection(level, needsHighEc) {
+  const order = ["L", "M", "Q", "H"];
+  const requested = (level || "L").toUpperCase();
+  const idx = order.indexOf(requested);
+  const baseLevel = idx === -1 ? "L" : order[idx];
+  if (!needsHighEc) return baseLevel;
+  // With visual overlays, require at least Q-level error correction
+  const minIndexForOverlay = 2; // Q
+  const effectiveIdx = Math.max(order.indexOf(baseLevel), minIndexForOverlay);
+  return order[effectiveIdx];
+}
+
+// Fetch QR logo buffer from Telegram (center logo)
+async function getQrLogoBuffer(botApi) {
+  if (!prefsDb.qrLogo || !prefsDb.qrLogo.fileId) {
+    return null;
+  }
+  try {
+    const file = await botApi.getFile(prefsDb.qrLogo.fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    return await response.buffer();
+  } catch (e) {
+    console.error("QR logo fetch error:", e);
+    return null;
+  }
+}
+
+// Fetch QR art background buffer from Telegram (full-canvas art)
+async function getQrArtBuffer(botApi) {
+  if (!prefsDb.qrArt || !prefsDb.qrArt.fileId) {
+    return null;
+  }
+  try {
+    const file = await botApi.getFile(prefsDb.qrArt.fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    return await response.buffer();
+  } catch (e) {
+    console.error("QR art fetch error:", e);
+    return null;
+  }
+}
+
+// Render QR with centered logo overlay, matching theme colors
+// Smart mode: keep underlying QR modules partially visible (QArt-style) to aid scanners.
+async function renderQrWithLogo(qrBuffer, theme, botApi) {
+  try {
+    const logoBuffer = await getQrLogoBuffer(botApi);
+    if (!logoBuffer) return qrBuffer;
+
+    const { createCanvas, loadImage } = await import("canvas");
+    const qrImg = await loadImage(qrBuffer);
+    const logoImg = await loadImage(logoBuffer);
+
+    const size = qrImg.width;
+    const canvas = createCanvas(size, size);
+    const ctx2d = canvas.getContext("2d");
+
+    // Draw base QR
+    ctx2d.drawImage(qrImg, 0, 0, size, size);
+
+    // Logo sizing and position
+    // Slightly smaller than before to avoid covering timing/alignment patterns too aggressively
+    const logoScale = 0.18; // 18% of QR size
+    const logoSize = Math.floor(size * logoScale);
+    const x = Math.floor((size - logoSize) / 2);
+    const y = Math.floor((size - logoSize) / 2);
+
+    const radius = Math.floor(logoSize * 0.3);
+    const bgColor = theme.light || "#ffffff";
+    const borderColor = theme.dark || "#000000";
+    const borderWidth = Math.max(3, Math.floor(size * 0.008));
+
+    function drawRoundedRectPath(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    // Background pad: semi-transparent so QR modules remain partially visible (helps jsQR + other scanners)
+    ctx2d.save();
+    drawRoundedRectPath(ctx2d, x, y, logoSize, logoSize, radius);
+    ctx2d.fillStyle = bgColor;
+    ctx2d.globalAlpha = 0.78; // soften but do not erase underlying modules
+    ctx2d.fill();
+    ctx2d.globalAlpha = 1;
+    ctx2d.lineWidth = borderWidth;
+    ctx2d.strokeStyle = borderColor;
+    ctx2d.stroke();
+    ctx2d.restore();
+
+    // Logo clipped inside slightly smaller rounded rect
+    ctx2d.save();
+    drawRoundedRectPath(
+      ctx2d,
+      x,
+      y,
+      logoSize,
+      logoSize,
+      Math.floor(radius * 0.9)
+    );
+    ctx2d.clip();
+    ctx2d.globalAlpha = 0.96; // allow a hint of QR pattern to bleed through
+    ctx2d.drawImage(logoImg, x, y, logoSize, logoSize);
+    ctx2d.globalAlpha = 1;
+    ctx2d.restore();
+
+    return canvas.toBuffer("image/png");
+  } catch (e) {
+    console.error("QR logo overlay error:", e);
+    return qrBuffer;
+  }
+}
+
+// Helper: hex color → { r, g, b }
+function hexToRgb(hex) {
+  if (!hex) return { r: 0, g: 0, b: 0 };
+  let clean = String(hex).trim();
+  if (clean[0] === "#") clean = clean.slice(1);
+  if (clean.length === 3) {
+    clean = clean
+      .split("")
+      .map((ch) => ch + ch)
+      .join("");
+  }
+  if (clean.length === 8) {
+    // Drop alpha if present (#RRGGBBAA)
+    clean = clean.slice(0, 6);
+  }
+  const num = parseInt(clean || "000000", 16);
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return { r, g, b };
+}
+
+// Helper: relative luminance for contrast checks
+function getLuminance(r, g, b) {
+  const toLinear = (v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const R = toLinear(r);
+  const G = toLinear(g);
+  const B = toLinear(b);
+  return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+}
+
+// Core art renderer v1: safe overlay QR
+// - circular illustration background
+// - strong, clean QR area
+// - solid themed modules (very close to standard QR, but with art around/behind)
+async function renderQrArtFromData(rawData, options, botApi) {
+  const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
+
+  const { createCanvas, loadImage } = await import("canvas");
+  const QRCodeModule = await import("qrcode");
+  const QRCode = QRCodeModule.default || QRCodeModule;
+
+  const ecc = (errorCorrectionLevel || "H").toUpperCase();
+  let qr;
+  try {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc, version: 10 });
+  } catch {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
+  }
+
+  const modules = qr.modules;
+  const n = modules.size;
+
+  const quiet =
+    typeof margin === "number" && Number.isFinite(margin)
+      ? Math.max(0, margin)
+      : 4;
+  const totalModules = n + quiet * 2;
+
+  const baseSize =
+    (typeof targetSize === "number" && targetSize > 0
+      ? targetSize
+      : theme?.width) || 2048;
+
+  const moduleSize = Math.floor(baseSize / totalModules);
+  const size = moduleSize * totalModules;
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+
+  const darkRgb = hexToRgb(theme?.dark || "#000000");
+  const lightRgb = hexToRgb(theme?.light || "#ffffff");
+
+  // Base light background
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.fillRect(0, 0, size, size);
+
+  // Draw full-canvas art with circular mask (outside QR area will show it strongly)
+  const artBuffer =
+    (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
+  if (artBuffer) {
+    const artImg = await loadImage(artBuffer);
+    ctx.save();
+    const radius = size * 0.5;
+    const cx0 = size / 2;
+    const cy0 = size / 2;
+    ctx.beginPath();
+    ctx.arc(cx0, cy0, radius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.globalAlpha = 0.98;
+    const s = Math.max(size / artImg.width, size / artImg.height);
+    const w = artImg.width * s;
+    const h = artImg.height * s;
+    const dx = (size - w) / 2;
+    const dy = (size - h) / 2;
+    ctx.drawImage(artImg, dx, dy, w, h);
+    ctx.restore();
+  }
+
+  // Very light global wash so art doesn't overpower modules
+  ctx.save();
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.globalAlpha = 0.12;
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  // Quiet zone + inner QR plate: strong, clean light area
+  const quietPx = quiet * moduleSize;
+  const innerSize = n * moduleSize;
+
+  // Quiet ring
+  ctx.save();
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.fillRect(0, 0, size, quietPx);
+  ctx.fillRect(0, size - quietPx, size, quietPx);
+  ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
+  ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
+  ctx.restore();
+
+  // Inner QR square plate (slightly translucent so art faintly shows)
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillRect(quietPx, quietPx, innerSize, innerSize);
+  ctx.restore();
+
+  function inFinder(row, col) {
+    const tl = row < 7 && col < 7;
+    const tr = row < 7 && col >= n - 7;
+    const bl = row >= n - 7 && col < 7;
+    return tl || tr || bl;
+  }
+
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawFinder(topLeftRow, topLeftCol) {
+    const x0 = (topLeftCol + quiet) * moduleSize;
+    const y0 = (topLeftRow + quiet) * moduleSize;
+    const outer = 7 * moduleSize;
+
+    // Outer dark rounded square
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(x0, y0, outer, outer, moduleSize * 1.4);
+    ctx.fill();
+
+    // Inner light rounded square
+    const pad1 = 1 * moduleSize;
+    ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+    roundedRect(
+      x0 + pad1,
+      y0 + pad1,
+      outer - 2 * pad1,
+      outer - 2 * pad1,
+      moduleSize * 1.1
+    );
+    ctx.fill();
+
+    // Center dark rounded square
+    const pad2 = 2 * moduleSize;
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(
+      x0 + pad2,
+      y0 + pad2,
+      outer - 2 * pad2,
+      outer - 2 * pad2,
+      moduleSize * 0.9
+    );
+    ctx.fill();
+  }
+
+  // Draw solid modules (squares) on clean plate for maximum scannability
+  ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      if (!modules.get(row, col)) continue;
+      if (inFinder(row, col)) continue;
+
+      const x = (col + quiet) * moduleSize;
+      const y = (row + quiet) * moduleSize;
+      ctx.fillRect(x, y, moduleSize, moduleSize);
+    }
+  }
+
+  // Stylized finder patterns last
+  drawFinder(0, 0);
+  drawFinder(0, n - 7);
+  drawFinder(n - 7, 0);
+
+  return canvas.toBuffer("image/png");
+}
+
+// Core art renderer v2: more image-driven, logo-style look
+// - uses art colors for dots
+// - minimal masking in module area, stronger only in quiet zone
+// - still keeps high contrast for scanners
+async function renderQrArtV2FromData(rawData, options, botApi) {
+  const { theme, size: targetSize, margin, errorCorrectionLevel } = options;
+
+  const { createCanvas, loadImage } = await import("canvas");
+  const QRCodeModule = await import("qrcode");
+  const QRCode = QRCodeModule.default || QRCodeModule;
+
+  const ecc = (errorCorrectionLevel || "H").toUpperCase();
+  let qr;
+  try {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc, version: 10 });
+  } catch {
+    qr = QRCode.create(rawData, { errorCorrectionLevel: ecc });
+  }
+
+  const modules = qr.modules;
+  const n = modules.size;
+
+  const quiet =
+    typeof margin === "number" && Number.isFinite(margin)
+      ? Math.max(0, margin)
+      : 4;
+  const totalModules = n + quiet * 2;
+
+  const baseSize =
+    (typeof targetSize === "number" && targetSize > 0
+      ? targetSize
+      : theme?.width) || 2048;
+
+  const moduleSize = Math.floor(baseSize / totalModules);
+  const size = moduleSize * totalModules;
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext("2d");
+
+  const darkRgb = hexToRgb(theme?.dark || "#000000");
+  const lightRgb = hexToRgb(theme?.light || "#ffffff");
+
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.fillRect(0, 0, size, size);
+
+  const artBuffer =
+    (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
+  if (artBuffer) {
+    const artImg = await loadImage(artBuffer);
+    ctx.save();
+    const radius = size * 0.5;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, radius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.globalAlpha = 0.95;
+    const s = Math.max(size / artImg.width, size / artImg.height);
+    const w = artImg.width * s;
+    const h = artImg.height * s;
+    const dx = (size - w) / 2;
+    const dy = (size - h) / 2;
+    ctx.drawImage(artImg, dx, dy, w, h);
+    ctx.restore();
+  }
+
+  // Very light global wash so art stays vivid
+  ctx.save();
+  ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+  ctx.globalAlpha = 0.08;
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  // Quiet zone: strong mask only around edges
+  const quietPx = quiet * moduleSize;
+  const innerSize = n * moduleSize;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.fillRect(0, 0, size, quietPx);
+  ctx.fillRect(0, size - quietPx, size, quietPx);
+  ctx.fillRect(0, quietPx, quietPx, size - 2 * quietPx);
+  ctx.fillRect(size - quietPx, quietPx, quietPx, size - 2 * quietPx);
+  ctx.restore();
+
+  // Sample art colors from the current canvas
+  const imgData = ctx.getImageData(0, 0, size, size);
+  const pixels = imgData.data;
+
+  function sampleColor(px, py) {
+    const x = Math.max(0, Math.min(size - 1, Math.round(px)));
+    const y = Math.max(0, Math.min(size - 1, Math.round(py)));
+    const idx = (y * size + x) * 4;
+    return {
+      r: pixels[idx],
+      g: pixels[idx + 1],
+      b: pixels[idx + 2],
+    };
+  }
+
+  const bgLum = getLuminance(lightRgb.r, lightRgb.g, lightRgb.b);
+  const maxDotLum = Math.min(bgLum * 0.55, 0.55);
+
+  function mixWithThemeDark(sample) {
+    const mix = 0.45;
+    let r = darkRgb.r * mix + sample.r * (1 - mix);
+    let g = darkRgb.g * mix + sample.g * (1 - mix);
+    let b = darkRgb.b * mix + sample.b * (1 - mix);
+
+    const lum = getLuminance(r, g, b);
+    if (lum > maxDotLum) {
+      const factor = maxDotLum / (lum || 1);
+      r *= factor;
+      g *= factor;
+      b *= factor;
+    }
+
+    return {
+      r: Math.round(Math.max(0, Math.min(255, r))),
+      g: Math.round(Math.max(0, Math.min(255, g))),
+      b: Math.round(Math.max(0, Math.min(255, b))),
+    };
+  }
+
+  function inFinder(row, col) {
+    const tl = row < 7 && col < 7;
+    const tr = row < 7 && col >= n - 7;
+    const bl = row >= n - 7 && col < 7;
+    return tl || tr || bl;
+  }
+
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawFinder(topLeftRow, topLeftCol) {
+    const x0 = (topLeftCol + quiet) * moduleSize;
+    const y0 = (topLeftRow + quiet) * moduleSize;
+    const outer = 7 * moduleSize;
+
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(x0, y0, outer, outer, moduleSize * 1.4);
+    ctx.fill();
+
+    const pad1 = 1 * moduleSize;
+    ctx.fillStyle = `rgb(${lightRgb.r},${lightRgb.g},${lightRgb.b})`;
+    roundedRect(
+      x0 + pad1,
+      y0 + pad1,
+      outer - 2 * pad1,
+      outer - 2 * pad1,
+      moduleSize * 1.1
+    );
+    ctx.fill();
+
+    const pad2 = 2 * moduleSize;
+    ctx.fillStyle = `rgb(${darkRgb.r},${darkRgb.g},${darkRgb.b})`;
+    roundedRect(
+      x0 + pad2,
+      y0 + pad2,
+      outer - 2 * pad2,
+      outer - 2 * pad2,
+      moduleSize * 0.9
+    );
+    ctx.fill();
+  }
+
+  // Draw tinted dots using sampled art colors
+  const dotRadius = moduleSize * 0.24;
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      if (!modules.get(row, col)) continue;
+      if (inFinder(row, col)) continue;
+
+      const x = (col + quiet) * moduleSize;
+      const y = (row + quiet) * moduleSize;
+      const cx = x + moduleSize / 2;
+      const cy = y + moduleSize / 2;
+
+      const sample = sampleColor(cx, cy);
+      const dot = mixWithThemeDark(sample);
+
+      ctx.fillStyle = `rgb(${dot.r},${dot.g},${dot.b})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, dotRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  drawFinder(0, 0);
+  drawFinder(0, n - 7);
+  drawFinder(n - 7, 0);
+
+  return canvas.toBuffer("image/png");
+}
+
+// Fallback: existing safe "background art behind QR" behavior
+async function renderQrArtFallback(qrBuffer, theme, botApi) {
+  try {
+    const artBuffer =
+      (await getQrArtBuffer(botApi)) || (await getQrLogoBuffer(botApi));
+    if (!artBuffer) return qrBuffer;
+
+    const { createCanvas, loadImage } = await import("canvas");
+    const qrImg = await loadImage(qrBuffer);
+    const artImg = await loadImage(artBuffer);
+
+    const size = qrImg.width;
+    const canvas = createCanvas(size, size);
+    const ctx = canvas.getContext("2d");
+
+    ctx.drawImage(qrImg, 0, 0, size, size);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-over";
+    const scale = Math.max(size / artImg.width, size / artImg.height);
+    const drawW = artImg.width * scale;
+    const drawH = artImg.height * scale;
+    const dx = (size - drawW) / 2;
+    const dy = (size - drawH) / 2;
+    ctx.drawImage(artImg, dx, dy, drawW, drawH);
+    ctx.restore();
+
+    return canvas.toBuffer("image/png");
+  } catch (e) {
+    console.error("QR art fallback error:", e);
+    return qrBuffer;
+  }
+}
+
+// Art mode entry point used by existing call sites that only have a QR buffer.
+// We scan the QR to recover its data, then re-render it with the chosen art renderer.
+async function renderQrArt(qrBuffer, theme, botApi, artStyle = "v1") {
+  try {
+    const qrResult = await scanQR(qrBuffer);
+    if (!qrResult.success || !qrResult.data) {
+      return await renderQrArtFallback(qrBuffer, theme, botApi);
+    }
+
+    const { createCanvas, loadImage } = await import("canvas");
+    const qrImg = await loadImage(qrBuffer);
+    const size = qrImg.width || theme?.width || 2048;
+
+    const options = {
+      theme,
+      size,
+      // We don't know the original margin / EC here; choose a safer default for art.
+      margin: 4,
+      errorCorrectionLevel: "Q",
+    };
+
+    if (artStyle === "v2") {
+      return await renderQrArtV2FromData(qrResult.data, options, botApi);
+    }
+
+    return await renderQrArtFromData(qrResult.data, options, botApi);
+  } catch (e) {
+    console.error("QR art render error:", e);
+    return await renderQrArtFallback(qrBuffer, theme, botApi);
+  }
+}
 
 // =====================
 // BOT + LLM
@@ -1856,7 +2844,7 @@ function isUserBanned(userId) {
 // Check if a user is trusted (skip spam checks for performance)
 function isTrustedUser(userId) {
   // Owners are always trusted
-  if (OWNER_IDS.includes(String(userId))) {
+  if (OWNER_IDS.has(String(userId))) {
     return true;
   }
   
@@ -11665,6 +12653,98 @@ bot.command("gstat", async (ctx) => {
   await sendOwnerStatus(ctx);
 });
 
+// /qrlogo - set global QR center logo (owner only)
+bot.command("qrlogo", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const photos = replied?.photo;
+
+  if (!photos || photos.length === 0) {
+    return ctx.reply(
+      "🖼️ Reply to a photo with <code>/qrlogo</code> to set it as the global QR logo.\n\n" +
+        "This logo will appear in the center of QR codes when the logo overlay is enabled in <code>/qs</code>.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  try {
+    const largest = photos[photos.length - 1];
+    // We only need the file_id; Telegram will handle caching
+    prefsDb.qrLogo = {
+      fileId: largest.file_id,
+      updatedAt: new Date().toISOString(),
+      setBy: String(ctx.from?.id || ""),
+    };
+    savePrefs();
+
+    await ctx.reply(
+      "✅ QR logo updated.\n\n" +
+        "When users enable the logo overlay in <code>/qs</code>, this image will appear in the center of generated QR codes.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  } catch (e) {
+    console.error("QR logo update error:", e);
+    await ctx.reply("❌ Failed to set QR logo. Please try again.", {
+      reply_to_message_id: msg?.message_id,
+    });
+  }
+});
+
+// /qa - set global QR art background (owner only)
+bot.command("qa", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const photos = replied?.photo;
+
+  if (!photos || photos.length === 0) {
+    return ctx.reply(
+      "🎨 Reply to a photo with <code>/qa</code> to set it as the global QR art background.\n\n" +
+        "This image will be used as the full-canvas art in Art mode (see <code>/qs</code>). " +
+        "The underlying QR pattern stays intact for reliable scanning.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  try {
+    const largest = photos[photos.length - 1];
+    prefsDb.qrArt = {
+      fileId: largest.file_id,
+      updatedAt: new Date().toISOString(),
+      setBy: String(ctx.from?.id || ""),
+    };
+    savePrefs();
+
+    await ctx.reply(
+      "✅ QR art background updated.\n\n" +
+        "When Art mode is enabled in <code>/qs</code>, this image will appear behind your QR codes.",
+      { parse_mode: "HTML", reply_to_message_id: msg?.message_id }
+    );
+  } catch (e) {
+    console.error("QR art update error:", e);
+    await ctx.reply("❌ Failed to set QR art background. Please try again.", {
+      reply_to_message_id: msg?.message_id,
+    });
+  }
+});
+
+// /qaclear - clear QR art background (owner only)
+bot.command("qaclear", async (ctx) => {
+  if (!isOwner(ctx)) return ctx.reply("🚫 Owner only.");
+
+  delete prefsDb.qrArt;
+  savePrefs();
+
+  await ctx.reply(
+    "🧹 QR art background cleared.\n\n" +
+      "Art mode will now fall back to a simple themed background until you set a new image with <code>/qa</code>.",
+    { parse_mode: "HTML", reply_to_message_id: ctx.message?.message_id }
+  );
+});
+
 // Dev Status callback - detailed API diagnostics (owner only)
 bot.callbackQuery("dev_status", async (ctx) => {
   const userId = ctx.from?.id;
@@ -13382,29 +14462,419 @@ bot.command("qr", async (ctx) => {
   
   if (!text) {
     return ctx.reply(
-      '📱 <b>QR Code Generator</b>\n\n' +
-      '<b>Usage:</b>\n' +
-      '<code>/qr your text or URL here</code>\n\n' +
-      '<b>Examples:</b>\n' +
-      '<code>/qr https://example.com</code>\n' +
-      '<code>/qr Hello World!</code>',
+      '📱 <b>QR Code Generator</b>\\n\\n' +
+      '<b>Usage:</b>\\n' +
+      '<code>/qr your text or URL here</code>\\n\\n' +
+      '<b>Examples:</b>\\n' +
+      '<code>/qr https://example.com</code>\\n' +
+      '<code>/qr Hello World!</code>\\n\\n' +
+      'Tip: Use <code>/qs</code> to customize QR themes (colors, resolution, correction level, logo overlay, and art style).',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
   
-  const result = await generateQR(text);
-  
-  if (!result.success) {
-    return ctx.reply(`❌ Failed to generate QR: ${result.error}`, {
-      reply_to_message_id: ctx.message?.message_id
+  const {
+    themeKey,
+    theme,
+    size,
+    errorCorrectionLevel,
+    margin,
+    logoEnabled,
+    reencodeOnScan,
+    artStyle,
+  } = getUserQrPrefs(ctx.from.id);
+
+  let effectiveLevel;
+  if (artStyle === "v1" || artStyle === "v2") {
+    // Art styles use heavier stylization; force highest ECC for robustness
+    effectiveLevel = "H";
+  } else {
+    const needsHighEc = logoEnabled;
+    effectiveLevel = getEffectiveQrErrorCorrection(
+      errorCorrectionLevel,
+      needsHighEc
+    );
+  }
+
+  let qrBuffer;
+
+  if (artStyle === "v1" || artStyle === "v2") {
+    // Direct art-mode render: v1 (safe overlay) or v2 (more image-driven)
+    try {
+      const options = {
+        theme,
+        size: size || theme.width,
+        margin,
+        errorCorrectionLevel: effectiveLevel,
+      };
+      if (artStyle === "v2") {
+        qrBuffer = await renderQrArtV2FromData(text, options, ctx.api);
+      } else {
+        qrBuffer = await renderQrArtFromData(text, options, ctx.api);
+      }
+    } catch (e) {
+      console.error("Art mode generation failed, falling back to standard QR:", e);
+      const result = await generateQR(text, {
+        width: size || theme.width,
+        margin,
+        errorCorrectionLevel: effectiveLevel,
+        dark: theme.dark,
+        light: theme.light,
+      });
+      if (!result.success) {
+        return ctx.reply(`❌ Failed to generate QR: ${result.error}`, {
+          reply_to_message_id: ctx.message?.message_id,
+        });
+      }
+      qrBuffer = result.buffer;
+    }
+  } else {
+    // Standard QR (optionally with center logo)
+    const result = await generateQR(text, {
+      width: size || theme.width,
+      margin,
+      errorCorrectionLevel: effectiveLevel,
+      dark: theme.dark,
+      light: theme.light,
     });
+    
+    if (!result.success) {
+      return ctx.reply(`❌ Failed to generate QR: ${result.error}`, {
+        reply_to_message_id: ctx.message?.message_id
+      });
+    }
+
+    qrBuffer = result.buffer;
+    if (logoEnabled) {
+      qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
+    }
+  }
+
+  const themeLabel = `${theme.icon} ${theme.label}`;
+  let styleLine = "";
+  if (artStyle === "v1") {
+    styleLine = "\\n🖼️ Style: <b>Art v1 (overlay)</b>";
+  } else if (artStyle === "v2") {
+    styleLine = "\\n🖼️ Style: <b>Art v2 (logo-style)</b>";
+  } else if (logoEnabled) {
+    styleLine = "\\n🔷 Logo: <b>Enabled</b>";
   }
   
-  await ctx.replyWithPhoto(new InputFile(result.buffer, 'qrcode.png'), {
-    caption: `📱 QR Code for:\n<code>${escapeHTML(text.slice(0, 200))}</code>`,
+  await ctx.replyWithPhoto(new InputFile(qrBuffer, 'qrcode.png'), {
+    caption:
+      `📱 QR Code for:\\n<code>${escapeHTML(text.slice(0, 200))}</code>\\n\\n` +
+      `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\\n` +
+      `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(effectiveLevel)}</b>` +
+      styleLine,
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
+});
+
+// /rename - Rename replied text document (e.g. QR export)
+bot.command("rename", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+  const doc = replied?.document;
+
+  if (!doc) {
+    return ctx.reply(
+      '✏️ <b>Rename file</b>\n\n' +
+      'Reply to a text document and use:\n' +
+      '<code>/rename My Name</code>\n\n' +
+      'This will resend it as <code>My Name.txt</code>.\n' +
+      'If you do not use /rename, the default filename is kept.',
+      { parse_mode: 'HTML', reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  const origName = doc.file_name || 'file.txt';
+  const isTextDoc =
+    (doc.mime_type && doc.mime_type.startsWith('text/')) ||
+    origName.toLowerCase().endsWith('.txt');
+
+  if (!isTextDoc) {
+    return ctx.reply(
+      '❌ This command currently supports only text files (.txt).',
+      { reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  // Parse desired name from command
+  const rawName = msg.text.replace(/^\/rename(@\w+)?\s*/i, '').trim();
+  if (!rawName) {
+    return ctx.reply(
+      '❌ Please provide a name.\n\n' +
+      'Example:\n<code>/rename My QR Backup</code>',
+      { parse_mode: 'HTML', reply_to_message_id: msg?.message_id }
+    );
+  }
+
+  let desired = rawName;
+  const quoteMatch = rawName.match(/^\"(.+)\"$/);
+  if (quoteMatch) {
+    desired = quoteMatch[1];
+  }
+
+  // Sanitize filename (basic)
+  desired = desired.replace(/[\\\/:*?"<>|]+/g, '').trim();
+  if (!desired) desired = 'renamed';
+
+  let fileName = desired;
+  // If no extension provided, use .txt
+  if (!/\.[^.\s]{1,10}$/.test(desired)) {
+    fileName = `${desired}.txt`;
+  }
+
+  try {
+    // Download the original file from Telegram and re-upload with new name
+    const file = await ctx.api.getFile(doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    const buffer = await response.buffer();
+
+    await ctx.replyWithDocument(new InputFile(buffer, fileName), {
+      caption: `📄 Renamed file: <code>${escapeHTML(fileName)}</code>`,
+      parse_mode: 'HTML',
+      reply_to_message_id: msg?.message_id,
+    });
+  } catch (e) {
+    console.error('Rename error:', e);
+    await ctx.reply(
+      '❌ Failed to rename file. Please try again.',
+      { reply_to_message_id: msg?.message_id }
+    );
+  }
+});
+
+// /qs - QR settings (themes, resolution, error correction, logo)
+bot.command("qs", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  if (!(await enforceCommandCooldown(ctx))) return;
+  ensureUser(ctx.from.id, ctx.from);
+
+  const userId = ctx.from.id;
+  const { text, keyboard } = buildQrSettingsView(userId);
+
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    reply_markup: keyboard,
+    reply_to_message_id: ctx.message?.message_id,
+  });
+});
+
+// QR settings main menu + section navigation
+bot.callbackQuery(/^qs_menu:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const section = ctx.match[1];
+
+  let view;
+  switch (section) {
+    case "themes":
+      view = buildQrThemesView(userId);
+      break;
+    case "size":
+      view = buildQrSizeView(userId);
+      break;
+    case "ec":
+      view = buildQrEcView(userId);
+      break;
+    case "overlay":
+      view = buildQrOverlayView(userId);
+      break;
+    case "scan":
+      view = buildQrScanView(userId);
+      break;
+    case "main":
+    default:
+      view = buildQrSettingsView(userId);
+      break;
+  }
+
+  const { text, keyboard } = view;
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch {
+    await ctx.reply(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  }
+});
+
+// QR settings callbacks
+bot.callbackQuery(/^qs_theme:(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const match = ctx.match;
+  const themeKey = match && match[1] ? match[1] : null;
+  if (!themeKey || !QR_THEMES[themeKey]) {
+    return ctx.answerCallbackQuery({ text: "Invalid theme.", show_alert: true });
+  }
+
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.theme = themeKey;
+  const theme = QR_THEMES[themeKey];
+  if (!user.qrPrefs.size) user.qrPrefs.size = theme.width || 2048;
+  if (!user.qrPrefs.errorCorrectionLevel) {
+    user.qrPrefs.errorCorrectionLevel = theme.errorCorrectionLevel || "L";
+  }
+  if (user.qrPrefs.margin === undefined) {
+    user.qrPrefs.margin = theme.margin ?? 4;
+  }
+  saveUsers();
+
+  await ctx.answerCallbackQuery({ text: `Theme: ${theme.label} ✅` });
+
+  const { text, keyboard } = buildQrThemesView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_size:(\d+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const size = parseInt(ctx.match[1], 10);
+  if (![1024, 2048, 4096].includes(size)) {
+    return ctx.answerCallbackQuery({ text: "Invalid size.", show_alert: true });
+  }
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.size = size;
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: `Size set to ${size}×${size}`, show_alert: false });
+
+  const { text, keyboard } = buildQrSizeView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_level:([LMQH])$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const level = ctx.match[1];
+  const user = getUserRecord(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.errorCorrectionLevel = level;
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: `Error correction: ${level}`, show_alert: false });
+
+  const { text, keyboard } = buildQrEcView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
+});
+
+bot.callbackQuery(/^qs_logo:(0|1)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+
+  const enable = ctx.match[1] === "1";
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const user = ensureUser(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  user.qrPrefs.logoEnabled = enable;
+
+  // Enforce mutual exclusivity with art styles
+  if (enable) {
+    user.qrPrefs.artStyle = "none";
+    if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
+  }
+
+  saveUsers();
+
+  const { text, keyboard } = buildQrOverlayView(userId);
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.callbackQuery(/^qs_artstyle:cycle$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  await ctx.answerCallbackQuery();
+
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const user = ensureUser(userId);
+  user.qrPrefs = user.qrPrefs || {};
+  let current = user.qrPrefs.artStyle;
+  if (!["none", "v1", "v2"].includes(current)) {
+    // Backward compatibility with old boolean
+    if (user.qrPrefs.artMode === true) current = "v1";
+    else current = "none";
+  }
+  let next;
+  if (current === "none") next = "v1";
+  else if (current === "v1") next = "v2";
+  else next = "none";
+
+  user.qrPrefs.artStyle = next;
+  // Art styles and logo overlay are mutually exclusive
+  if (next !== "none") {
+    user.qrPrefs.logoEnabled = false;
+  }
+  if (user.qrPrefs.artMode !== undefined) delete user.qrPrefs.artMode;
+
+  saveUsers();
+
+  const { text, keyboard } = buildQrOverlayView(userId);
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (e) {
+    // ignore
+  }
+});
+
+bot.callbackQuery("qs_reset", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  const userId = ctx.from.id;
+  const user = getUserRecord(userId);
+  user.qrPrefs = {
+    theme: "classic",
+    size: 2048,
+    errorCorrectionLevel: "L",
+    margin: 4,
+    logoEnabled: false,
+    reencodeOnScan: true,
+    artStyle: "none",
+  };
+  saveUsers();
+  await ctx.answerCallbackQuery({ text: "QR settings reset.", show_alert: false });
+
+  const { text, keyboard } = buildQrSettingsView(userId);
+  try {
+    await ctx.editMessageText(text, { parse_mode: "HTML", reply_markup: keyboard });
+  } catch {
+    await ctx.reply(text, { parse_mode: "HTML", reply_markup: keyboard });
+  }
 });
 
 // /short - URL shortener
@@ -16450,19 +17920,130 @@ bot.on("message:photo", async (ctx) => {
   try {
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     const response = await fetch(fileUrl);
     const buffer = await response.buffer();
     
     const qrResult = await scanQR(buffer);
-    if (qrResult.success) {
-      const dataLength = qrResult.data.length;
-      return ctx.reply(
+    if (qrResult.success && typeof qrResult.data === "string") {
+      const rawData = qrResult.data;
+      const dataLength = rawData.length;
+      const escaped = escapeHTML(rawData) || "";
+
+      const header =
         `📱 <b>QR Code Scanned Successfully!</b>\n\n` +
-        `📊 <b>Data Length:</b> ${dataLength} characters\n\n` +
-        `📄 <b>Content:</b>\n<code>${escapeHTML(qrResult.data)}</code>`,
-        { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
-      );
+        `📊 <b>Data Length:</b> ${dataLength} characters\n\n`;
+
+      const maxMessageChars = 3500;
+
+      // First try to send full content; if too long, fall back to preview + txt file
+      const fullPrefix = header + `📄 <b>Content:</b>\n<pre><code>`;
+      const fullSuffix = `</code></pre>`;
+      let contentHtml = escaped;
+      let messageText = fullPrefix + contentHtml + fullSuffix;
+      let attachFile = false;
+
+      if (messageText.length > maxMessageChars) {
+        // Build a safe preview message and attach full content as a text file
+        const previewPrefix = header + `📄 <b>Content (preview):</b>\n<pre><code>`;
+        const previewSuffix = `</code></pre>\n\n<i>Full content is attached as a text file below.</i>`;
+
+        const availableForContent =
+          maxMessageChars - previewPrefix.length - previewSuffix.length - 50;
+
+        const maxContentLen = availableForContent > 500 ? availableForContent : 500;
+        contentHtml = escaped.slice(0, maxContentLen) + "…";
+        messageText = previewPrefix + contentHtml + previewSuffix;
+        attachFile = true;
+      }
+
+      await ctx.reply(messageText, {
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message?.message_id,
+      });
+
+      if (attachFile) {
+        const fileBuffer = Buffer.from(rawData, "utf8");
+        // Use a custom filename per QR to avoid duplicate names (include length + hash)
+        const shortHash = crypto.createHash("sha1").update(rawData).digest("hex").slice(0, 8);
+        const fileName = `qr_${dataLength}chars_${shortHash}.txt`;
+        await ctx.replyWithDocument(new InputFile(fileBuffer, fileName), {
+          caption: "📄 Full QR content (copyable text file)",
+          reply_to_message_id: ctx.message?.message_id,
+        });
+      }
+
+      // Also re-encode the content as a fresh QR using the user's current /qs settings
+      try {
+        const {
+          theme,
+          size,
+          errorCorrectionLevel,
+          margin,
+          logoEnabled,
+          reencodeOnScan,
+          artStyle,
+        } = getUserQrPrefs(u.id);
+
+        if (!reencodeOnScan) {
+          return;
+        }
+
+        let effectiveLevel;
+        if (artStyle === "v1" || artStyle === "v2") {
+          effectiveLevel = "H";
+        } else {
+          const needsHighEc = logoEnabled;
+          effectiveLevel = getEffectiveQrErrorCorrection(
+            errorCorrectionLevel,
+            needsHighEc
+          );
+        }
+
+        const genResult = await generateQR(rawData, {
+          width: size || theme.width,
+          margin,
+          errorCorrectionLevel: effectiveLevel,
+          dark: theme.dark,
+          light: theme.light,
+        });
+
+        if (genResult.success) {
+          let qrBuffer = genResult.buffer;
+          if (artStyle === "v1" || artStyle === "v2") {
+            qrBuffer = await renderQrArt(qrBuffer, theme, ctx.api, artStyle);
+          } else if (logoEnabled) {
+            qrBuffer = await renderQrWithLogo(qrBuffer, theme, ctx.api);
+          }
+
+          const themeLabel = `${theme.icon} ${theme.label}`;
+          let styleLine = "";
+          if (artStyle === "v1") {
+            styleLine = `\n🖼️ Style: <b>Art v1 (overlay)</b>`;
+          } else if (artStyle === "v2") {
+            styleLine = `\n🖼️ Style: <b>Art v2 (logo-style)</b>`;
+          } else if (logoEnabled) {
+            styleLine = `\n🔷 Logo: <b>Enabled</b>`;
+          }
+
+          await ctx.replyWithPhoto(new InputFile(qrBuffer, "qrcode.png"), {
+            caption:
+              `🔁 Re-encoded with your QR settings\n\n` +
+              `🎨 Theme: <b>${escapeHTML(themeLabel)}</b>\n` +
+              `📐 Size: <b>${size}×${size}</b> • EC: <b>${escapeHTML(
+                effectiveLevel
+              )}</b>` +
+              styleLine,
+            parse_mode: "HTML",
+            reply_to_message_id: ctx.message?.message_id,
+          });
+        }
+      } catch (e) {
+        // If re-encoding fails, just ignore; text + file already sent
+        console.error("QR re-encode after scan failed:", e);
+      }
+
+      return;
     }
   } catch (error) {
     // Silently continue to normal photo processing if QR scan fails
@@ -22218,7 +23799,7 @@ bot.callbackQuery(/^char_new_intro:(.+)$/, async (ctx) => {
 // =====================
 setInterval(() => {
   const t = nowMs();
-  const ttl = 30 * 60_000; // 30 min
+  const ttl = 30 * 60_000; // 30 minutes
   for (const [k, v] of inlineCache.entries()) {
     if (t - v.createdAt > ttl) inlineCache.delete(k);
   }
