@@ -20240,6 +20240,21 @@ bot.on("inline_query", async (ctx) => {
       },
       {
         type: "article",
+        id: `music_menu_${sessionKey}`,
+        title: "🎵 Music",
+        description: "Search & download songs in high quality",
+        thumbnail_url: "https://img.icons8.com/fluency/96/music.png",
+        input_message_content: {
+          message_text: "🎵 *StarzAI Music*\n\nSearch millions of songs and download in 320kbps quality.\n\n_Tap Search to find your song!_",
+          parse_mode: "Markdown"
+        },
+        reply_markup: new InlineKeyboard()
+          .switchInlineCurrent("🔍 Search Music", "m: ")
+          .row()
+          .switchInlineCurrent("← Back", ""),
+      },
+      {
+        type: "article",
         id: `settings_menu_${sessionKey}`,
         title: `⚙️ Settings`,
         description: `Model: ${shortModel} • Tap to change`,
@@ -21940,7 +21955,94 @@ bot.on("inline_query", async (ctx) => {
     ], { cache_time: 0, is_personal: true });
   }
   
-  
+  // "m:" or "m " - Music search - show song results as inline popups
+  if (qLower.startsWith("m:") || qLower.startsWith("m ")) {
+    const query = q.slice(2).trim();
+
+    if (!query) {
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `m_typing_${sessionKey}`,
+          title: "🎵 Music Search",
+          description: "Type a song name to search...",
+          thumbnail_url: "https://img.icons8.com/fluency/96/music.png",
+          input_message_content: {
+            message_text: "🎵 *StarzAI Music*\n\nType a song name after `m:` to search.\n\nExample: `m: Shape of You`",
+            parse_mode: "Markdown"
+          },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("← Back", ""),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+
+    try {
+      const result = await searchMusic(query, 7);
+
+      if (!result.success || !result.songs?.length) {
+        return safeAnswerInline(ctx, [
+          {
+            type: "article",
+            id: `m_noresult_${sessionKey}`,
+            title: `❌ No results for "${query.slice(0, 30)}"`,
+            description: "Try a different search term",
+            thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+            input_message_content: {
+              message_text: `❌ No songs found for "${query}"`,
+            },
+            reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Try Again", "m: "),
+          },
+        ], { cache_time: 0, is_personal: true });
+      }
+
+      const results = result.songs.map((song, i) => {
+        const mKey = `ms_${makeId(6)}`;
+        // Store each song in inlineCache for chosen_inline_result
+        inlineCache.set(`m_pending_${mKey}`, {
+          song,
+          userId: String(userId),
+          createdAt: Date.now(),
+        });
+        setTimeout(() => inlineCache.delete(`m_pending_${mKey}`), 5 * 60 * 1000);
+
+        const dur = song.duration || '';
+        const yr = song.year ? ` • ${song.year}` : '';
+        const desc = `${song.artist}${dur ? ' • ' + dur : ''}${yr}`;
+
+        return {
+          type: "article",
+          id: `m_song_${mKey}`,
+          title: `🎵 ${song.name}`,
+          description: desc,
+          thumbnail_url: song.image || "https://img.icons8.com/fluency/96/music.png",
+          input_message_content: {
+            message_text:
+              `🎵 <b>${escapeHTML(song.name)}</b>\n` +
+              `🎤 <i>${escapeHTML(song.artist)}</i>\n\n` +
+              `⏳ <b>Downloading...</b> Please wait.`,
+            parse_mode: "HTML",
+          },
+          reply_markup: new InlineKeyboard().text("⏳ Downloading...", "noop"),
+        };
+      });
+
+      return safeAnswerInline(ctx, results, { cache_time: 30, is_personal: true });
+    } catch (err) {
+      console.error("[Music Inline] Search error:", err.message);
+      return safeAnswerInline(ctx, [
+        {
+          type: "article",
+          id: `m_error_${sessionKey}`,
+          title: "❌ Search failed",
+          description: err.message,
+          thumbnail_url: "https://img.icons8.com/fluency/96/cancel.png",
+          input_message_content: { message_text: `❌ Music search failed: ${err.message}` },
+          reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Try Again", "m: "),
+        },
+      ], { cache_time: 0, is_personal: true });
+    }
+  }
+
   // "s" or "s " - Settings shortcut - show model categories with navigation buttons
   if (qLower === "s" || qLower === "s ") {
     const user = getUserRecord(userId);
@@ -23121,6 +23223,145 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
   
+  // Handle inline music download - m_song_KEY
+  if (resultId.startsWith("m_song_")) {
+    const mKey = resultId.replace("m_song_", "");
+    const pending = inlineCache.get(`m_pending_${mKey}`);
+
+    if (!pending || !inlineMessageId) {
+      console.log(`[Music Inline] Pending not found: mKey=${mKey}`);
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            "❌ Song request expired. Search again with <code>m: song name</code>",
+            { parse_mode: "HTML" }
+          );
+        } catch {}
+      }
+      return;
+    }
+
+    const { song, userId: ownerId } = pending;
+    console.log(`[Music Inline] Downloading: ${song.name} by ${song.artist}`);
+
+    try {
+      // Get download URL - prefer from search, fallback to getSongById
+      let downloadUrl = song.downloadUrl;
+      let quality = song.quality || '320kbps';
+      let fullSong = song;
+
+      if (!downloadUrl) {
+        const songResult = await getSongById(song.id);
+        if (!songResult.success || !songResult.song?.downloadUrl) {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `❌ <b>Download failed</b>\n\nCould not get download link for "${escapeHTML(song.name)}".\n\n<i>Try searching again with</i> <code>m: ${escapeHTML(song.name)}</code>`,
+            { parse_mode: "HTML", reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Search Again", "m: ") }
+          );
+          return;
+        }
+        fullSong = songResult.song;
+        downloadUrl = fullSong.downloadUrl;
+        quality = fullSong.quality || '320kbps';
+      }
+
+      // Update inline message with progress
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🎵 <b>${escapeHTML(fullSong.name)}</b>\n🎤 <i>${escapeHTML(fullSong.artist)}</i>\n\n📥 <b>Downloading ${quality}...</b>`,
+          { parse_mode: "HTML" }
+        );
+      } catch {}
+
+      // Download audio buffer
+      const audioRes = await fetch(downloadUrl);
+      if (!audioRes.ok) throw new Error(`Download failed (${audioRes.status})`);
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+      const fileSizeMB = (audioBuffer.length / (1024 * 1024)).toFixed(1);
+
+      const fileName = `${(fullSong.artist || 'Unknown').replace(/[^a-zA-Z0-9\s-]/g, '')} - ${(fullSong.name || 'Unknown').replace(/[^a-zA-Z0-9\s-]/g, '')}.mp3`;
+
+      // Build caption
+      let caption = `🎵 <b>${escapeHTML(fullSong.name)}</b>\n`;
+      caption += `🎤 ${escapeHTML(fullSong.artist)}\n`;
+      if (fullSong.album && fullSong.album !== 'Unknown') caption += `💿 ${escapeHTML(fullSong.album)}\n`;
+      if (fullSong.duration) caption += `⏱ ${fullSong.duration}\n`;
+      caption += `📊 ${quality} • ${fileSizeMB}MB\n\n`;
+      caption += `<i>via StarzAI Music</i>`;
+
+      // Download thumbnail
+      let thumbInput = undefined;
+      if (fullSong.image) {
+        try {
+          const thumbRes = await fetch(fullSong.image);
+          if (thumbRes.ok) {
+            const thumbBuf = Buffer.from(await thumbRes.arrayBuffer());
+            thumbInput = new InputFile(thumbBuf, 'thumb.jpg');
+          }
+        } catch {}
+      }
+
+      // We can't send audio directly from inline mode, but we can send it to the user's chat
+      // The inline message was sent in a chat, so we use the chat from the inline result
+      // However, chosen_inline_result doesn't give us chat_id directly.
+      // Instead, we update the inline message with the result and send the audio to the user's DM.
+      
+      // Send audio to user's DM
+      try {
+        await bot.api.sendAudio(
+          ownerId,
+          new InputFile(audioBuffer, fileName),
+          {
+            caption,
+            parse_mode: 'HTML',
+            title: fullSong.name,
+            performer: fullSong.artist,
+            thumbnail: thumbInput,
+          }
+        );
+      } catch (dmErr) {
+        console.error('[Music Inline] DM send failed:', dmErr.message);
+      }
+
+      // Update inline message with success
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `🎵 <b>${escapeHTML(fullSong.name)}</b>\n` +
+          `🎤 ${escapeHTML(fullSong.artist)}\n` +
+          (fullSong.album && fullSong.album !== 'Unknown' ? `💿 ${escapeHTML(fullSong.album)}\n` : '') +
+          (fullSong.duration ? `⏱ ${fullSong.duration}\n` : '') +
+          `📊 ${quality} • ${fileSizeMB}MB\n\n` +
+          `✅ <b>Sent to your DM!</b>\n` +
+          `<i>via StarzAI Music</i>`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .switchInlineCurrent("🔍 Search More Music", "m: "),
+          }
+        );
+      } catch {}
+
+    } catch (err) {
+      console.error('[Music Inline] Download error:', err.message);
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `❌ <b>Download failed</b>\n<i>${escapeHTML(err.message)}</i>\n\n<i>Try again with</i> <code>m: ${escapeHTML(song.name)}</code>`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Try Again", "m: "),
+          }
+        );
+      } catch {}
+    }
+
+    inlineCache.delete(`m_pending_${mKey}`);
+    return;
+  }
+
   // Handle inline download - dl_start_KEY or dl_audio_KEY
   if (resultId.startsWith("dl_start_") || resultId.startsWith("dl_audio_")) {
     const isAudioOnly = resultId.startsWith("dl_audio_");
