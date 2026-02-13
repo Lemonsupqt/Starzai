@@ -14719,6 +14719,8 @@ bot.callbackQuery(/^mdl:/, async (ctx) => {
             [
               { text: '📥 HD File', callback_data: `mhd:${dlKey}` },
               { text: '📝 Lyrics', callback_data: `mlyrics:${dlKey}` },
+            ],
+            [
               { text: '🔍 Search Again', callback_data: `mnew:${ctx.from.id}` },
             ],
           ],
@@ -14969,26 +14971,46 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
       if (hasVersions) buttons.push({ text: `📀 Other Versions (${result.allResults.length - 1})`, callback_data: `lyrics_versions:${ctx.from.id}` });
     }
 
-    // Send lyrics to DM (can't reply inline with long text)
-    try {
-      await bot.api.sendMessage(
-        data.userId,
-        header + escapeHTML(lyrics),
-        {
-          parse_mode: 'HTML',
-          reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
-        }
-      );
-    } catch {}
+    // If we're in a regular chat (not inline), reply to the message
+    // If inline, send to DM
+    const chatId = ctx.chat?.id;
+    const msgId = ctx.callbackQuery?.message?.message_id;
+    
+    if (chatId && msgId) {
+      // Regular chat — reply to the audio message
+      try {
+        await ctx.reply(
+          header + escapeHTML(lyrics),
+          {
+            parse_mode: 'HTML',
+            reply_parameters: { message_id: msgId },
+            reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+          }
+        );
+      } catch {}
+    } else {
+      // Inline message — send to DM
+      try {
+        await bot.api.sendMessage(
+          data.userId,
+          header + escapeHTML(lyrics),
+          {
+            parse_mode: 'HTML',
+            reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+          }
+        );
+      } catch {}
 
-    // Update inline message to show lyrics were sent
-    try {
-      await ctx.editMessageReplyMarkup({
-        reply_markup: new InlineKeyboard()
-          .text("✅ Lyrics Sent to DM", "noop")
-          .switchInlineCurrent("🔍 Search More", "m: "),
-      });
-    } catch {}
+      // Update inline message buttons
+      try {
+        await ctx.editMessageReplyMarkup({
+          reply_markup: new InlineKeyboard()
+            .text("✅ Lyrics", "noop")
+            .row()
+            .switchInlineCurrent("🔍 Search More", "m: "),
+        });
+      } catch {}
+    }
   } catch (error) {
     console.error('[Music Inline Lyrics] Error:', error);
     try {
@@ -24233,14 +24255,10 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch {}
       }
 
-      // We can't send audio directly from inline mode, but we can send it to the user's chat
-      // The inline message was sent in a chat, so we use the chat from the inline result
-      // However, chosen_inline_result doesn't give us chat_id directly.
-      // Instead, we update the inline message with the result and send the audio to the user's DM.
-      
-      // Send audio to user's DM
+      // Send audio to user's DM first to get a file_id for inline editing
+      let audioFileId = null;
       try {
-        await bot.api.sendAudio(
+        const dmMsg = await bot.api.sendAudio(
           ownerId,
           new InputFile(audioBuffer, fileName),
           {
@@ -24251,6 +24269,9 @@ bot.on("chosen_inline_result", async (ctx) => {
             thumbnail: thumbInput,
           }
         );
+        if (dmMsg.audio?.file_id) {
+          audioFileId = dmMsg.audio.file_id;
+        }
       } catch (dmErr) {
         console.error('[Music Inline] DM send failed:', dmErr.message);
       }
@@ -24260,25 +24281,60 @@ bot.on("chosen_inline_result", async (ctx) => {
       inlineCache.set(inlineLyricsKey, { song: fullSong, userId: ownerId });
       setTimeout(() => inlineCache.delete(inlineLyricsKey), 10 * 60 * 1000);
 
-      // Update inline message with success
-      try {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `🎵 <b>${escapeHTML(fullSong.name)}</b>\n` +
-          `🎤 ${escapeHTML(fullSong.artist)}\n` +
-          (fullSong.album && fullSong.album !== 'Unknown' ? `💿 ${escapeHTML(fullSong.album)}\n` : '') +
-          (fullSong.duration ? `⏱ ${fullSong.duration}\n` : '') +
-          `📊 ${quality} • ${fileSizeMB}MB\n\n` +
-          `✅ <b>Sent to your DM!</b>\n` +
-          `<i>via StarzAI Music</i>`,
-          {
-            parse_mode: "HTML",
-            reply_markup: new InlineKeyboard()
-              .text("📝 Lyrics", `milyrics:${inlineLyricsKey}`)
-              .switchInlineCurrent("🔍 Search More", "m: "),
-          }
-        );
-      } catch {}
+      // Build inline keyboard — 2 rows for clean layout
+      const inlineKb = new InlineKeyboard()
+        .text("📝 Lyrics", `milyrics:${inlineLyricsKey}`)
+        .row()
+        .switchInlineCurrent("🔍 Search More", "m: ");
+
+      // Try to replace inline message with actual audio using editMessageMediaInline
+      if (audioFileId) {
+        try {
+          await bot.api.editMessageMediaInline(
+            inlineMessageId,
+            {
+              type: 'audio',
+              media: audioFileId,
+              caption,
+              parse_mode: 'HTML',
+              title: fullSong.name,
+              performer: fullSong.artist,
+            },
+            { reply_markup: inlineKb }
+          );
+        } catch (editErr) {
+          console.error('[Music Inline] editMessageMediaInline failed:', editErr.message);
+          // Fallback: update text with download info
+          try {
+            await bot.api.editMessageTextInline(
+              inlineMessageId,
+              `🎵 <b>${escapeHTML(fullSong.name)}</b>\n` +
+              `🎤 ${escapeHTML(fullSong.artist)}\n` +
+              (fullSong.album && fullSong.album !== 'Unknown' ? `💿 ${escapeHTML(fullSong.album)}\n` : '') +
+              (fullSong.duration ? `⏱ ${fullSong.duration}\n` : '') +
+              `📊 ${quality} • ${fileSizeMB}MB\n\n` +
+              `✅ <b>Song sent to your DM!</b>\n` +
+              `<i>via StarzAI Music</i>`,
+              { parse_mode: "HTML", reply_markup: inlineKb }
+            );
+          } catch {}
+        }
+      } else {
+        // No file_id available, just update text
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `🎵 <b>${escapeHTML(fullSong.name)}</b>\n` +
+            `🎤 ${escapeHTML(fullSong.artist)}\n` +
+            (fullSong.album && fullSong.album !== 'Unknown' ? `💿 ${escapeHTML(fullSong.album)}\n` : '') +
+            (fullSong.duration ? `⏱ ${fullSong.duration}\n` : '') +
+            `📊 ${quality} • ${fileSizeMB}MB\n\n` +
+            `❌ <b>Could not send audio here.</b>\n` +
+            `<i>Use /m in bot DM for direct download.</i>`,
+            { parse_mode: "HTML", reply_markup: inlineKb }
+          );
+        } catch {}
+      }
 
     } catch (err) {
       console.error('[Music Inline] Download error:', err.message);
