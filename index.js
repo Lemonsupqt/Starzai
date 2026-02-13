@@ -18492,37 +18492,44 @@ async function upscaleAuraSR(imageBuffer) {
   });
   if (!dataResp.ok) throw new Error(`AuraSR SSE failed: ${dataResp.status}`);
   
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('AuraSR timeout (120s)')), 120000);
-    let body = '';
-    dataResp.body.on('data', (chunk) => {
-      body += chunk.toString();
-      const lines = body.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        try {
-          const json = JSON.parse(line.slice(5).trim());
-          if (json.msg === 'process_completed') {
-            clearTimeout(timer);
-            // Gallery output: [original, upscaled] — we want index 1
-            const gallery = json.output?.data?.[0];
-            if (!Array.isArray(gallery) || gallery.length < 2) {
-              reject(new Error('AuraSR: unexpected output format'));
-              return;
-            }
-            const upscaledUrl = gallery[1]?.url;
-            if (!upscaledUrl) { reject(new Error('AuraSR: no output URL')); return; }
-            globalThis.fetch(upscaledUrl)
-              .then(r => r.arrayBuffer())
-              .then(ab => resolve(Buffer.from(ab)))
-              .catch(reject);
+  // Read SSE stream using Web ReadableStream API
+  const reader = dataResp.body.getReader();
+  const decoder = new TextDecoder();
+  let body = '';
+  const deadline = Date.now() + 120000;
+  
+  while (true) {
+    if (Date.now() > deadline) throw new Error('AuraSR timeout (120s)');
+    const { done, value } = await reader.read();
+    if (done) throw new Error('AuraSR: stream ended without result');
+    
+    body += decoder.decode(value, { stream: true });
+    const lines = body.split('\n');
+    // Keep last partial line
+    body = lines.pop() || '';
+    
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      try {
+        const json = JSON.parse(line.slice(5).trim());
+        if (json.msg === 'process_completed') {
+          reader.cancel();
+          // Gallery output: [original, upscaled] — we want index 1
+          const gallery = json.output?.data?.[0];
+          if (!Array.isArray(gallery) || gallery.length < 2) {
+            throw new Error('AuraSR: unexpected output format');
           }
-        } catch (e) { /* partial SSE event */ }
+          const upscaledUrl = gallery[1]?.url;
+          if (!upscaledUrl) throw new Error('AuraSR: no output URL');
+          const imgResp = await globalThis.fetch(upscaledUrl);
+          return Buffer.from(await imgResp.arrayBuffer());
+        }
+      } catch (e) {
+        if (e.message?.startsWith('AuraSR:')) throw e;
+        /* partial SSE event, continue */
       }
-    });
-    dataResp.body.on('error', (e) => { clearTimeout(timer); reject(e); });
-    dataResp.body.on('end', () => { clearTimeout(timer); reject(new Error('AuraSR: stream ended without result')); });
-  });
+    }
+  }
 }
 
 // ─── Finegrain/Clarity AI upscaler (Gradio 5.x queue API) ───
@@ -18548,37 +18555,44 @@ async function upscaleFinegrain(imageBuffer, upscaleFactor = 2) {
   });
   if (!dataResp.ok) throw new Error(`Finegrain SSE failed: ${dataResp.status}`);
   
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Clarity AI timeout (180s)')), 180000);
-    let body = '';
-    dataResp.body.on('data', (chunk) => {
-      body += chunk.toString();
-      const lines = body.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        try {
-          const json = JSON.parse(line.slice(5).trim());
-          if (json.msg === 'process_completed') {
-            clearTimeout(timer);
-            // ImageSlider output: [[before, after]] — we want after (index 1)
-            const slider = json.output?.data?.[0];
-            if (!Array.isArray(slider) || slider.length < 2) {
-              reject(new Error('Clarity AI: unexpected output format'));
-              return;
-            }
-            const afterUrl = slider[1]?.url;
-            if (!afterUrl) { reject(new Error('Clarity AI: no output URL')); return; }
-            globalThis.fetch(afterUrl)
-              .then(r => r.arrayBuffer())
-              .then(ab => resolve(Buffer.from(ab)))
-              .catch(reject);
+  // Read SSE stream using Web ReadableStream API
+  const reader = dataResp.body.getReader();
+  const decoder = new TextDecoder();
+  let body = '';
+  const deadline = Date.now() + 180000;
+  
+  while (true) {
+    if (Date.now() > deadline) throw new Error('Clarity AI timeout (180s)');
+    const { done, value } = await reader.read();
+    if (done) throw new Error('Clarity AI: stream ended without result');
+    
+    body += decoder.decode(value, { stream: true });
+    const lines = body.split('\n');
+    // Keep last partial line
+    body = lines.pop() || '';
+    
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      try {
+        const json = JSON.parse(line.slice(5).trim());
+        if (json.msg === 'process_completed') {
+          reader.cancel();
+          // ImageSlider output: [[before, after]] — we want after (index 1)
+          const slider = json.output?.data?.[0];
+          if (!Array.isArray(slider) || slider.length < 2) {
+            throw new Error('Clarity AI: unexpected output format');
           }
-        } catch (e) { /* partial SSE event */ }
+          const afterUrl = slider[1]?.url;
+          if (!afterUrl) throw new Error('Clarity AI: no output URL');
+          const imgResp = await globalThis.fetch(afterUrl);
+          return Buffer.from(await imgResp.arrayBuffer());
+        }
+      } catch (e) {
+        if (e.message?.startsWith('Clarity AI:')) throw e;
+        /* partial SSE event, continue */
       }
-    });
-    dataResp.body.on('error', (e) => { clearTimeout(timer); reject(e); });
-    dataResp.body.on('end', () => { clearTimeout(timer); reject(new Error('Clarity AI: stream ended without result')); });
-  });
+    }
+  }
 }
 
 // ─── Unified upscale dispatcher ───
