@@ -2794,7 +2794,7 @@ function ensureUser(userId, from = null) {
       artPrefs: {
         model: "seedream-4.5",   // Current APIMart model
         size: "1:1",             // Aspect ratio
-        resolution: null,        // null = API default, or "1080p"/"720p"/"480p"
+        resolution: null,        // null = API default, or model-specific values (e.g. "2K","4K","1080p")
         promptMode: "standard",  // standard or fast
         safeMode: true,          // NSFW filter
         numImages: 1,            // Number of images per generation
@@ -2879,8 +2879,13 @@ function ensureUser(userId, from = null) {
       // migration: add new artPrefs fields if missing
       if (usersDb.users[id].artPrefs.numImages === undefined) usersDb.users[id].artPrefs.numImages = 1;
       if (usersDb.users[id].artPrefs.referenceMode === undefined) usersDb.users[id].artPrefs.referenceMode = false;
-      // migration: reset resolution to null (API default) — 2K/4K not supported by current API tier
-      if (usersDb.users[id].artPrefs.resolution === "2K" || usersDb.users[id].artPrefs.resolution === "4K") usersDb.users[id].artPrefs.resolution = null;
+      // migration: reset resolution if not supported by current model config
+      const userModel = usersDb.users[id].artPrefs.model || "seedream-4.5";
+      const userModelCfg = getAPIMartModelConfig(userModel);
+      const userRes = usersDb.users[id].artPrefs.resolution;
+      if (userRes && userModelCfg && !userModelCfg.supportedResolutions?.includes(userRes)) {
+        usersDb.users[id].artPrefs.resolution = null;
+      }
     }
     saveUsers();
   }
@@ -17323,6 +17328,20 @@ function getArtTagline() {
   return ART_TAGLINES[Math.floor(Math.random() * ART_TAGLINES.length)];
 }
 
+// Dynamic resolution toggle button — cycles through: Auto -> res[0] -> res[1] -> ... -> Auto
+function buildResToggleButton(currentRes, modelConfig) {
+  const supported = modelConfig?.supportedResolutions || [];
+  if (supported.length === 0) return null;
+  // Build cycle: [null, ...supported]
+  const cycle = [null, ...supported];
+  const currentIdx = currentRes ? cycle.indexOf(currentRes) : 0;
+  const nextIdx = (currentIdx + 1) % cycle.length;
+  const nextRes = cycle[nextIdx];
+  const nextLabel = nextRes || "Auto";
+  const nextData = nextRes || "auto";
+  return { text: `\uD83D\uDCFA ${nextLabel}`, callback_data: `art_res:${nextData}` };
+}
+
 // Build the /ass settings message and keyboard
 function buildArtSettingsMessage(user, userId) {
   const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: null, promptMode: "standard", safeMode: true };
@@ -17346,7 +17365,7 @@ function buildArtSettingsMessage(user, userId) {
   
   // Only show resolution if model supports multiple
   if (modelConfig?.supportedResolutions?.length > 1) {
-    const resLabel = prefs.resolution === "1080p" ? "\uD83D\uDCFA 1080p Full HD" : prefs.resolution === "720p" ? "\uD83D\uDDA5 720p HD" : prefs.resolution === "480p" ? "\uD83D\uDCF1 480p" : "\uD83C\uDF10 Auto (API Default)";
+    const resLabel = prefs.resolution ? `\uD83D\uDCFA ${prefs.resolution}` : "\uD83C\uDF10 Auto (API Default)";
     lines.push(`\uD83D\uDCF7 *Resolution:* ${resLabel}`);
   }
   
@@ -17423,8 +17442,7 @@ function buildArtSettingsKeyboard(user, userId) {
       { text: `${!prefs.resolution ? "\u2705 " : ""}\uD83C\uDF10 Auto`, callback_data: "ass_res:auto" },
     ];
     for (const r of supportedRes) {
-      const icon = r === "1080p" ? "\uD83D\uDCFA" : r === "720p" ? "\uD83D\uDDA5" : "\uD83D\uDCF1";
-      resRow.push({ text: `${prefs.resolution === r ? "\u2705 " : ""}${icon} ${r}`, callback_data: `ass_res:${r}` });
+      resRow.push({ text: `${prefs.resolution === r ? "\u2705 " : ""}\uD83D\uDCFA ${r}`, callback_data: `ass_res:${r}` });
     }
     buttons.push(resRow);
   }
@@ -17679,7 +17697,7 @@ bot.command("a", async (ctx) => {
     // Add resolution toggle if model supports it
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "1080p" ? "\uD83C\uDF10 Auto" : finalResolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${finalResolution === "1080p" ? "auto" : finalResolution === "720p" ? "1080p" : "720p"}` }
+        buildResToggleButton(finalResolution, modelConfig)
       );
     }
     
@@ -17795,12 +17813,19 @@ bot.command("ass", async (ctx) => {
     return;
   }
   
-  // Quick resolution: /ass 1080p, /ass 720p, /ass 480p, /ass auto
-  if (args === "1080p" || args === "720p" || args === "480p" || args === "auto") {
+  // Quick resolution: /ass <resolution>, /ass auto
+  const currentModelCfg = getAPIMartModelConfig(user.artPrefs?.model || "seedream-4.5");
+  const allSupportedRes = currentModelCfg?.supportedResolutions || [];
+  if (args === "auto" || allSupportedRes.some(r => r.toLowerCase() === args.toLowerCase())) {
     user.artPrefs = user.artPrefs || {};
-    user.artPrefs.resolution = args === "auto" ? null : args;
+    if (args === "auto") {
+      user.artPrefs.resolution = null;
+    } else {
+      // Match exact case from supportedResolutions
+      user.artPrefs.resolution = allSupportedRes.find(r => r.toLowerCase() === args.toLowerCase()) || args;
+    }
     saveUsers();
-    const label = args === "auto" ? "Auto (API Default)" : args;
+    const label = user.artPrefs.resolution || "Auto (API Default)";
     await ctx.reply(
       `\u2705 Art resolution set to *${label}*\n\n` +
       `_Now /a will generate in ${label} resolution!_`,
@@ -18049,7 +18074,7 @@ bot.callbackQuery("art_regen", async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "1080p" ? "\uD83C\uDF10 Auto" : pending.resolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${pending.resolution === "1080p" ? "auto" : pending.resolution === "720p" ? "1080p" : "720p"}` }
+        buildResToggleButton(pending.resolution, modelConfig)
       );
     }
     
@@ -18198,7 +18223,7 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "1080p" ? "\uD83C\uDF10 Auto" : pending.resolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${pending.resolution === "1080p" ? "auto" : pending.resolution === "720p" ? "1080p" : "720p"}` }
+        buildResToggleButton(pending.resolution, modelConfig)
       );
     }
     
@@ -18298,7 +18323,7 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${newRes === "1080p" ? "\uD83C\uDF10 Auto" : newRes === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${newRes === "1080p" ? "auto" : newRes === "720p" ? "1080p" : "720p"}` }
+        buildResToggleButton(newRes, modelConfig)
       );
     }
     
@@ -18568,7 +18593,7 @@ bot.on("message:photo", async (ctx, next) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "1080p" ? "\uD83C\uDF10 Auto" : finalResolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${finalResolution === "1080p" ? "auto" : finalResolution === "720p" ? "1080p" : "720p"}` }
+        buildResToggleButton(finalResolution, modelConfig)
       );
     }
     

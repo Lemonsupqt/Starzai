@@ -16,32 +16,79 @@ import fetch from "node-fetch";
 // Each model entry defines its capabilities, defaults, and API mapping.
 // To add a new model: just add an entry to this registry.
 
-// Allow overriding model IDs via Railway env variables
-// e.g. APIMART_MODEL_SEEDREAM=doubao-seedance-4-5
-//      APIMART_MODEL_GPT4O=gpt-4o-image
+// ─── RAILWAY ENV VARIABLE OVERRIDES ───
+// Model IDs:
+//   APIMART_MODEL_SEEDREAM45  = model ID for SeedDream 4.5 (default: doubao-seedance-4-5)
+//   APIMART_MODEL_SEEDREAM40  = model ID for SeedDream 4.0 (default: doubao-seedance-4-0)
+//   APIMART_MODEL_GPT4O       = model ID for GPT-4o Image  (default: gpt-4o-image)
+//
+// Resolutions (comma-separated, e.g. "2K,4K" or "1080p,720p,480p"):
+//   APIMART_RES_SEEDREAM45    = resolutions for SeedDream 4.5 (default: 2K,4K)
+//   APIMART_RES_SEEDREAM40    = resolutions for SeedDream 4.0 (default: 1080p,720p,480p)
+//   APIMART_RES_GPT4O         = resolutions for GPT-4o       (default: none)
+//
+// Default resolution (what's used when user hasn't picked one):
+//   APIMART_DEFRES_SEEDREAM45 = default resolution for 4.5 (default: null = API decides)
+//   APIMART_DEFRES_SEEDREAM40 = default resolution for 4.0 (default: null = API decides)
+
+function parseEnvResolutions(envVar, fallback) {
+  const val = process.env[envVar];
+  if (!val) return fallback;
+  return val.split(",").map(r => r.trim()).filter(Boolean);
+}
+
+function parseEnvDefRes(envVar) {
+  const val = process.env[envVar];
+  if (!val || val === "null" || val === "auto" || val === "none") return null;
+  return val.trim();
+}
+
 const APIMART_MODELS = {
   // ─── IMAGE GENERATION MODELS ───
   "seedream-4.5": {
-    id: process.env.APIMART_MODEL_SEEDREAM || "doubao-seedance-4-5",
+    id: process.env.APIMART_MODEL_SEEDREAM45 || "doubao-seedance-4-5",
     name: "SeedDream 4.5",
     shortName: "SD 4.5",
     type: "image",
     provider: "ByteDance",
-    description: "HD text-to-image with perfect text rendering",
+    description: "4K text-to-image with perfect text rendering",
     icon: "🌱",
     costPerImage: 0.028,
-    capabilities: ["text-to-image", "image-editing", "reference-images", "text-rendering", "batch"],
+    capabilities: ["text-to-image", "image-editing", "reference-images", "4k", "text-rendering", "batch"],
     maxBatch: 15,
     maxReferenceImages: 10,
     supportedSizes: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21", "auto"],
-    supportedResolutions: ["1080p", "720p", "480p"],
+    supportedResolutions: parseEnvResolutions("APIMART_RES_SEEDREAM45", ["2K", "4K"]),
     defaultSize: "1:1",
-    defaultResolution: null,
+    defaultResolution: parseEnvDefRes("APIMART_DEFRES_SEEDREAM45") || null,
     promptOptimizationModes: ["standard", "fast"],
     supportsWatermark: true,
     maxPollAttempts: 60,
     pollIntervalMs: 2000,
     estimatedTimeSeconds: 20,
+  },
+
+  "seedream-4.0": {
+    id: process.env.APIMART_MODEL_SEEDREAM40 || "doubao-seedance-4-0",
+    name: "SeedDream 4.0",
+    shortName: "SD 4.0",
+    type: "image",
+    provider: "ByteDance",
+    description: "Fast text-to-image generation",
+    icon: "🌿",
+    costPerImage: 0.020,
+    capabilities: ["text-to-image", "image-editing", "reference-images", "text-rendering", "batch"],
+    maxBatch: 15,
+    maxReferenceImages: 10,
+    supportedSizes: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21", "auto"],
+    supportedResolutions: parseEnvResolutions("APIMART_RES_SEEDREAM40", ["1080p", "720p", "480p"]),
+    defaultSize: "1:1",
+    defaultResolution: parseEnvDefRes("APIMART_DEFRES_SEEDREAM40") || null,
+    promptOptimizationModes: ["standard", "fast"],
+    supportsWatermark: true,
+    maxPollAttempts: 60,
+    pollIntervalMs: 2000,
+    estimatedTimeSeconds: 15,
   },
 
   "gpt-4o-image": {
@@ -57,7 +104,7 @@ const APIMART_MODELS = {
     maxBatch: 4,
     maxReferenceImages: 5,
     supportedSizes: ["1:1", "2:3", "3:2"],
-    supportedResolutions: [],
+    supportedResolutions: parseEnvResolutions("APIMART_RES_GPT4O", []),
     defaultSize: "1:1",
     defaultResolution: null,
     promptOptimizationModes: [],
@@ -67,27 +114,12 @@ const APIMART_MODELS = {
     estimatedTimeSeconds: 15,
   },
 
-  // ─── FUTURE: More image models ───
-  // "flux-kontext": {
-  //   id: "flux-kontext",
-  //   name: "Flux Kontext",
-  //   type: "image",
-  //   ...
-  // },
-
   // ─── FUTURE: Video generation models ───
   // "sora-2": {
   //   id: "sora-2",
   //   name: "Sora 2",
   //   type: "video",
   //   provider: "OpenAI",
-  //   ...
-  // },
-  // "veo-3.1": {
-  //   id: "veo-3.1",
-  //   name: "Veo 3.1",
-  //   type: "video",
-  //   provider: "Google",
   //   ...
   // },
 };
