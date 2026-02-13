@@ -121,7 +121,8 @@ const CONFIG = {
     api: 'https://emkc.org/api/v2/piston'
   },
   lyrics: {
-    api: 'https://api.lyrics.ovh/v1'
+    api: 'https://api.lyrics.ovh/v1',
+    lrclib: 'https://lrclib.net/api'
   },
   quotes: {
     api: 'https://api.quotable.io/random'
@@ -666,14 +667,56 @@ function cleanupDownload(filePath) {
  * Get lyrics for a song
  */
 async function getLyrics(artist, title) {
+  // Try LRCLIB first (better results, has synced lyrics)
   try {
-    const response = await fetch(`${CONFIG.lyrics.api}/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`);
-    const data = await response.json();
+    const lrcResult = await searchLyricsLRCLIB(artist && title ? `${artist} ${title}` : (artist || title));
+    if (lrcResult.success) return lrcResult;
+  } catch (e) { /* fall through to lyrics.ovh */ }
+  
+  // Fallback to lyrics.ovh (requires exact artist/title)
+  if (artist && title) {
+    try {
+      const response = await fetch(`${CONFIG.lyrics.api}/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`);
+      const data = await response.json();
+      if (data.lyrics) {
+        return { success: true, lyrics: data.lyrics, trackName: title, artistName: artist };
+      }
+    } catch (e) { /* no fallback left */ }
+  }
+  
+  return { success: false, error: 'Lyrics not found' };
+}
+
+/**
+ * Search lyrics via LRCLIB API (free, unlimited, no API key)
+ * @param {string} query - Search query (any combination of artist, title, etc.)
+ * @returns {Promise<Object>} Lyrics result
+ */
+async function searchLyricsLRCLIB(query) {
+  try {
+    const response = await fetch(
+      `${CONFIG.lyrics.lrclib}/search?q=${encodeURIComponent(query)}`,
+      { headers: { 'User-Agent': 'Starzai v1.0 (https://github.com/Lemonsupqt/Starzai)' } }
+    );
+    if (!response.ok) return { success: false, error: `LRCLIB API error: ${response.status}` };
     
-    if (data.lyrics) {
-      return { success: true, lyrics: data.lyrics };
-    }
-    return { success: false, error: 'Lyrics not found' };
+    const results = await response.json();
+    if (!results.length) return { success: false, error: 'No lyrics found' };
+    
+    // Find the best result (prefer one with plain lyrics)
+    const best = results.find(r => r.plainLyrics) || results[0];
+    
+    return {
+      success: true,
+      lyrics: best.plainLyrics || '',
+      syncedLyrics: best.syncedLyrics || '',
+      trackName: best.trackName || '',
+      artistName: best.artistName || '',
+      albumName: best.albumName || '',
+      duration: best.duration || 0,
+      instrumental: best.instrumental || false,
+      allResults: results.slice(0, 10), // Keep top 10 for "other versions"
+    };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1670,6 +1713,7 @@ export {
   
   // Music
   getLyrics,
+  searchLyricsLRCLIB,
   searchMusic,
   getSongById,
   downloadMusic,

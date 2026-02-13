@@ -111,6 +111,7 @@ import {
   detectPlatform,
   URL_PATTERNS,
   getLyrics,
+  searchLyricsLRCLIB,
   searchMusic,
   getSongById,
   downloadMusic,
@@ -14185,60 +14186,308 @@ bot.command(["download", "dl"], async (ctx) => {
   }
 });
 
-// /lyrics - Get song lyrics
-bot.command("lyrics", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  if (!(await enforceCommandCooldown(ctx))) return;
-  ensureUser(ctx.from.id, ctx.from);
-  
-  const text = ctx.message.text.replace(/^\/lyrics\s*/i, '').trim();
-  
-  if (!text) {
-    return ctx.reply(
-      '🎵 <b>Lyrics Search</b>\n\n' +
-      '<b>Usage:</b>\n' +
-      '<code>/lyrics Artist - Song Title</code>\n\n' +
-      '<b>Example:</b>\n' +
-      '<code>/lyrics Ed Sheeran - Shape of You</code>',
-      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
-    );
-  }
-  
-  let artist, title;
-  if (text.includes(' - ')) {
-    [artist, title] = text.split(' - ').map(s => s.trim());
-  } else {
-    return ctx.reply(
-      '❌ Please use format: <code>/lyrics Artist - Song Title</code>',
-      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
-    );
-  }
-  
-  const statusMsg = await ctx.reply('🎵 Searching for lyrics...', {
-    reply_to_message_id: ctx.message?.message_id
-  });
-  
-  const result = await getLyrics(artist, title);
-  
-  if (!result.success) {
+// /lyrics - Get song lyrics (powered by LRCLIB + lyrics.ovh fallback)
+const pendingLyricsResults = new Map(); // userId -> { allResults, query }
+
+for (const cmd of ["lyrics", "ly"]) {
+  bot.command(cmd, async (ctx) => {
+    if (!(await enforceRateLimit(ctx))) return;
+    if (!(await enforceCommandCooldown(ctx))) return;
+    ensureUser(ctx.from.id, ctx.from);
+    
+    const text = ctx.message.text.replace(/^\/(lyrics|ly)\s*/i, '').trim();
+    
+    if (!text) {
+      return ctx.reply(
+        '🎵 <b>Lyrics Search</b>\n' +
+        '━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+        'Search any song lyrics instantly!\n\n' +
+        '<b>Usage:</b>\n' +
+        '<code>/lyrics song name</code>\n' +
+        '<code>/lyrics artist - song</code>\n\n' +
+        '<b>Examples:</b>\n' +
+        '<code>/lyrics Shape of You</code>\n' +
+        '<code>/lyrics Ed Sheeran - Shape of You</code>\n' +
+        '<code>/ly Bohemian Rhapsody</code>\n\n' +
+        '<i>Powered by LRCLIB • Free &amp; Unlimited</i>',
+        { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+      );
+    }
+    
+    // Flexible parsing: supports "artist - title" or just "anything"
+    let artist, title;
+    if (text.includes(' - ')) {
+      [artist, ...title] = text.split(' - ');
+      artist = artist.trim();
+      title = title.join(' - ').trim();
+    }
+    
+    const statusMsg = await ctx.reply('🎵 Searching for lyrics...', {
+      reply_to_message_id: ctx.message?.message_id
+    });
+    
+    const result = await getLyrics(artist, title || text);
+    
+    if (!result.success) {
+      await ctx.api.editMessageText(
+        ctx.chat.id, statusMsg.message_id,
+        `❌ Lyrics not found for "${escapeHTML(text)}"\n\n<i>Try a different spelling or add the artist name.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    if (result.instrumental) {
+      await ctx.api.editMessageText(
+        ctx.chat.id, statusMsg.message_id,
+        `🎵 <b>${escapeHTML(result.artistName)} - ${escapeHTML(result.trackName)}</b>\n\n🎶 <i>This is an instrumental track (no lyrics).</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    
+    let lyrics = result.lyrics;
+    const hasSynced = !!result.syncedLyrics;
+    const hasOtherVersions = (result.allResults?.length || 0) > 1;
+    
+    // Format duration
+    const dur = result.duration ? `${Math.floor(result.duration / 60)}:${String(Math.floor(result.duration % 60)).padStart(2, '0')}` : '';
+    
+    // Build header
+    let header = `🎵 <b>${escapeHTML(result.artistName || artist || 'Unknown')} - ${escapeHTML(result.trackName || title || text)}</b>\n`;
+    if (result.albumName) header += `💿 <i>${escapeHTML(result.albumName)}</i>`;
+    if (dur) header += `${result.albumName ? ' • ' : ''}⏱ ${dur}`;
+    header += '\n\n';
+    
+    // Truncate if needed (Telegram message limit ~4096 chars)
+    const maxLen = 4096 - header.length - 100; // leave room for header + buttons
+    if (lyrics.length > maxLen) {
+      lyrics = lyrics.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
+    }
+    
+    // Build inline keyboard
+    const buttons = [];
+    if (hasSynced) {
+      buttons.push({ text: '⏱ Synced Lyrics', callback_data: `lyrics_synced:${ctx.from.id}` });
+    }
+    if (hasOtherVersions) {
+      buttons.push({ text: `📀 Other Versions (${result.allResults.length - 1})`, callback_data: `lyrics_versions:${ctx.from.id}` });
+    }
+    
+    // Store results for callbacks
+    if (hasSynced || hasOtherVersions) {
+      pendingLyricsResults.set(ctx.from.id, {
+        allResults: result.allResults || [],
+        currentIndex: 0,
+        query: text,
+        syncedLyrics: result.syncedLyrics,
+        trackName: result.trackName,
+        artistName: result.artistName,
+      });
+      // Auto-cleanup after 10 minutes
+      setTimeout(() => pendingLyricsResults.delete(ctx.from.id), 600000);
+    }
+    
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      `❌ Lyrics not found for "${escapeHTML(artist)} - ${escapeHTML(title)}"`,
-      { parse_mode: 'HTML' }
+      header + escapeHTML(lyrics),
+      {
+        parse_mode: 'HTML',
+        reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+      }
     );
+  });
+}
+
+// ─── Synced lyrics callback ───
+bot.callbackQuery(/^lyrics_synced:(\d+)$/, async (ctx) => {
+  const targetUserId = parseInt(ctx.callbackQuery.data.split(':')[1]);
+  if (ctx.from.id !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: 'This is not your lyrics search.', show_alert: true });
+  }
+  
+  const pending = pendingLyricsResults.get(ctx.from.id);
+  if (!pending?.syncedLyrics) {
+    return ctx.answerCallbackQuery({ text: 'Session expired. Search again with /lyrics', show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: '⏱ Showing synced lyrics...' });
+  
+  let synced = pending.syncedLyrics;
+  const header = `⏱ <b>Synced Lyrics</b>\n🎵 <b>${escapeHTML(pending.artistName)} - ${escapeHTML(pending.trackName)}</b>\n\n`;
+  
+  const maxLen = 4096 - header.length - 50;
+  if (synced.length > maxLen) {
+    synced = synced.slice(0, maxLen) + '\n\n… (truncated)';
+  }
+  
+  try {
+    await ctx.editMessageText(
+      header + `<code>${escapeHTML(synced)}</code>`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '📄 Plain Lyrics', callback_data: `lyrics_plain:${ctx.from.id}` },
+            ...(pending.allResults.length > 1 ? [{ text: `📀 Other Versions`, callback_data: `lyrics_versions:${ctx.from.id}` }] : []),
+          ]]
+        }
+      }
+    );
+  } catch (e) {
+    // Message too long — send as document
+    await ctx.reply(`⏱ Synced lyrics for ${pending.artistName} - ${pending.trackName} (too long for message, sending as file):`);
+    const lrcContent = `[ar:${pending.artistName}]\n[ti:${pending.trackName}]\n\n${pending.syncedLyrics}`;
+    await ctx.api.sendDocument(
+      ctx.chat.id,
+      new InputFile(Buffer.from(lrcContent, 'utf-8'), `${pending.artistName} - ${pending.trackName}.lrc`)
+    );
+  }
+});
+
+// ─── Plain lyrics callback (switch back from synced) ───
+bot.callbackQuery(/^lyrics_plain:(\d+)$/, async (ctx) => {
+  const targetUserId = parseInt(ctx.callbackQuery.data.split(':')[1]);
+  if (ctx.from.id !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: 'This is not your lyrics search.', show_alert: true });
+  }
+  
+  const pending = pendingLyricsResults.get(ctx.from.id);
+  if (!pending) {
+    return ctx.answerCallbackQuery({ text: 'Session expired. Search again with /lyrics', show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: '📄 Showing plain lyrics...' });
+  
+  const best = pending.allResults[pending.currentIndex || 0];
+  if (!best?.plainLyrics) {
+    return ctx.answerCallbackQuery({ text: 'No plain lyrics available.', show_alert: true });
+  }
+  
+  let lyrics = best.plainLyrics;
+  const dur = best.duration ? `${Math.floor(best.duration / 60)}:${String(Math.floor(best.duration % 60)).padStart(2, '0')}` : '';
+  let header = `🎵 <b>${escapeHTML(best.artistName)} - ${escapeHTML(best.trackName)}</b>\n`;
+  if (best.albumName) header += `💿 <i>${escapeHTML(best.albumName)}</i>`;
+  if (dur) header += `${best.albumName ? ' • ' : ''}⏱ ${dur}`;
+  header += '\n\n';
+  
+  const maxLen = 4096 - header.length - 100;
+  if (lyrics.length > maxLen) {
+    lyrics = lyrics.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
+  }
+  
+  const buttons = [];
+  if (pending.syncedLyrics) buttons.push({ text: '⏱ Synced Lyrics', callback_data: `lyrics_synced:${ctx.from.id}` });
+  if (pending.allResults.length > 1) buttons.push({ text: `📀 Other Versions`, callback_data: `lyrics_versions:${ctx.from.id}` });
+  
+  try {
+    await ctx.editMessageText(
+      header + escapeHTML(lyrics),
+      {
+        parse_mode: 'HTML',
+        reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+      }
+    );
+  } catch (e) {}
+});
+
+// ─── Other versions callback ───
+bot.callbackQuery(/^lyrics_versions:(\d+)$/, async (ctx) => {
+  const targetUserId = parseInt(ctx.callbackQuery.data.split(':')[1]);
+  if (ctx.from.id !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: 'This is not your lyrics search.', show_alert: true });
+  }
+  
+  const pending = pendingLyricsResults.get(ctx.from.id);
+  if (!pending?.allResults?.length) {
+    return ctx.answerCallbackQuery({ text: 'Session expired. Search again with /lyrics', show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: '📀 Showing other versions...' });
+  
+  let text = '📀 <b>Other Versions Found:</b>\n\n';
+  const buttons = [];
+  
+  for (let i = 0; i < Math.min(pending.allResults.length, 8); i++) {
+    const r = pending.allResults[i];
+    const dur = r.duration ? `${Math.floor(r.duration / 60)}:${String(Math.floor(r.duration % 60)).padStart(2, '0')}` : '?:??';
+    const synced = r.syncedLyrics ? '⏱' : '';
+    text += `${i + 1}. <b>${escapeHTML(r.artistName)}</b> - ${escapeHTML(r.trackName)}\n   💿 ${escapeHTML(r.albumName || 'Unknown')} • ${dur} ${synced}\n\n`;
+    buttons.push({ text: `${i + 1}`, callback_data: `lyrics_pick:${ctx.from.id}:${i}` });
+  }
+  
+  // Split buttons into rows of 4
+  const buttonRows = [];
+  for (let i = 0; i < buttons.length; i += 4) {
+    buttonRows.push(buttons.slice(i, i + 4));
+  }
+  
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: buttonRows }
+    });
+  } catch (e) {}
+});
+
+// ─── Pick a specific version ───
+bot.callbackQuery(/^lyrics_pick:(\d+):(\d+)$/, async (ctx) => {
+  const match = ctx.callbackQuery.data.match(/^lyrics_pick:(\d+):(\d+)$/);
+  const targetUserId = parseInt(match[1]);
+  const index = parseInt(match[2]);
+  
+  if (ctx.from.id !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: 'This is not your lyrics search.', show_alert: true });
+  }
+  
+  const pending = pendingLyricsResults.get(ctx.from.id);
+  if (!pending?.allResults?.[index]) {
+    return ctx.answerCallbackQuery({ text: 'Session expired. Search again with /lyrics', show_alert: true });
+  }
+  
+  const picked = pending.allResults[index];
+  pending.currentIndex = index;
+  pending.syncedLyrics = picked.syncedLyrics || '';
+  pending.trackName = picked.trackName;
+  pending.artistName = picked.artistName;
+  
+  await ctx.answerCallbackQuery({ text: `🎵 Loading ${picked.trackName}...` });
+  
+  if (!picked.plainLyrics && picked.instrumental) {
+    try {
+      await ctx.editMessageText(
+        `🎵 <b>${escapeHTML(picked.artistName)} - ${escapeHTML(picked.trackName)}</b>\n\n🎶 <i>This is an instrumental track (no lyrics).</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) {}
     return;
   }
   
-  let lyrics = result.lyrics;
-  if (lyrics.length > 3500) {
-    lyrics = lyrics.slice(0, 3500) + '\n\n... (truncated)';
+  let lyrics = picked.plainLyrics || 'No lyrics available for this version.';
+  const dur = picked.duration ? `${Math.floor(picked.duration / 60)}:${String(Math.floor(picked.duration % 60)).padStart(2, '0')}` : '';
+  let header = `🎵 <b>${escapeHTML(picked.artistName)} - ${escapeHTML(picked.trackName)}</b>\n`;
+  if (picked.albumName) header += `💿 <i>${escapeHTML(picked.albumName)}</i>`;
+  if (dur) header += `${picked.albumName ? ' • ' : ''}⏱ ${dur}`;
+  header += '\n\n';
+  
+  const maxLen = 4096 - header.length - 100;
+  if (lyrics.length > maxLen) {
+    lyrics = lyrics.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
   }
   
-  await ctx.api.editMessageText(
-    ctx.chat.id, statusMsg.message_id,
-    `🎵 <b>${escapeHTML(artist)} - ${escapeHTML(title)}</b>\n\n${escapeHTML(lyrics)}`,
-    { parse_mode: 'HTML' }
-  );
+  const buttons = [];
+  if (picked.syncedLyrics) buttons.push({ text: '⏱ Synced Lyrics', callback_data: `lyrics_synced:${ctx.from.id}` });
+  if (pending.allResults.length > 1) buttons.push({ text: `📀 Other Versions`, callback_data: `lyrics_versions:${ctx.from.id}` });
+  
+  try {
+    await ctx.editMessageText(
+      header + escapeHTML(lyrics),
+      {
+        parse_mode: 'HTML',
+        reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+      }
+    );
+  } catch (e) {}
 });
 
 // =====================
@@ -15998,6 +16247,12 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• `/up 4x` `/up aura` `/up pixel`",
     "• Also on /a art result buttons!",
     "",
+    "🎵 *Music & Lyrics*",
+    "• `/m song name` - Search & download music (320kbps)",
+    "• `/lyrics song name` - Get song lyrics instantly",
+    "• `/ly` - Short alias for lyrics",
+    "• Synced lyrics • Other versions • Album info",
+    "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
     "",
@@ -16521,6 +16776,12 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• Reply to any photo with `/up`",
     "• `/up 4x` `/up aura` `/up pixel`",
     "• Also on /a art result buttons!",
+    "",
+    "🎵 *Music & Lyrics*",
+    "• `/m song name` - Search & download music (320kbps)",
+    "• `/lyrics song name` - Get song lyrics instantly",
+    "• `/ly` - Short alias for lyrics",
+    "• Synced lyrics • Other versions • Album info",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
