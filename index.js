@@ -14320,24 +14320,24 @@ bot.callbackQuery(/^lyrics_synced:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: '⏱ Showing synced lyrics...' });
   
   let synced = pending.syncedLyrics;
-  const header = `⏱ <b>Synced Lyrics</b>\n🎵 <b>${escapeHTML(pending.artistName)} — ${escapeHTML(pending.trackName)}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  const header = `⏱ Synced Lyrics\n🎵 ${pending.artistName} — ${pending.trackName}\n━━━━━━━━━━━━━━━━━━━━━━\n\n`;
   
-  // Format synced lyrics: [mm:ss.xx] text → <b>[mm:ss]</b> text
+  // Format synced lyrics: [mm:ss.xx] text → [mm:ss]  text (plain, no formatting so timestamps work)
   const formattedLines = synced.split('\n').map(line => {
     const match = line.match(/^\[(\d{2}:\d{2})(\.\d+)?\]\s*(.*)$/);
     if (match) {
       const time = match[1];
       const text = match[3];
-      if (!text.trim()) return `<b>[${time}]</b>  ♪`;
-      return `<b>[${time}]</b>  ${escapeHTML(text)}`;
+      if (!text.trim()) return `[${time}]  ♪`;
+      return `[${time}]  ${text}`;
     }
-    return escapeHTML(line);
+    return line;
   });
   let formattedSynced = formattedLines.join('\n');
   
   const maxLen = 4096 - header.length - 50;
   if (formattedSynced.length > maxLen) {
-    formattedSynced = formattedSynced.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
+    formattedSynced = formattedSynced.slice(0, maxLen) + '\n\n… (truncated)';
   }
   
   const replyToAudioId = pending.audioMessageId;
@@ -14349,24 +14349,12 @@ bot.callbackQuery(/^lyrics_synced:(\d+)$/, async (ctx) => {
   };
 
   try {
-    if (replyToAudioId) {
-      // Send as a reply to the audio message so timestamps align
-      await ctx.editMessageText(
-        header + formattedSynced,
-        {
-          parse_mode: 'HTML',
-          reply_markup: replyMarkup,
-        }
-      );
-    } else {
-      await ctx.editMessageText(
-        header + formattedSynced,
-        {
-          parse_mode: 'HTML',
-          reply_markup: replyMarkup,
-        }
-      );
-    }
+    await ctx.editMessageText(
+      header + formattedSynced,
+      {
+        reply_markup: replyMarkup,
+      }
+    );
   } catch (e) {
     // Message too long — send as reply to audio if possible
     const lrcContent = `[ar:${pending.artistName}]\n[ti:${pending.trackName}]\n\n${pending.syncedLyrics}`;
@@ -14941,7 +14929,7 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
     return ctx.answerCallbackQuery({ text: '⚠️ This button is not for you.', show_alert: true });
   }
 
-  const { song } = data;
+  const { song, dmAudioMessageId } = data;
   await ctx.answerCallbackQuery({ text: '🎵 Fetching lyrics...' });
 
   try {
@@ -14951,12 +14939,11 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
     if (!result.success || (!result.lyrics && !result.instrumental)) {
       result = await searchLyricsLRCLIB(song.name);
       if (!result.success || (!result.lyrics && !result.instrumental)) {
-        // Send lyrics to DM since inline messages can only be edited with text
         try {
           await bot.api.sendMessage(
             data.userId,
-            `❌ Lyrics not found for "${escapeHTML(song.name)}"\n\n<i>Try</i> <code>/lyrics ${escapeHTML(song.name)}</code>`,
-            { parse_mode: 'HTML' }
+            `❌ Lyrics not found for "${escapeHTML(song.name)}"\n\nTry /lyrics ${escapeHTML(song.name)}`,
+            { parse_mode: 'HTML', reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
           );
         } catch {}
         return;
@@ -14967,8 +14954,8 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
       try {
         await bot.api.sendMessage(
           data.userId,
-          `🎵 <b>${escapeHTML(song.artist)} — ${escapeHTML(song.name)}</b>\n\n🎶 <i>This is an instrumental track (no lyrics).</i>`,
-          { parse_mode: 'HTML' }
+          `🎵 ${escapeHTML(song.artist)} — ${escapeHTML(song.name)}\n\n🎶 This is an instrumental track (no lyrics).`,
+          { reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
         );
       } catch {}
       return;
@@ -14980,14 +14967,14 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
     const dur = result.duration ? `${Math.floor(result.duration / 60)}:${String(Math.floor(result.duration % 60)).padStart(2, '0')}` : '';
 
     let header = `━━━━━━━━━━━━━━━━━━━━━━\n`;
-    header += `🎵 <b>${escapeHTML(result.artistName || song.artist)} — ${escapeHTML(result.trackName || song.name)}</b>\n`;
-    if (result.albumName) header += `💿 <i>${escapeHTML(result.albumName)}</i>\n`;
+    header += `🎵 ${escapeHTML(result.artistName || song.artist)} — ${escapeHTML(result.trackName || song.name)}\n`;
+    if (result.albumName) header += `💿 ${escapeHTML(result.albumName)}\n`;
     if (dur) header += `⏱ ${dur}\n`;
     header += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     const maxLen = 4096 - header.length - 100;
     if (lyrics.length > maxLen) {
-      lyrics = lyrics.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
+      lyrics = lyrics.slice(0, maxLen) + '\n\n… (truncated)';
     }
 
     const buttons = [];
@@ -14999,6 +14986,8 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
         syncedLyrics: result.syncedLyrics,
         trackName: result.trackName || song.name,
         artistName: result.artistName || song.artist,
+        audioMessageId: dmAudioMessageId,
+        chatId: data.userId,
       });
       setTimeout(() => pendingLyricsResults.delete(ctx.from.id), 600000);
 
@@ -15006,53 +14995,35 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
       if (hasVersions) buttons.push({ text: `📀 Other Versions (${result.allResults.length - 1})`, callback_data: `lyrics_versions:${ctx.from.id}` });
     }
 
-    // If we're in a regular chat (not inline), reply to the message
-    // If inline, send to DM
-    const chatId = ctx.chat?.id;
-    const msgId = ctx.callbackQuery?.message?.message_id;
-    
-    if (chatId && msgId) {
-      // Regular chat — reply to the audio message
-      try {
-        await ctx.reply(
-          header + escapeHTML(lyrics),
-          {
-            parse_mode: 'HTML',
-            reply_parameters: { message_id: msgId },
-            reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
-          }
-        );
-      } catch {}
-    } else {
-      // Inline message — send to DM
-      try {
-        await bot.api.sendMessage(
-          data.userId,
-          header + escapeHTML(lyrics),
-          {
-            parse_mode: 'HTML',
-            reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
-          }
-        );
-      } catch {}
+    // Send lyrics to DM as a reply to the audio message
+    try {
+      await bot.api.sendMessage(
+        data.userId,
+        header + escapeHTML(lyrics),
+        {
+          parse_mode: 'HTML',
+          reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined,
+          reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
+        }
+      );
+    } catch {}
 
-      // Update inline message buttons
-      try {
-        await ctx.editMessageReplyMarkup({
-          reply_markup: new InlineKeyboard()
-            .text("✅ Lyrics", "noop")
-            .row()
-            .switchInlineCurrent("🔍 Search More", "m: "),
-        });
-      } catch {}
-    }
+    // Update inline message button to show lyrics were sent
+    try {
+      await ctx.editMessageReplyMarkup({
+        reply_markup: new InlineKeyboard()
+          .text("✅ Lyrics", "noop")
+          .row()
+          .switchInlineCurrent("🔍 Search More", "m: "),
+      });
+    } catch {}
   } catch (error) {
     console.error('[Music Inline Lyrics] Error:', error);
     try {
       await bot.api.sendMessage(
         data.userId,
-        `❌ Failed to fetch lyrics\n\n<i>Try</i> <code>/lyrics ${escapeHTML(song.name)}</code>`,
-        { parse_mode: 'HTML' }
+        `❌ Failed to fetch lyrics\n\nTry /lyrics ${escapeHTML(song.name)}`,
+        { parse_mode: 'HTML', reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
       );
     } catch {}
   }
@@ -24305,6 +24276,7 @@ bot.on("chosen_inline_result", async (ctx) => {
 
       // Send audio to user's DM first to get a file_id for inline editing
       let audioFileId = null;
+      let dmAudioMsgId = null;
       try {
         const dmMsg = await bot.api.sendAudio(
           ownerId,
@@ -24321,13 +24293,14 @@ bot.on("chosen_inline_result", async (ctx) => {
         if (dmMsg.audio?.file_id) {
           audioFileId = dmMsg.audio.file_id;
         }
+        dmAudioMsgId = dmMsg.message_id;
       } catch (dmErr) {
         console.error('[Music Inline] DM send failed:', dmErr.message);
       }
 
-      // Store song info for lyrics callback
+      // Store song info for lyrics callback (include DM audio message ID for reply)
       const inlineLyricsKey = `mily_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      inlineCache.set(inlineLyricsKey, { song: fullSong, userId: ownerId });
+      inlineCache.set(inlineLyricsKey, { song: fullSong, userId: ownerId, dmAudioMessageId: dmAudioMsgId });
       setTimeout(() => inlineCache.delete(inlineLyricsKey), 10 * 60 * 1000);
 
       // Build inline keyboard — 2 rows for clean layout
