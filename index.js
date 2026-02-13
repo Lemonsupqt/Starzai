@@ -2797,6 +2797,8 @@ function ensureUser(userId, from = null) {
         resolution: "2K",        // 2K or 4K
         promptMode: "standard",  // standard or fast
         safeMode: true,          // NSFW filter
+        numImages: 1,            // Number of images per generation
+        referenceMode: false,    // Reference image mode (photo+caption)
       },
     };
     saveUsers();
@@ -2870,7 +2872,13 @@ function ensureUser(userId, from = null) {
         resolution: "2K",
         promptMode: "standard",
         safeMode: true,
+        numImages: 1,
+        referenceMode: false,
       };
+    } else {
+      // migration: add new artPrefs fields if missing
+      if (usersDb.users[id].artPrefs.numImages === undefined) usersDb.users[id].artPrefs.numImages = 1;
+      if (usersDb.users[id].artPrefs.referenceMode === undefined) usersDb.users[id].artPrefs.referenceMode = false;
     }
     saveUsers();
   }
@@ -17205,6 +17213,18 @@ function buildArtSettingsMessage(user, userId) {
     lines.push(`\u26A1 *Speed:* ${prefs.promptMode === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard (better quality)"}`);
   }
   
+  // Show num images
+  const numImages = prefs.numImages || 1;
+  if (modelConfig?.maxBatch > 1) {
+    lines.push(`\uD83D\uDDBC *Images:* ${numImages === 1 ? '1\uFE0F\u20E3 Single' : numImages === 2 ? '2\uFE0F\u20E3 Double' : '4\uFE0F\u20E3 Quad'}`);
+  }
+  
+  // Show reference image status
+  const refEnabled = prefs.referenceMode === true;
+  if (modelConfig?.capabilities?.includes('reference-images')) {
+    lines.push(`\uD83D\uDDBC\uFE0F *Reference Image:* ${refEnabled ? 'ON \u2014 send photo with /a caption' : 'OFF'}`);
+  }
+  
   lines.push(
     `${safeIcon} *Safe Mode:* ${safeStatus}`,
     "",
@@ -17238,6 +17258,8 @@ function buildArtSettingsKeyboard(user, userId) {
     { key: "9:16", icon: "\uD83D\uDCF2", label: "Story" },
     { key: "3:2", icon: "\uD83D\uDCF7", label: "Photo" },
     { key: "2:3", icon: "\uD83D\uDCF1", label: "Tall" },
+    { key: "21:9", icon: "\uD83D\uDDA5\uFE0F", label: "Ultra Wide" },
+    { key: "9:21", icon: "\uD83D\uDCDC", label: "Ultra Vertical" },
   ];
   
   // Filter to only show sizes the current model supports
@@ -17261,6 +17283,17 @@ function buildArtSettingsKeyboard(user, userId) {
     ]);
   }
   
+  // Number of images selector
+  const maxBatch = currentModelConfig?.maxBatch || 1;
+  if (maxBatch > 1) {
+    const currentN = prefs.numImages || 1;
+    const nOptions = [1, 2, 4].filter(n => n <= maxBatch);
+    buttons.push(nOptions.map(n => ({
+      text: `${currentN === n ? "\u2705 " : ""}${n === 1 ? "1\uFE0F\u20E3" : n === 2 ? "2\uFE0F\u20E3" : "4\uFE0F\u20E3"} ${n} Image${n > 1 ? 's' : ''}`,
+      callback_data: `ass_num:${n}`
+    })));
+  }
+  
   // Speed mode (only if model supports prompt optimization)
   const supportedModes = currentModelConfig?.promptOptimizationModes || [];
   if (supportedModes.length > 0) {
@@ -17270,7 +17303,19 @@ function buildArtSettingsKeyboard(user, userId) {
     ]);
   }
   
-  // Row 5: Safe mode toggle (premium/ultra/owner only)
+  // Reference image toggle (for models that support it)
+  const supportsRef = currentModelConfig?.capabilities?.includes("reference-images");
+  if (supportsRef) {
+    const refEnabled = prefs.referenceMode === true;
+    buttons.push([
+      {
+        text: refEnabled ? "\uD83D\uDDBC\uFE0F Ref Image: ON (tap to disable)" : "\uD83D\uDDBC\uFE0F Ref Image: OFF (tap to enable)",
+        callback_data: refEnabled ? "ass_ref:off" : "ass_ref:on"
+      }
+    ]);
+  }
+  
+  // Safe mode toggle (premium/ultra/owner only)
   if (canToggle) {
     const currentSafe = isOwnerUser ? false : (prefs.safeMode !== false);
     buttons.push([
@@ -17281,7 +17326,7 @@ function buildArtSettingsKeyboard(user, userId) {
     ]);
   }
   
-  // Row 6: Model selection (future-proof - shows when multiple models available)
+  // Model selection (shows when multiple models available)
   const imageModels = getAPIMartImageModels();
   if (imageModels.length > 1) {
     const modelButtons = imageModels.map(([key, m]) => ({
@@ -17291,7 +17336,7 @@ function buildArtSettingsKeyboard(user, userId) {
     buttons.push(modelButtons);
   }
   
-  // Row 7: Back button
+  // Back button
   buttons.push([
     { text: "\u00AB Back to Menu", callback_data: "menu_back" }
   ]);
@@ -17402,6 +17447,9 @@ bot.command("a", async (ctx) => {
   const finalResolution = prefs.resolution || "2K";
   const ratioConfig = getAPIMartRatioConfig(finalSize);
   
+  // Reference image URLs (populated by photo+caption handler)
+  let imageUrls = [];
+  
   // Send generating status
   const statusMsg = await ctx.reply(
     "\uD83C\uDFA8 *Generating your art...*\n" +
@@ -17459,11 +17507,14 @@ bot.command("a", async (ctx) => {
   };
   
   try {
+    const numImages = prefs.numImages || 1;
     const result = await apimartClient.generateImageBuffer({
       model: finalModel,
       prompt: finalPrompt,
       size: finalSize,
       resolution: finalResolution,
+      n: numImages,
+      imageUrls: imageUrls || [],
       optimizePromptMode: prefs.promptMode || "standard",
     }, onProgress);
     
@@ -17474,29 +17525,65 @@ bot.command("a", async (ctx) => {
         { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
       ],
       [
-        { text: `${finalResolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` },
+        { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
     
-    // Send the image
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
-                 `\uD83D\uDCDD _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
+    // Add resolution toggle if model supports it
+    if (modelConfig?.supportedResolutions?.length > 1) {
+      actionButtons[1].unshift(
+        { text: `${finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` }
+      );
+    }
+    
+    const allBuffers = result.buffers || [result.buffer];
+    
+    // Store buffers for HD download
+    pendingArtPrompts.set(u.id, {
+      ...pendingArtPrompts.get(u.id),
+      buffers: allBuffers,
+      urls: result.urls,
+    });
+    
+    // Send images as compressed photos (preview) with action buttons on the last one
+    const caption = `\uD83C\uDFA8 *Art Studio*\n\n` +
+                    `\uD83D\uDCDD _${finalPrompt.slice(0, 180)}${finalPrompt.length > 180 ? '...' : ''}_\n\n` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}` +
+                    `${numImages > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
+                    `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
+                    `\uD83D\uDCE5 _Tap HD Download for full quality file_`;
+    
+    if (allBuffers.length === 1) {
+      // Single image
+      await ctx.api.sendPhoto(
+        ctx.chat.id,
+        new InputFile(allBuffers[0], "art_studio.png"),
+        {
+          caption,
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: actionButtons }
+        }
+      );
+    } else {
+      // Multiple images: send as media group (no buttons on media group), then send buttons separately
+      const mediaGroup = allBuffers.map((buf, i) => ({
+        type: "photo",
+        media: new InputFile(buf, `art_studio_${i + 1}.png`),
+        ...(i === 0 ? { caption, parse_mode: "Markdown" } : {}),
+      }));
+      await ctx.api.sendMediaGroup(ctx.chat.id, mediaGroup);
+      // Send action buttons as a separate message
+      await ctx.reply("\uD83C\uDFA8 *Actions:*", {
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
+      });
+    }
     
     // Delete the status message
     try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
     
-    console.log(`[ART] User ${u.id} generated art (${finalSize}, ${finalResolution}): "${finalPrompt.slice(0, 50)}"`);
+    console.log(`[ART] User ${u.id} generated ${allBuffers.length} art(s) (${finalSize}, ${finalResolution}): "${finalPrompt.slice(0, 50)}"`);
     
   } catch (error) {
     console.error("[ART] Generation error:", error);
@@ -17781,12 +17868,24 @@ bot.callbackQuery("art_regen", async (ctx) => {
   const prefs = user.artPrefs || {};
   
   try {
+    const numImages = prefs.numImages || 1;
     const result = await apimartClient.generateImageBuffer({
       model: pending.model || "seedream-4.5",
       prompt: pending.prompt,
       size: pending.size || "1:1",
       resolution: pending.resolution || "2K",
+      n: numImages,
+      imageUrls: pending.referenceUrl ? [pending.referenceUrl] : [],
       optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const allBuffers = result.buffers || [result.buffer];
+    
+    // Store buffers for HD download
+    pendingArtPrompts.set(u.id, {
+      ...pending,
+      buffers: allBuffers,
+      urls: result.urls,
     });
     
     const actionButtons = [
@@ -17795,25 +17894,43 @@ bot.callbackQuery("art_regen", async (ctx) => {
         { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
       ],
       [
-        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
+        { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
     
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Regenerated Art*\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}..._\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
+    if (modelConfig?.supportedResolutions?.length > 1) {
+      actionButtons[1].unshift(
+        { text: `${pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` }
+      );
+    }
+    
+    const caption = `\uD83C\uDFA8 *Regenerated Art*\n\n` +
+                    `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution}` +
+                    `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
+                    `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
+                    `\uD83D\uDCE5 _Tap HD Download for full quality_`;
+    
+    if (allBuffers.length === 1) {
+      await ctx.api.sendPhoto(ctx.chat.id, new InputFile(allBuffers[0], "art_regen.png"), {
+        caption, parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      });
+    } else {
+      const mediaGroup = allBuffers.map((buf, i) => ({
+        type: "photo",
+        media: new InputFile(buf, `art_regen_${i + 1}.png`),
+        ...(i === 0 ? { caption, parse_mode: "Markdown" } : {}),
+      }));
+      await ctx.api.sendMediaGroup(ctx.chat.id, mediaGroup);
+      await ctx.reply("\uD83C\uDFA8 *Actions:*", {
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
+      });
+    }
     
-    console.log(`[ART] User ${u.id} regenerated art`);
+    console.log(`[ART] User ${u.id} regenerated ${allBuffers.length} art(s)`);
     
   } catch (error) {
     console.error("[ART] Regenerate error:", error);
@@ -17836,21 +17953,29 @@ bot.callbackQuery("art_ratio", async (ctx) => {
   
   const currentSize = pending.size || "1:1";
   
-  const ratioButtons = [
-    [
-      { text: `${currentSize === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "art_ar:1:1" },
-      { text: `${currentSize === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "art_ar:4:3" },
-      { text: `${currentSize === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "art_ar:3:4" },
-    ],
-    [
-      { text: `${currentSize === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "art_ar:16:9" },
-      { text: `${currentSize === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "art_ar:9:16" },
-      { text: `${currentSize === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "art_ar:3:2" },
-    ],
-    [
-      { text: "\u274C Cancel", callback_data: "art_cancel" }
-    ]
-  ];
+  // Build ratio buttons dynamically based on model
+  const modelConfig = getAPIMartModelConfig(pending.model || "seedream-4.5");
+  const supportedSizes = modelConfig?.supportedSizes || ["1:1"];
+  const allPickerSizes = [
+    { key: "1:1", icon: "\u2B1C", label: "Square" },
+    { key: "4:3", icon: "\uD83D\uDDBC\uFE0F", label: "Landscape" },
+    { key: "3:4", icon: "\uD83D\uDCF1", label: "Portrait" },
+    { key: "16:9", icon: "\uD83C\uDFAC", label: "Wide" },
+    { key: "9:16", icon: "\uD83D\uDCF2", label: "Story" },
+    { key: "3:2", icon: "\uD83D\uDCF7", label: "Photo" },
+    { key: "2:3", icon: "\uD83D\uDCF1", label: "Tall" },
+    { key: "21:9", icon: "\uD83D\uDDA5\uFE0F", label: "Ultra Wide" },
+    { key: "9:21", icon: "\uD83D\uDCDC", label: "Ultra Vertical" },
+  ].filter(s => supportedSizes.includes(s.key));
+  
+  const ratioButtons = [];
+  for (let i = 0; i < allPickerSizes.length; i += 3) {
+    ratioButtons.push(allPickerSizes.slice(i, i + 3).map(s => ({
+      text: `${currentSize === s.key ? "\u2705 " : ""}${s.icon} ${s.label}`,
+      callback_data: `art_ar:${s.key}`
+    })));
+  }
+  ratioButtons.push([{ text: "\u274C Cancel", callback_data: "art_cancel" }]);
   
   await ctx.reply(
     "\uD83D\uDCD0 *Change Aspect Ratio*\n\n" +
@@ -17892,12 +18017,24 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
     // Delete the ratio selection message
     try { await ctx.deleteMessage(); } catch (e) {}
     
+    const numImages = prefs.numImages || 1;
     const result = await apimartClient.generateImageBuffer({
       model: pending.model || "seedream-4.5",
       prompt: pending.prompt,
       size: newSize,
       resolution: pending.resolution || "2K",
+      n: numImages,
+      imageUrls: pending.referenceUrl ? [pending.referenceUrl] : [],
       optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const modelConfig = getAPIMartModelConfig(pending.model || "seedream-4.5");
+    const allBuffers = result.buffers || [result.buffer];
+    
+    pendingArtPrompts.set(u.id, {
+      ...pending,
+      buffers: allBuffers,
+      urls: result.urls,
     });
     
     const actionButtons = [
@@ -17906,23 +18043,41 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
         { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
       ],
       [
-        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
+        { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
     
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
+    if (modelConfig?.supportedResolutions?.length > 1) {
+      actionButtons[1].unshift(
+        { text: `${pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` }
+      );
+    }
+    
+    const caption = `\uD83C\uDFA8 *Art Studio*\n\n` +
+                    `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution}` +
+                    `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
+                    `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
+                    `\uD83D\uDCE5 _Tap HD Download for full quality_`;
+    
+    if (allBuffers.length === 1) {
+      await ctx.api.sendPhoto(ctx.chat.id, new InputFile(allBuffers[0], "art_ratio.png"), {
+        caption, parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      });
+    } else {
+      const mediaGroup = allBuffers.map((buf, i) => ({
+        type: "photo",
+        media: new InputFile(buf, `art_ratio_${i + 1}.png`),
+        ...(i === 0 ? { caption, parse_mode: "Markdown" } : {}),
+      }));
+      await ctx.api.sendMediaGroup(ctx.chat.id, mediaGroup);
+      await ctx.reply("\uD83C\uDFA8 *Actions:*", {
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
+      });
+    }
     
     console.log(`[ART] User ${u.id} generated with new ratio (${newSize})`);
     
@@ -17961,12 +18116,24 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
   const prefs = user.artPrefs || {};
   
   try {
+    const numImages = prefs.numImages || 1;
     const result = await apimartClient.generateImageBuffer({
       model: pending.model || "seedream-4.5",
       prompt: pending.prompt,
       size: pending.size || "1:1",
       resolution: newRes,
+      n: numImages,
+      imageUrls: pending.referenceUrl ? [pending.referenceUrl] : [],
       optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const modelConfig = getAPIMartModelConfig(pending.model || "seedream-4.5");
+    const allBuffers = result.buffers || [result.buffer];
+    
+    pendingArtPrompts.set(u.id, {
+      ...pending,
+      buffers: allBuffers,
+      urls: result.urls,
     });
     
     const actionButtons = [
@@ -17975,23 +18142,41 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
         { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
       ],
       [
-        { text: `${newRes === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${newRes === "2K" ? "4K" : "2K"}` },
+        { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
     
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio* (${newRes})\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
+    if (modelConfig?.supportedResolutions?.length > 1) {
+      actionButtons[1].unshift(
+        { text: `${newRes === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${newRes === "2K" ? "4K" : "2K"}` }
+      );
+    }
+    
+    const caption = `\uD83C\uDFA8 *Art Studio* (${newRes})\n\n` +
+                    `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes}` +
+                    `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
+                    `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
+                    `\uD83D\uDCE5 _Tap HD Download for full quality_`;
+    
+    if (allBuffers.length === 1) {
+      await ctx.api.sendPhoto(ctx.chat.id, new InputFile(allBuffers[0], "art_res.png"), {
+        caption, parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      });
+    } else {
+      const mediaGroup = allBuffers.map((buf, i) => ({
+        type: "photo",
+        media: new InputFile(buf, `art_res_${i + 1}.png`),
+        ...(i === 0 ? { caption, parse_mode: "Markdown" } : {}),
+      }));
+      await ctx.api.sendMediaGroup(ctx.chat.id, mediaGroup);
+      await ctx.reply("\uD83C\uDFA8 *Actions:*", {
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
+      });
+    }
     
     console.log(`[ART] User ${u.id} generated in ${newRes}`);
     
@@ -18016,6 +18201,273 @@ bot.callbackQuery("art_new", async (ctx) => {
 bot.callbackQuery("art_cancel", async (ctx) => {
   await ctx.answerCallbackQuery({ text: "Cancelled" });
   try { await ctx.deleteMessage(); } catch (e) {}
+});
+
+// ─── HD Download: send image as document for full quality ───
+bot.callbackQuery("art_dl", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending || !pending.buffers || pending.buffers.length === 0) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Generate a new image with /a", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery({ text: "\uD83D\uDCE5 Sending HD file(s)..." });
+  
+  try {
+    for (let i = 0; i < pending.buffers.length; i++) {
+      const buf = pending.buffers[i];
+      const filename = `art_studio_hd${pending.buffers.length > 1 ? `_${i + 1}` : ''}_${Date.now()}.png`;
+      await ctx.api.sendDocument(
+        ctx.chat.id,
+        new InputFile(buf, filename),
+        {
+          caption: i === 0 ? `\uD83D\uDCE5 *HD Quality* \u2022 ${(buf.length / 1024 / 1024).toFixed(1)}MB\n_Original resolution, no Telegram compression_` : undefined,
+          parse_mode: "Markdown",
+        }
+      );
+    }
+  } catch (error) {
+    console.error("[ART] HD download error:", error);
+    await ctx.reply("\u274C Failed to send HD file. Try again.");
+  }
+});
+
+// ─── Reference Image toggle ───
+bot.callbackQuery(/^ass_ref:(on|off)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_ref:(on|off)$/);
+  const enable = match?.[1] === 'on';
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.referenceMode = enable;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ 
+    text: enable 
+      ? "\uD83D\uDDBC\uFE0F Reference mode ON! Send a photo with /a caption to use it" 
+      : "\uD83D\uDDBC\uFE0F Reference mode OFF"
+  });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// ─── Number of images selector ───
+bot.callbackQuery(/^ass_num:(\d+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_num:(\d+)$/);
+  const num = parseInt(match?.[1] || "1", 10);
+  
+  const currentModel = user.artPrefs?.model || "seedream-4.5";
+  const modelConfig = getAPIMartModelConfig(currentModel);
+  const maxBatch = modelConfig?.maxBatch || 1;
+  
+  if (num > maxBatch) {
+    await ctx.answerCallbackQuery({ text: `\u26A0\uFE0F Max ${maxBatch} images for this model`, show_alert: true });
+    return;
+  }
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.numImages = num;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ text: `\u2705 Will generate ${num} image${num > 1 ? 's' : ''}` });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// ─── Photo + Caption handler for reference image art generation ───
+bot.on("message:photo", async (ctx, next) => {
+  const u = ctx.from;
+  if (!u?.id) { await next(); return; }
+  
+  const caption = ctx.message?.caption || "";
+  
+  // Only intercept if caption starts with /a and reference mode is on
+  if (!caption.startsWith("/a ") && !caption.startsWith("/a\n")) {
+    await next();
+    return;
+  }
+  
+  const user = ensureUser(u.id, u);
+  const prefs = user.artPrefs || {};
+  
+  if (!prefs.referenceMode) {
+    await ctx.reply(
+      "\uD83D\uDDBC\uFE0F *Reference mode is OFF*\n\n" +
+      "Enable it first in /ass, then send a photo with `/a your prompt` as the caption.",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  if (!apimartClient.hasKey()) {
+    await ctx.reply("\u26A0\uFE0F Art Studio not configured. Set APIMART_API_KEY.");
+    return;
+  }
+  
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  // Get the highest resolution photo
+  const photos = ctx.message.photo;
+  const photo = photos[photos.length - 1];
+  const file = await ctx.api.getFile(photo.file_id);
+  const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+  
+  // Extract prompt from caption
+  let rawPrompt = caption.replace(/^\/a\s*/i, "").trim();
+  if (!rawPrompt) rawPrompt = "Transform this image";
+  
+  if (rawPrompt.length > 1000) {
+    await ctx.reply("\u26A0\uFE0F Prompt too long. Keep it under 1000 characters.");
+    return;
+  }
+  
+  // NSFW check
+  if (isNsfwPrompt(rawPrompt) && !OWNER_IDS.has(String(u.id))) {
+    if (user.tier === 'free' || prefs.safeMode !== false) {
+      await ctx.reply("\uD83D\uDD12 *Safe Mode Active*\n\nYour prompt contains restricted content.", { parse_mode: "Markdown" });
+      return;
+    }
+  }
+  
+  const detectedRatio = parseAPIMartRatio(rawPrompt);
+  const cleanedPrompt = detectedRatio ? cleanAPIMartPromptRatio(rawPrompt) : rawPrompt;
+  const finalPrompt = cleanedPrompt || rawPrompt;
+  const finalModel = prefs.model || "seedream-4.5";
+  const modelConfig = getAPIMartModelConfig(finalModel);
+  
+  let requestedSize = detectedRatio || prefs.size || "1:1";
+  const supportedSizes = modelConfig?.supportedSizes || ["1:1"];
+  if (!supportedSizes.includes(requestedSize)) {
+    const sizeMap = { "4:3": "3:2", "3:4": "2:3", "16:9": "3:2", "9:16": "2:3", "21:9": "3:2", "9:21": "2:3" };
+    requestedSize = sizeMap[requestedSize] || supportedSizes[0] || "1:1";
+  }
+  const finalSize = requestedSize;
+  const finalResolution = prefs.resolution || "2K";
+  const ratioConfig = getAPIMartRatioConfig(finalSize);
+  
+  const statusMsg = await ctx.reply(
+    "\uD83C\uDFA8 *Generating with reference image...*\n" +
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
+    `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n` +
+    `\uD83D\uDDBC\uFE0F _With reference image_\n\n` +
+    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}\n\n` +
+    "\u23F3 _Estimated: 15-30 seconds..._\n" +
+    "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 10%",
+    { parse_mode: "Markdown" }
+  );
+  
+  pendingArtPrompts.set(u.id, {
+    prompt: finalPrompt,
+    messageId: statusMsg.message_id,
+    chatId: ctx.chat.id,
+    size: finalSize,
+    resolution: finalResolution,
+    model: finalModel,
+    referenceUrl: fileUrl,
+  });
+  
+  try {
+    const numImages = prefs.numImages || 1;
+    const result = await apimartClient.generateImageBuffer({
+      model: finalModel,
+      prompt: finalPrompt,
+      size: finalSize,
+      resolution: finalResolution,
+      n: numImages,
+      imageUrls: [fileUrl],
+      optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const allBuffers = result.buffers || [result.buffer];
+    
+    pendingArtPrompts.set(u.id, {
+      ...pendingArtPrompts.get(u.id),
+      buffers: allBuffers,
+      urls: result.urls,
+    });
+    
+    const actionButtons = [
+      [
+        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
+        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
+      ],
+      [
+        { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\u2728 New Art", callback_data: "art_new" },
+      ],
+    ];
+    
+    if (modelConfig?.supportedResolutions?.length > 1) {
+      actionButtons[1].unshift(
+        { text: `${finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` }
+      );
+    }
+    
+    const caption2 = `\uD83C\uDFA8 *Art Studio* \u2022 _Reference_\n\n` +
+                     `\uD83D\uDCDD _${finalPrompt.slice(0, 180)}${finalPrompt.length > 180 ? '...' : ''}_\n\n` +
+                     `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution} \u2022 ${result.actualTime || '?'}s\n` +
+                     `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
+                     `\uD83D\uDCE5 _Tap HD Download for full quality file_`;
+    
+    if (allBuffers.length === 1) {
+      await ctx.api.sendPhoto(ctx.chat.id, new InputFile(allBuffers[0], "art_ref.png"), {
+        caption: caption2, parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      });
+    } else {
+      const mediaGroup = allBuffers.map((buf, i) => ({
+        type: "photo",
+        media: new InputFile(buf, `art_ref_${i + 1}.png`),
+        ...(i === 0 ? { caption: caption2, parse_mode: "Markdown" } : {}),
+      }));
+      await ctx.api.sendMediaGroup(ctx.chat.id, mediaGroup);
+      await ctx.reply("\uD83C\uDFA8 *Actions:*", {
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      });
+    }
+    
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    console.log(`[ART] User ${u.id} generated ref art: "${finalPrompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("[ART] Reference gen error:", error);
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+        "\u274C *Art generation failed*\n\n" +
+        `Error: ${error.message?.slice(0, 150) || 'Unknown error'}\n\n` +
+        "_Try again or use /a without reference._",
+        { parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: [[{ text: "\u274C Cancel", callback_data: "art_cancel" }]] }
+        }
+      );
+    } catch (e) {
+      await ctx.reply("\u274C Art generation failed. Please try again.");
+    }
+  }
+  
+  // Don't pass to next handler
+  return;
 });
 
 // =====================

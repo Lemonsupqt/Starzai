@@ -100,8 +100,8 @@ const APIMART_ASPECT_RATIOS = {
   "9:16": { icon: "📲", label: "Story",      emoji: "📲" },
   "3:2":  { icon: "📷", label: "Photo",      emoji: "📷" },
   "2:3":  { icon: "🎴", label: "Tall Photo", emoji: "🎴" },
-  "21:9": { icon: "🖥️", label: "Ultra-wide", emoji: "🖥️" },
-  "9:21": { icon: "📜", label: "Ultra-tall", emoji: "📜" },
+  "21:9": { icon: "🖥️", label: "Ultra Wide",     emoji: "🖥️" },
+  "9:21": { icon: "📜", label: "Ultra Vertical", emoji: "📜" },
 };
 
 // =====================
@@ -336,23 +336,23 @@ class APIMartClient {
     };
   }
 
-  // ─── HIGH-LEVEL: Generate Image and Download Buffer ───
+  // ─── HIGH-LEVEL: Generate Image and Download Buffer(s) ───
   async generateImageBuffer(options = {}, onProgress = null) {
     const result = await this.generateImage(options, onProgress);
 
-    // Download the first image
-    const imageUrl = result.urls[0];
-    console.log(`[APIMart] Downloading image: ${imageUrl.slice(0, 80)}...`);
+    // Download ALL images in parallel
+    const downloadPromises = result.urls.map(async (url, i) => {
+      console.log(`[APIMart] Downloading image ${i + 1}/${result.urls.length}: ${url.slice(0, 80)}...`);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Failed to download image ${i + 1}: ${resp.status}`);
+      return Buffer.from(await resp.arrayBuffer());
+    });
 
-    const imageResponse = await fetch(imageUrl);
-    if (!imageResponse.ok) {
-      throw new Error(`Failed to download image: ${imageResponse.status}`);
-    }
-
-    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    const buffers = await Promise.all(downloadPromises);
 
     return {
-      buffer,
+      buffer: buffers[0],       // backward compat: first image
+      buffers,                  // all image buffers
       urls: result.urls,
       taskId: result.taskId,
       actualTime: result.actualTime,
