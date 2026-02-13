@@ -17155,6 +17155,803 @@ bot.on("message:web_app_data", async (ctx) => {
     await ctx.reply(`⚠️ Error processing request: ${e.message}`);
   }
 });
+// =====================
+// APIMART ART GENERATION (/a, /ass)
+// =====================
+
+// Pending APIMart prompts (userId -> { prompt, messageId, chatId, size, resolution })
+const pendingArtPrompts = new Map();
+
+// APIMart art generation taglines
+const ART_TAGLINES = [
+  "SeedDream 4.5", "ByteDance Vision", "4K Neural Canvas",
+  "Pixel Alchemy", "Dream Engine", "Neural Artistry",
+  "Silicon Imagination", "Digital Renaissance", "Quantum Canvas",
+  "Synthetic Masterpiece", "AI Atelier", "Computational Art",
+];
+
+function getArtTagline() {
+  return ART_TAGLINES[Math.floor(Math.random() * ART_TAGLINES.length)];
+}
+
+// Build the /ass settings message and keyboard
+function buildArtSettingsMessage(user, userId) {
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
+  const modelConfig = getAPIMartModelConfig(prefs.model) || getAPIMartModelConfig("seedream-4.5");
+  const ratioConfig = getAPIMartRatioConfig(prefs.size);
+  const isOwnerUser = OWNER_IDS.has(String(userId));
+  
+  // Build status display
+  const safeStatus = isOwnerUser ? "OFF (owner)" : (prefs.safeMode !== false ? "ON" : "OFF");
+  const safeIcon = isOwnerUser ? "\uD83D\uDD13" : (prefs.safeMode !== false ? "\uD83D\uDD12" : "\uD83D\uDD13");
+  
+  const text = [
+    "\u2699\uFE0F *Art Studio Settings*",
+    "",
+    `${modelConfig?.icon || "\uD83C\uDFA8"} *Model:* ${modelConfig?.name || prefs.model}`,
+    `\u2022 _${modelConfig?.description || 'AI image generation'}_`,
+    "",
+    `\uD83D\uDCD0 *Ratio:* ${ratioConfig.icon} ${ratioConfig.label} (${prefs.size})`,
+    `\uD83D\uDCF7 *Resolution:* ${prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : "\uD83D\uDDA5 2K Standard"}`,
+    `\u26A1 *Speed:* ${prefs.promptMode === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard (better quality)"}`,
+    `${safeIcon} *Safe Mode:* ${safeStatus}`,
+    "",
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "_Tap buttons below to customize_",
+  ].join("\n");
+  
+  return text;
+}
+
+function buildArtSettingsKeyboard(user, userId) {
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
+  const isOwnerUser = OWNER_IDS.has(String(userId));
+  const canToggle = isOwnerUser || user.tier === 'premium' || user.tier === 'ultra';
+  
+  const buttons = [];
+  
+  // Row 1: Aspect Ratio (most used)
+  buttons.push([
+    { text: `${prefs.size === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "ass_size:1:1" },
+    { text: `${prefs.size === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "ass_size:4:3" },
+    { text: `${prefs.size === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "ass_size:3:4" },
+  ]);
+  
+  buttons.push([
+    { text: `${prefs.size === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "ass_size:16:9" },
+    { text: `${prefs.size === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "ass_size:9:16" },
+    { text: `${prefs.size === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "ass_size:3:2" },
+  ]);
+  
+  // Row 3: Resolution toggle
+  buttons.push([
+    { text: `${prefs.resolution === "2K" ? "\u2705 " : ""}\uD83D\uDDA5 2K`, callback_data: "ass_res:2K" },
+    { text: `${prefs.resolution === "4K" ? "\u2705 " : ""}\u2728 4K Ultra HD`, callback_data: "ass_res:4K" },
+  ]);
+  
+  // Row 4: Speed mode
+  buttons.push([
+    { text: `${prefs.promptMode === "standard" ? "\u2705 " : ""}\u2728 Standard`, callback_data: "ass_speed:standard" },
+    { text: `${prefs.promptMode === "fast" ? "\u2705 " : ""}\uD83C\uDFC3 Fast`, callback_data: "ass_speed:fast" },
+  ]);
+  
+  // Row 5: Safe mode toggle (premium/ultra/owner only)
+  if (canToggle) {
+    const currentSafe = isOwnerUser ? false : (prefs.safeMode !== false);
+    buttons.push([
+      {
+        text: currentSafe ? "\uD83D\uDD12 Safe Mode: ON (tap to disable)" : "\uD83D\uDD13 Safe Mode: OFF (tap to enable)",
+        callback_data: currentSafe ? "ass_safe:off" : "ass_safe:on"
+      }
+    ]);
+  }
+  
+  // Row 6: Model selection (future-proof - shows when multiple models available)
+  const imageModels = getAPIMartImageModels();
+  if (imageModels.length > 1) {
+    const modelButtons = imageModels.map(([key, m]) => ({
+      text: `${prefs.model === key ? "\u2705 " : ""}${m.icon} ${m.shortName || m.name}`,
+      callback_data: `ass_model:${key}`
+    }));
+    buttons.push(modelButtons);
+  }
+  
+  // Row 7: Back button
+  buttons.push([
+    { text: "\u00AB Back to Menu", callback_data: "menu_back" }
+  ]);
+  
+  return { inline_keyboard: buttons };
+}
+
+// /a - APIMart Art Generation command
+bot.command("a", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  
+  if (ctx.chat.type !== "private") {
+    activateGroup(ctx.chat.id);
+  }
+  
+  // Check if APIMart is configured
+  if (!apimartClient.hasKey()) {
+    await ctx.reply(
+      "\u26A0\uFE0F *Art Studio not configured*\n\n" +
+      "The bot owner needs to set `APIMART_API_KEY` in Railway variables.\n\n" +
+      "_Use /img for alternative image generation._",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  const text = ctx.message?.text || "";
+  let rawPrompt = text.replace(/^\/a\s*/i, "").trim();
+  
+  // Show help if no prompt
+  if (!rawPrompt) {
+    const prefs = user.artPrefs || {};
+    const modelConfig = getAPIMartModelConfig(prefs.model || "seedream-4.5");
+    const ratioConfig = getAPIMartRatioConfig(prefs.size || "1:1");
+    
+    await ctx.reply(
+      "\uD83C\uDFA8 *Art Studio* \u2022 _Powered by ${modelConfig?.name || 'SeedDream 4.5'}_\n" +
+      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
+      "Create stunning AI art with a single command!\n\n" +
+      "*Usage:*\n" +
+      "`/a a cute cat in space`\n" +
+      "`/a cyberpunk city in widescreen`\n" +
+      "`/a portrait of a samurai warrior`\n\n" +
+      "*Smart Ratios:* Just mention it!\n" +
+      "\u2022 _widescreen, cinematic_ \u2192 16:9\n" +
+      "\u2022 _story, vertical, tiktok_ \u2192 9:16\n" +
+      "\u2022 _portrait, mobile_ \u2192 3:4\n" +
+      "\u2022 _landscape_ \u2192 4:3\n" +
+      "\u2022 _square_ \u2192 1:1\n\n" +
+      `\uD83D\uDCCC *Your defaults:* ${ratioConfig.icon} ${ratioConfig.label} \u2022 ${prefs.resolution || '2K'}\n` +
+      `_Use /ass to customize settings_\n\n` +
+      `\u2728 _${modelConfig?.description || 'AI image generation'}_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  if (rawPrompt.length > 1000) {
+    await ctx.reply("\u26A0\uFE0F Prompt too long. Please keep it under 1000 characters.");
+    return;
+  }
+  
+  // Check NSFW content and safe mode
+  if (isNsfwPrompt(rawPrompt) && !OWNER_IDS.has(String(u.id))) {
+    const prefs = user.artPrefs || {};
+    if (user.tier === 'free' || prefs.safeMode !== false) {
+      const tier = user.tier || 'free';
+      let message = "\uD83D\uDD12 *Safe Mode Active*\n\n" +
+        "Your prompt contains content that isn't allowed in safe mode.\n\n";
+      if (tier === 'free') {
+        message += "_Free users have safe mode enabled by default._\n" +
+          "Upgrade to Premium or Ultra to access unrestricted generation.";
+      } else {
+        message += "_You can disable safe mode in_ /ass _to generate this content._";
+      }
+      await ctx.reply(message, { parse_mode: "Markdown" });
+      return;
+    }
+  }
+  
+  // Get user preferences
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard" };
+  
+  // Try to detect aspect ratio from prompt
+  const detectedRatio = parseAPIMartRatio(rawPrompt);
+  const cleanedPrompt = detectedRatio ? cleanAPIMartPromptRatio(rawPrompt) : rawPrompt;
+  const finalPrompt = cleanedPrompt || rawPrompt;
+  const finalSize = detectedRatio || prefs.size || "1:1";
+  const finalResolution = prefs.resolution || "2K";
+  const finalModel = prefs.model || "seedream-4.5";
+  const modelConfig = getAPIMartModelConfig(finalModel);
+  const ratioConfig = getAPIMartRatioConfig(finalSize);
+  
+  // Send generating status
+  const statusMsg = await ctx.reply(
+    "\uD83C\uDFA8 *Generating your art...*\n" +
+    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
+    `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
+    `${ratioConfig.icon} ${ratioConfig.label} (${finalSize}) \u2022 ${finalResolution}\n` +
+    `${modelConfig?.icon || '\uD83C\uDFA8'} ${modelConfig?.name || 'SeedDream 4.5'}\n\n` +
+    "\u23F3 _Estimated: 15-30 seconds..._\n" +
+    "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 10%",
+    { parse_mode: "Markdown" }
+  );
+  
+  // Store for regenerate
+  pendingArtPrompts.set(u.id, {
+    prompt: finalPrompt,
+    messageId: statusMsg.message_id,
+    chatId: ctx.chat.id,
+    size: finalSize,
+    resolution: finalResolution,
+    model: finalModel,
+  });
+  
+  // Progress update function
+  let lastProgress = 10;
+  const progressBars = [
+    "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591",
+    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
+  ];
+  
+  const onProgress = async (progress, status, attempts) => {
+    // Update progress every few polls to avoid rate limiting
+    if (attempts % 3 !== 0) return;
+    const barIndex = Math.min(Math.floor(progress / 10), 9);
+    const bar = progressBars[barIndex] || progressBars[0];
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "\uD83C\uDFA8 *Generating your art...*\n" +
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
+        `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
+        `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}\n\n` +
+        `${bar} ${progress}%`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) { /* ignore edit errors */ }
+  };
+  
+  try {
+    const result = await apimartClient.generateImageBuffer({
+      model: finalModel,
+      prompt: finalPrompt,
+      size: finalSize,
+      resolution: finalResolution,
+      optimizePromptMode: prefs.promptMode || "standard",
+    }, onProgress);
+    
+    // Build action buttons
+    const actionButtons = [
+      [
+        { text: "\uD83D\uDD04 Regenerate", callback_data: `art_regen` },
+        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
+      ],
+      [
+        { text: `${finalResolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` },
+        { text: "\u2728 New Art", callback_data: "art_new" },
+      ],
+    ];
+    
+    // Send the image
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(result.buffer, "art_seedream.png"),
+      {
+        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
+                 `\uD83D\uDCDD _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
+                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution} \u2022 ${result.actualTime || '?'}s\n` +
+                 `\u26A1 _Powered by ${getArtTagline()}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    // Delete the status message
+    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+    
+    console.log(`[ART] User ${u.id} generated art (${finalSize}, ${finalResolution}): "${finalPrompt.slice(0, 50)}"`);
+    
+  } catch (error) {
+    console.error("[ART] Generation error:", error);
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        statusMsg.message_id,
+        "\u274C *Art generation failed*\n\n" +
+        `Error: ${error.message?.slice(0, 150) || 'Unknown error'}\n\n` +
+        "_Try again or use /img for alternative._",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "\uD83D\uDD04 Try Again", callback_data: "art_regen" }],
+              [{ text: "\u274C Cancel", callback_data: "art_cancel" }]
+            ]
+          }
+        }
+      );
+    } catch (e) {
+      await ctx.reply("\u274C Art generation failed. Please try again.");
+    }
+  }
+});
+
+// /ass - Art Studio Settings
+bot.command("ass", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  
+  // Handle text arguments for quick settings
+  const text = ctx.message?.text || "";
+  const args = text.replace(/^\/ass\s*/i, "").trim().toLowerCase();
+  
+  // Quick ratio setting: /ass square, /ass 16:9, etc.
+  const ratioMap = {
+    "square": "1:1", "1:1": "1:1",
+    "landscape": "4:3", "4:3": "4:3",
+    "portrait": "3:4", "3:4": "3:4",
+    "widescreen": "16:9", "16:9": "16:9", "wide": "16:9",
+    "story": "9:16", "9:16": "9:16", "vertical": "9:16",
+    "photo": "3:2", "3:2": "3:2",
+    "tallphoto": "2:3", "2:3": "2:3",
+    "ultrawide": "21:9", "21:9": "21:9",
+    "ultratall": "9:21", "9:21": "9:21",
+  };
+  
+  if (args && ratioMap[args]) {
+    user.artPrefs = user.artPrefs || {};
+    user.artPrefs.size = ratioMap[args];
+    saveUsers();
+    const rc = getAPIMartRatioConfig(ratioMap[args]);
+    await ctx.reply(
+      `\u2705 Art ratio set to ${rc.icon} *${rc.label}* (${ratioMap[args]})\n\n` +
+      `_Now /a will use this ratio by default!_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Quick resolution: /ass 4k, /ass 2k
+  if (args === "4k" || args === "2k") {
+    user.artPrefs = user.artPrefs || {};
+    user.artPrefs.resolution = args.toUpperCase();
+    saveUsers();
+    await ctx.reply(
+      `\u2705 Art resolution set to *${args.toUpperCase()}*\n\n` +
+      `_Now /a will generate in ${args.toUpperCase()} resolution!_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Quick speed: /ass fast, /ass standard
+  if (args === "fast" || args === "standard") {
+    user.artPrefs = user.artPrefs || {};
+    user.artPrefs.promptMode = args;
+    saveUsers();
+    await ctx.reply(
+      `\u2705 Art speed set to *${args === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard"}*\n\n` +
+      `_${args === "fast" ? "Faster generation, regular quality" : "Better quality, slightly longer"}_`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+  
+  // Show full settings menu
+  const settingsText = buildArtSettingsMessage(user, u.id);
+  const keyboard = buildArtSettingsKeyboard(user, u.id);
+  
+  await ctx.reply(settingsText, {
+    parse_mode: "Markdown",
+    reply_markup: keyboard
+  });
+});
+
+// ─── /ass Callback Handlers ───
+
+// Handle ratio selection
+bot.callbackQuery(/^ass_size:(.+):(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_size:(.+):(.+)$/);
+  const newSize = match ? `${match[1]}:${match[2]}` : "1:1";
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.size = newSize;
+  saveUsers();
+  
+  const rc = getAPIMartRatioConfig(newSize);
+  await ctx.answerCallbackQuery({ text: `\u2705 Ratio: ${rc.label}` });
+  
+  // Update settings message
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// Handle resolution selection
+bot.callbackQuery(/^ass_res:(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_res:(.+)$/);
+  const newRes = match?.[1] || "2K";
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.resolution = newRes;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ text: `\u2705 Resolution: ${newRes}` });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// Handle speed mode selection
+bot.callbackQuery(/^ass_speed:(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_speed:(.+)$/);
+  const newMode = match?.[1] || "standard";
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.promptMode = newMode;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ text: `\u2705 Speed: ${newMode === "fast" ? "Fast" : "Standard"}` });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// Handle safe mode toggle
+bot.callbackQuery(/^ass_safe:(on|off)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_safe:(on|off)$/);
+  const enableSafe = match?.[1] === 'on';
+  
+  // Check if user can toggle
+  const isOwnerUser = OWNER_IDS.has(String(u.id));
+  if (!isOwnerUser && user.tier === 'free') {
+    await ctx.answerCallbackQuery({ 
+      text: "\uD83D\uDD12 Safe mode toggle requires Premium or Ultra", 
+      show_alert: true 
+    });
+    return;
+  }
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.safeMode = enableSafe;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ 
+    text: enableSafe ? "\uD83D\uDD12 Safe mode enabled" : "\uD83D\uDD13 Safe mode disabled" 
+  });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// Handle model selection (future-proof)
+bot.callbackQuery(/^ass_model:(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const user = ensureUser(u.id, u);
+  const match = ctx.callbackQuery.data.match(/^ass_model:(.+)$/);
+  const newModel = match?.[1] || "seedream-4.5";
+  
+  const modelConfig = getAPIMartModelConfig(newModel);
+  if (!modelConfig) {
+    await ctx.answerCallbackQuery({ text: "\u274C Unknown model", show_alert: true });
+    return;
+  }
+  
+  user.artPrefs = user.artPrefs || {};
+  user.artPrefs.model = newModel;
+  saveUsers();
+  
+  await ctx.answerCallbackQuery({ text: `\u2705 Model: ${modelConfig.name}` });
+  
+  try {
+    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
+      parse_mode: "Markdown",
+      reply_markup: buildArtSettingsKeyboard(user, u.id)
+    });
+  } catch (e) {}
+});
+
+// ─── /a Callback Handlers ───
+
+// Regenerate with same settings
+bot.callbackQuery("art_regen", async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
+    return;
+  }
+  
+  if (!apimartClient.hasKey()) {
+    await ctx.answerCallbackQuery({ text: "\u26A0\uFE0F APIMart not configured", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery({ text: "\uD83D\uDD04 Regenerating..." });
+  
+  const modelConfig = getAPIMartModelConfig(pending.model || "seedream-4.5");
+  const ratioConfig = getAPIMartRatioConfig(pending.size || "1:1");
+  const user = ensureUser(u.id, u);
+  const prefs = user.artPrefs || {};
+  
+  try {
+    const result = await apimartClient.generateImageBuffer({
+      model: pending.model || "seedream-4.5",
+      prompt: pending.prompt,
+      size: pending.size || "1:1",
+      resolution: pending.resolution || "2K",
+      optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const actionButtons = [
+      [
+        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
+        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
+      ],
+      [
+        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
+        { text: "\u2728 New Art", callback_data: "art_new" },
+      ],
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(result.buffer, "art_seedream.png"),
+      {
+        caption: `\uD83C\uDFA8 *Regenerated Art*\n\n` +
+                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}..._\n\n` +
+                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
+                 `\u26A1 _Powered by ${getArtTagline()}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    console.log(`[ART] User ${u.id} regenerated art`);
+    
+  } catch (error) {
+    console.error("[ART] Regenerate error:", error);
+    await ctx.answerCallbackQuery({ text: `\u274C Failed: ${error.message?.slice(0, 50)}`, show_alert: true });
+  }
+});
+
+// Change ratio picker
+bot.callbackQuery("art_ratio", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
+    return;
+  }
+  
+  await ctx.answerCallbackQuery();
+  
+  const currentSize = pending.size || "1:1";
+  
+  const ratioButtons = [
+    [
+      { text: `${currentSize === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "art_ar:1:1" },
+      { text: `${currentSize === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "art_ar:4:3" },
+      { text: `${currentSize === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "art_ar:3:4" },
+    ],
+    [
+      { text: `${currentSize === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "art_ar:16:9" },
+      { text: `${currentSize === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "art_ar:9:16" },
+      { text: `${currentSize === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "art_ar:3:2" },
+    ],
+    [
+      { text: "\u274C Cancel", callback_data: "art_cancel" }
+    ]
+  ];
+  
+  await ctx.reply(
+    "\uD83D\uDCD0 *Change Aspect Ratio*\n\n" +
+    `\uD83D\uDCDD _${pending.prompt.slice(0, 100)}${pending.prompt.length > 100 ? '...' : ''}_\n\n` +
+    "Select new ratio:",
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: ratioButtons }
+    }
+  );
+});
+
+// Handle ratio selection from picker (regenerate with new ratio)
+bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
+    return;
+  }
+  
+  const match = ctx.callbackQuery.data.match(/^art_ar:(.+):(.+)$/);
+  const newSize = match ? `${match[1]}:${match[2]}` : "1:1";
+  const ratioConfig = getAPIMartRatioConfig(newSize);
+  
+  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating with ${ratioConfig.label}...` });
+  
+  // Update pending
+  pending.size = newSize;
+  
+  const user = ensureUser(u.id, u);
+  const prefs = user.artPrefs || {};
+  
+  try {
+    // Delete the ratio selection message
+    try { await ctx.deleteMessage(); } catch (e) {}
+    
+    const result = await apimartClient.generateImageBuffer({
+      model: pending.model || "seedream-4.5",
+      prompt: pending.prompt,
+      size: newSize,
+      resolution: pending.resolution || "2K",
+      optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const actionButtons = [
+      [
+        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
+        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
+      ],
+      [
+        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
+        { text: "\u2728 New Art", callback_data: "art_new" },
+      ],
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(result.buffer, "art_seedream.png"),
+      {
+        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
+                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
+                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
+                 `\u26A1 _Powered by ${getArtTagline()}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    console.log(`[ART] User ${u.id} generated with new ratio (${newSize})`);
+    
+  } catch (error) {
+    console.error("[ART] Ratio change error:", error);
+    await ctx.reply(`\u274C Art generation failed: ${error.message?.slice(0, 100)}`);
+  }
+});
+
+// Handle resolution switch from image buttons (regenerate with different resolution)
+bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
+  // Check if this is from /ass settings or from image action buttons
+  // If from image buttons, it regenerates. If from settings, it just updates preference.
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  
+  // If no pending prompt, this might be from settings - already handled by ass_res
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
+    return;
+  }
+  
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const match = ctx.callbackQuery.data.match(/^art_res:(.+)$/);
+  const newRes = match?.[1] || "2K";
+  
+  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating in ${newRes}...` });
+  
+  pending.resolution = newRes;
+  
+  const ratioConfig = getAPIMartRatioConfig(pending.size || "1:1");
+  const user = ensureUser(u.id, u);
+  const prefs = user.artPrefs || {};
+  
+  try {
+    const result = await apimartClient.generateImageBuffer({
+      model: pending.model || "seedream-4.5",
+      prompt: pending.prompt,
+      size: pending.size || "1:1",
+      resolution: newRes,
+      optimizePromptMode: prefs.promptMode || "standard",
+    });
+    
+    const actionButtons = [
+      [
+        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
+        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
+      ],
+      [
+        { text: `${newRes === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${newRes === "2K" ? "4K" : "2K"}` },
+        { text: "\u2728 New Art", callback_data: "art_new" },
+      ],
+    ];
+    
+    await ctx.api.sendPhoto(
+      ctx.chat.id,
+      new InputFile(result.buffer, "art_seedream.png"),
+      {
+        caption: `\uD83C\uDFA8 *Art Studio* (${newRes})\n\n` +
+                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
+                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes} \u2022 ${result.actualTime || '?'}s\n` +
+                 `\u26A1 _Powered by ${getArtTagline()}_`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: actionButtons }
+      }
+    );
+    
+    console.log(`[ART] User ${u.id} generated in ${newRes}`);
+    
+  } catch (error) {
+    console.error("[ART] Resolution switch error:", error);
+    await ctx.answerCallbackQuery({ text: `\u274C Failed: ${error.message?.slice(0, 50)}`, show_alert: true });
+  }
+});
+
+// New art prompt
+bot.callbackQuery("art_new", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "\uD83C\uDFA8 *New Art*\n\n" +
+    "Send me a new prompt with /a:\n\n" +
+    "`/a your prompt here`",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// Cancel
+bot.callbackQuery("art_cancel", async (ctx) => {
+  await ctx.answerCallbackQuery({ text: "Cancelled" });
+  try { await ctx.deleteMessage(); } catch (e) {}
+});
 
 // =====================
 // DM / GROUP TEXT
@@ -23859,803 +24656,6 @@ setInterval(() => {
   saveInlineSessions();
 }, 60 * 60_000); // Check every hour
 
-// =====================
-// APIMART ART GENERATION (/a, /ass)
-// =====================
-
-// Pending APIMart prompts (userId -> { prompt, messageId, chatId, size, resolution })
-const pendingArtPrompts = new Map();
-
-// APIMart art generation taglines
-const ART_TAGLINES = [
-  "SeedDream 4.5", "ByteDance Vision", "4K Neural Canvas",
-  "Pixel Alchemy", "Dream Engine", "Neural Artistry",
-  "Silicon Imagination", "Digital Renaissance", "Quantum Canvas",
-  "Synthetic Masterpiece", "AI Atelier", "Computational Art",
-];
-
-function getArtTagline() {
-  return ART_TAGLINES[Math.floor(Math.random() * ART_TAGLINES.length)];
-}
-
-// Build the /ass settings message and keyboard
-function buildArtSettingsMessage(user, userId) {
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
-  const modelConfig = getAPIMartModelConfig(prefs.model) || getAPIMartModelConfig("seedream-4.5");
-  const ratioConfig = getAPIMartRatioConfig(prefs.size);
-  const isOwnerUser = OWNER_IDS.has(String(userId));
-  
-  // Build status display
-  const safeStatus = isOwnerUser ? "OFF (owner)" : (prefs.safeMode !== false ? "ON" : "OFF");
-  const safeIcon = isOwnerUser ? "\uD83D\uDD13" : (prefs.safeMode !== false ? "\uD83D\uDD12" : "\uD83D\uDD13");
-  
-  const text = [
-    "\u2699\uFE0F *Art Studio Settings*",
-    "",
-    `${modelConfig?.icon || "\uD83C\uDFA8"} *Model:* ${modelConfig?.name || prefs.model}`,
-    `\u2022 _${modelConfig?.description || 'AI image generation'}_`,
-    "",
-    `\uD83D\uDCD0 *Ratio:* ${ratioConfig.icon} ${ratioConfig.label} (${prefs.size})`,
-    `\uD83D\uDCF7 *Resolution:* ${prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : "\uD83D\uDDA5 2K Standard"}`,
-    `\u26A1 *Speed:* ${prefs.promptMode === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard (better quality)"}`,
-    `${safeIcon} *Safe Mode:* ${safeStatus}`,
-    "",
-    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-    "_Tap buttons below to customize_",
-  ].join("\n");
-  
-  return text;
-}
-
-function buildArtSettingsKeyboard(user, userId) {
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
-  const isOwnerUser = OWNER_IDS.has(String(userId));
-  const canToggle = isOwnerUser || user.tier === 'premium' || user.tier === 'ultra';
-  
-  const buttons = [];
-  
-  // Row 1: Aspect Ratio (most used)
-  buttons.push([
-    { text: `${prefs.size === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "ass_size:1:1" },
-    { text: `${prefs.size === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "ass_size:4:3" },
-    { text: `${prefs.size === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "ass_size:3:4" },
-  ]);
-  
-  buttons.push([
-    { text: `${prefs.size === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "ass_size:16:9" },
-    { text: `${prefs.size === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "ass_size:9:16" },
-    { text: `${prefs.size === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "ass_size:3:2" },
-  ]);
-  
-  // Row 3: Resolution toggle
-  buttons.push([
-    { text: `${prefs.resolution === "2K" ? "\u2705 " : ""}\uD83D\uDDA5 2K`, callback_data: "ass_res:2K" },
-    { text: `${prefs.resolution === "4K" ? "\u2705 " : ""}\u2728 4K Ultra HD`, callback_data: "ass_res:4K" },
-  ]);
-  
-  // Row 4: Speed mode
-  buttons.push([
-    { text: `${prefs.promptMode === "standard" ? "\u2705 " : ""}\u2728 Standard`, callback_data: "ass_speed:standard" },
-    { text: `${prefs.promptMode === "fast" ? "\u2705 " : ""}\uD83C\uDFC3 Fast`, callback_data: "ass_speed:fast" },
-  ]);
-  
-  // Row 5: Safe mode toggle (premium/ultra/owner only)
-  if (canToggle) {
-    const currentSafe = isOwnerUser ? false : (prefs.safeMode !== false);
-    buttons.push([
-      {
-        text: currentSafe ? "\uD83D\uDD12 Safe Mode: ON (tap to disable)" : "\uD83D\uDD13 Safe Mode: OFF (tap to enable)",
-        callback_data: currentSafe ? "ass_safe:off" : "ass_safe:on"
-      }
-    ]);
-  }
-  
-  // Row 6: Model selection (future-proof - shows when multiple models available)
-  const imageModels = getAPIMartImageModels();
-  if (imageModels.length > 1) {
-    const modelButtons = imageModels.map(([key, m]) => ({
-      text: `${prefs.model === key ? "\u2705 " : ""}${m.icon} ${m.shortName || m.name}`,
-      callback_data: `ass_model:${key}`
-    }));
-    buttons.push(modelButtons);
-  }
-  
-  // Row 7: Back button
-  buttons.push([
-    { text: "\u00AB Back to Menu", callback_data: "menu_back" }
-  ]);
-  
-  return { inline_keyboard: buttons };
-}
-
-// /a - APIMart Art Generation command
-bot.command("a", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  
-  if (ctx.chat.type !== "private") {
-    activateGroup(ctx.chat.id);
-  }
-  
-  // Check if APIMart is configured
-  if (!apimartClient.hasKey()) {
-    await ctx.reply(
-      "\u26A0\uFE0F *Art Studio not configured*\n\n" +
-      "The bot owner needs to set `APIMART_API_KEY` in Railway variables.\n\n" +
-      "_Use /img for alternative image generation._",
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  
-  const text = ctx.message?.text || "";
-  let rawPrompt = text.replace(/^\/a\s*/i, "").trim();
-  
-  // Show help if no prompt
-  if (!rawPrompt) {
-    const prefs = user.artPrefs || {};
-    const modelConfig = getAPIMartModelConfig(prefs.model || "seedream-4.5");
-    const ratioConfig = getAPIMartRatioConfig(prefs.size || "1:1");
-    
-    await ctx.reply(
-      "\uD83C\uDFA8 *Art Studio* \u2022 _Powered by ${modelConfig?.name || 'SeedDream 4.5'}_\n" +
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
-      "Create stunning AI art with a single command!\n\n" +
-      "*Usage:*\n" +
-      "`/a a cute cat in space`\n" +
-      "`/a cyberpunk city in widescreen`\n" +
-      "`/a portrait of a samurai warrior`\n\n" +
-      "*Smart Ratios:* Just mention it!\n" +
-      "\u2022 _widescreen, cinematic_ \u2192 16:9\n" +
-      "\u2022 _story, vertical, tiktok_ \u2192 9:16\n" +
-      "\u2022 _portrait, mobile_ \u2192 3:4\n" +
-      "\u2022 _landscape_ \u2192 4:3\n" +
-      "\u2022 _square_ \u2192 1:1\n\n" +
-      `\uD83D\uDCCC *Your defaults:* ${ratioConfig.icon} ${ratioConfig.label} \u2022 ${prefs.resolution || '2K'}\n` +
-      `_Use /ass to customize settings_\n\n` +
-      `\u2728 _${modelConfig?.description || 'AI image generation'}_`,
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  
-  if (rawPrompt.length > 1000) {
-    await ctx.reply("\u26A0\uFE0F Prompt too long. Please keep it under 1000 characters.");
-    return;
-  }
-  
-  // Check NSFW content and safe mode
-  if (isNsfwPrompt(rawPrompt) && !OWNER_IDS.has(String(u.id))) {
-    const prefs = user.artPrefs || {};
-    if (user.tier === 'free' || prefs.safeMode !== false) {
-      const tier = user.tier || 'free';
-      let message = "\uD83D\uDD12 *Safe Mode Active*\n\n" +
-        "Your prompt contains content that isn't allowed in safe mode.\n\n";
-      if (tier === 'free') {
-        message += "_Free users have safe mode enabled by default._\n" +
-          "Upgrade to Premium or Ultra to access unrestricted generation.";
-      } else {
-        message += "_You can disable safe mode in_ /ass _to generate this content._";
-      }
-      await ctx.reply(message, { parse_mode: "Markdown" });
-      return;
-    }
-  }
-  
-  // Get user preferences
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard" };
-  
-  // Try to detect aspect ratio from prompt
-  const detectedRatio = parseAPIMartRatio(rawPrompt);
-  const cleanedPrompt = detectedRatio ? cleanAPIMartPromptRatio(rawPrompt) : rawPrompt;
-  const finalPrompt = cleanedPrompt || rawPrompt;
-  const finalSize = detectedRatio || prefs.size || "1:1";
-  const finalResolution = prefs.resolution || "2K";
-  const finalModel = prefs.model || "seedream-4.5";
-  const modelConfig = getAPIMartModelConfig(finalModel);
-  const ratioConfig = getAPIMartRatioConfig(finalSize);
-  
-  // Send generating status
-  const statusMsg = await ctx.reply(
-    "\uD83C\uDFA8 *Generating your art...*\n" +
-    "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
-    `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
-    `${ratioConfig.icon} ${ratioConfig.label} (${finalSize}) \u2022 ${finalResolution}\n` +
-    `${modelConfig?.icon || '\uD83C\uDFA8'} ${modelConfig?.name || 'SeedDream 4.5'}\n\n` +
-    "\u23F3 _Estimated: 15-30 seconds..._\n" +
-    "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 10%",
-    { parse_mode: "Markdown" }
-  );
-  
-  // Store for regenerate
-  pendingArtPrompts.set(u.id, {
-    prompt: finalPrompt,
-    messageId: statusMsg.message_id,
-    chatId: ctx.chat.id,
-    size: finalSize,
-    resolution: finalResolution,
-    model: finalModel,
-  });
-  
-  // Progress update function
-  let lastProgress = 10;
-  const progressBars = [
-    "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591",
-    "\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588",
-  ];
-  
-  const onProgress = async (progress, status, attempts) => {
-    // Update progress every few polls to avoid rate limiting
-    if (attempts % 3 !== 0) return;
-    const barIndex = Math.min(Math.floor(progress / 10), 9);
-    const bar = progressBars[barIndex] || progressBars[0];
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        "\uD83C\uDFA8 *Generating your art...*\n" +
-        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
-        `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
-        `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}\n\n` +
-        `${bar} ${progress}%`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) { /* ignore edit errors */ }
-  };
-  
-  try {
-    const result = await apimartClient.generateImageBuffer({
-      model: finalModel,
-      prompt: finalPrompt,
-      size: finalSize,
-      resolution: finalResolution,
-      optimizePromptMode: prefs.promptMode || "standard",
-    }, onProgress);
-    
-    // Build action buttons
-    const actionButtons = [
-      [
-        { text: "\uD83D\uDD04 Regenerate", callback_data: `art_regen` },
-        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
-      ],
-      [
-        { text: `${finalResolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` },
-        { text: "\u2728 New Art", callback_data: "art_new" },
-      ],
-    ];
-    
-    // Send the image
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
-                 `\uD83D\uDCDD _${finalPrompt.slice(0, 200)}${finalPrompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
-        parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
-    
-    // Delete the status message
-    try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
-    
-    console.log(`[ART] User ${u.id} generated art (${finalSize}, ${finalResolution}): "${finalPrompt.slice(0, 50)}"`);
-    
-  } catch (error) {
-    console.error("[ART] Generation error:", error);
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat.id,
-        statusMsg.message_id,
-        "\u274C *Art generation failed*\n\n" +
-        `Error: ${error.message?.slice(0, 150) || 'Unknown error'}\n\n` +
-        "_Try again or use /img for alternative._",
-        {
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "\uD83D\uDD04 Try Again", callback_data: "art_regen" }],
-              [{ text: "\u274C Cancel", callback_data: "art_cancel" }]
-            ]
-          }
-        }
-      );
-    } catch (e) {
-      await ctx.reply("\u274C Art generation failed. Please try again.");
-    }
-  }
-});
-
-// /ass - Art Studio Settings
-bot.command("ass", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  
-  // Handle text arguments for quick settings
-  const text = ctx.message?.text || "";
-  const args = text.replace(/^\/ass\s*/i, "").trim().toLowerCase();
-  
-  // Quick ratio setting: /ass square, /ass 16:9, etc.
-  const ratioMap = {
-    "square": "1:1", "1:1": "1:1",
-    "landscape": "4:3", "4:3": "4:3",
-    "portrait": "3:4", "3:4": "3:4",
-    "widescreen": "16:9", "16:9": "16:9", "wide": "16:9",
-    "story": "9:16", "9:16": "9:16", "vertical": "9:16",
-    "photo": "3:2", "3:2": "3:2",
-    "tallphoto": "2:3", "2:3": "2:3",
-    "ultrawide": "21:9", "21:9": "21:9",
-    "ultratall": "9:21", "9:21": "9:21",
-  };
-  
-  if (args && ratioMap[args]) {
-    user.artPrefs = user.artPrefs || {};
-    user.artPrefs.size = ratioMap[args];
-    saveUsers();
-    const rc = getAPIMartRatioConfig(ratioMap[args]);
-    await ctx.reply(
-      `\u2705 Art ratio set to ${rc.icon} *${rc.label}* (${ratioMap[args]})\n\n` +
-      `_Now /a will use this ratio by default!_`,
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  
-  // Quick resolution: /ass 4k, /ass 2k
-  if (args === "4k" || args === "2k") {
-    user.artPrefs = user.artPrefs || {};
-    user.artPrefs.resolution = args.toUpperCase();
-    saveUsers();
-    await ctx.reply(
-      `\u2705 Art resolution set to *${args.toUpperCase()}*\n\n` +
-      `_Now /a will generate in ${args.toUpperCase()} resolution!_`,
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  
-  // Quick speed: /ass fast, /ass standard
-  if (args === "fast" || args === "standard") {
-    user.artPrefs = user.artPrefs || {};
-    user.artPrefs.promptMode = args;
-    saveUsers();
-    await ctx.reply(
-      `\u2705 Art speed set to *${args === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard"}*\n\n` +
-      `_${args === "fast" ? "Faster generation, regular quality" : "Better quality, slightly longer"}_`,
-      { parse_mode: "Markdown" }
-    );
-    return;
-  }
-  
-  // Show full settings menu
-  const settingsText = buildArtSettingsMessage(user, u.id);
-  const keyboard = buildArtSettingsKeyboard(user, u.id);
-  
-  await ctx.reply(settingsText, {
-    parse_mode: "Markdown",
-    reply_markup: keyboard
-  });
-});
-
-// ─── /ass Callback Handlers ───
-
-// Handle ratio selection
-bot.callbackQuery(/^ass_size:(.+):(.+)$/, async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  const match = ctx.callbackQuery.data.match(/^ass_size:(.+):(.+)$/);
-  const newSize = match ? `${match[1]}:${match[2]}` : "1:1";
-  
-  user.artPrefs = user.artPrefs || {};
-  user.artPrefs.size = newSize;
-  saveUsers();
-  
-  const rc = getAPIMartRatioConfig(newSize);
-  await ctx.answerCallbackQuery({ text: `\u2705 Ratio: ${rc.label}` });
-  
-  // Update settings message
-  try {
-    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
-      parse_mode: "Markdown",
-      reply_markup: buildArtSettingsKeyboard(user, u.id)
-    });
-  } catch (e) {}
-});
-
-// Handle resolution selection
-bot.callbackQuery(/^ass_res:(.+)$/, async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  const match = ctx.callbackQuery.data.match(/^ass_res:(.+)$/);
-  const newRes = match?.[1] || "2K";
-  
-  user.artPrefs = user.artPrefs || {};
-  user.artPrefs.resolution = newRes;
-  saveUsers();
-  
-  await ctx.answerCallbackQuery({ text: `\u2705 Resolution: ${newRes}` });
-  
-  try {
-    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
-      parse_mode: "Markdown",
-      reply_markup: buildArtSettingsKeyboard(user, u.id)
-    });
-  } catch (e) {}
-});
-
-// Handle speed mode selection
-bot.callbackQuery(/^ass_speed:(.+)$/, async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  const match = ctx.callbackQuery.data.match(/^ass_speed:(.+)$/);
-  const newMode = match?.[1] || "standard";
-  
-  user.artPrefs = user.artPrefs || {};
-  user.artPrefs.promptMode = newMode;
-  saveUsers();
-  
-  await ctx.answerCallbackQuery({ text: `\u2705 Speed: ${newMode === "fast" ? "Fast" : "Standard"}` });
-  
-  try {
-    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
-      parse_mode: "Markdown",
-      reply_markup: buildArtSettingsKeyboard(user, u.id)
-    });
-  } catch (e) {}
-});
-
-// Handle safe mode toggle
-bot.callbackQuery(/^ass_safe:(on|off)$/, async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  const match = ctx.callbackQuery.data.match(/^ass_safe:(on|off)$/);
-  const enableSafe = match?.[1] === 'on';
-  
-  // Check if user can toggle
-  const isOwnerUser = OWNER_IDS.has(String(u.id));
-  if (!isOwnerUser && user.tier === 'free') {
-    await ctx.answerCallbackQuery({ 
-      text: "\uD83D\uDD12 Safe mode toggle requires Premium or Ultra", 
-      show_alert: true 
-    });
-    return;
-  }
-  
-  user.artPrefs = user.artPrefs || {};
-  user.artPrefs.safeMode = enableSafe;
-  saveUsers();
-  
-  await ctx.answerCallbackQuery({ 
-    text: enableSafe ? "\uD83D\uDD12 Safe mode enabled" : "\uD83D\uDD13 Safe mode disabled" 
-  });
-  
-  try {
-    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
-      parse_mode: "Markdown",
-      reply_markup: buildArtSettingsKeyboard(user, u.id)
-    });
-  } catch (e) {}
-});
-
-// Handle model selection (future-proof)
-bot.callbackQuery(/^ass_model:(.+)$/, async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const user = ensureUser(u.id, u);
-  const match = ctx.callbackQuery.data.match(/^ass_model:(.+)$/);
-  const newModel = match?.[1] || "seedream-4.5";
-  
-  const modelConfig = getAPIMartModelConfig(newModel);
-  if (!modelConfig) {
-    await ctx.answerCallbackQuery({ text: "\u274C Unknown model", show_alert: true });
-    return;
-  }
-  
-  user.artPrefs = user.artPrefs || {};
-  user.artPrefs.model = newModel;
-  saveUsers();
-  
-  await ctx.answerCallbackQuery({ text: `\u2705 Model: ${modelConfig.name}` });
-  
-  try {
-    await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
-      parse_mode: "Markdown",
-      reply_markup: buildArtSettingsKeyboard(user, u.id)
-    });
-  } catch (e) {}
-});
-
-// ─── /a Callback Handlers ───
-
-// Regenerate with same settings
-bot.callbackQuery("art_regen", async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const pending = pendingArtPrompts.get(u.id);
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
-    return;
-  }
-  
-  if (!apimartClient.hasKey()) {
-    await ctx.answerCallbackQuery({ text: "\u26A0\uFE0F APIMart not configured", show_alert: true });
-    return;
-  }
-  
-  await ctx.answerCallbackQuery({ text: "\uD83D\uDD04 Regenerating..." });
-  
-  const modelConfig = getAPIMartModelConfig(pending.model || "seedream-4.5");
-  const ratioConfig = getAPIMartRatioConfig(pending.size || "1:1");
-  const user = ensureUser(u.id, u);
-  const prefs = user.artPrefs || {};
-  
-  try {
-    const result = await apimartClient.generateImageBuffer({
-      model: pending.model || "seedream-4.5",
-      prompt: pending.prompt,
-      size: pending.size || "1:1",
-      resolution: pending.resolution || "2K",
-      optimizePromptMode: prefs.promptMode || "standard",
-    });
-    
-    const actionButtons = [
-      [
-        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
-        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
-      ],
-      [
-        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
-        { text: "\u2728 New Art", callback_data: "art_new" },
-      ],
-    ];
-    
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Regenerated Art*\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}..._\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
-        parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
-    
-    console.log(`[ART] User ${u.id} regenerated art`);
-    
-  } catch (error) {
-    console.error("[ART] Regenerate error:", error);
-    await ctx.answerCallbackQuery({ text: `\u274C Failed: ${error.message?.slice(0, 50)}`, show_alert: true });
-  }
-});
-
-// Change ratio picker
-bot.callbackQuery("art_ratio", async (ctx) => {
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const pending = pendingArtPrompts.get(u.id);
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
-    return;
-  }
-  
-  await ctx.answerCallbackQuery();
-  
-  const currentSize = pending.size || "1:1";
-  
-  const ratioButtons = [
-    [
-      { text: `${currentSize === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "art_ar:1:1" },
-      { text: `${currentSize === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "art_ar:4:3" },
-      { text: `${currentSize === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "art_ar:3:4" },
-    ],
-    [
-      { text: `${currentSize === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "art_ar:16:9" },
-      { text: `${currentSize === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "art_ar:9:16" },
-      { text: `${currentSize === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "art_ar:3:2" },
-    ],
-    [
-      { text: "\u274C Cancel", callback_data: "art_cancel" }
-    ]
-  ];
-  
-  await ctx.reply(
-    "\uD83D\uDCD0 *Change Aspect Ratio*\n\n" +
-    `\uD83D\uDCDD _${pending.prompt.slice(0, 100)}${pending.prompt.length > 100 ? '...' : ''}_\n\n` +
-    "Select new ratio:",
-    {
-      parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: ratioButtons }
-    }
-  );
-});
-
-// Handle ratio selection from picker (regenerate with new ratio)
-bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const pending = pendingArtPrompts.get(u.id);
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
-    return;
-  }
-  
-  const match = ctx.callbackQuery.data.match(/^art_ar:(.+):(.+)$/);
-  const newSize = match ? `${match[1]}:${match[2]}` : "1:1";
-  const ratioConfig = getAPIMartRatioConfig(newSize);
-  
-  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating with ${ratioConfig.label}...` });
-  
-  // Update pending
-  pending.size = newSize;
-  
-  const user = ensureUser(u.id, u);
-  const prefs = user.artPrefs || {};
-  
-  try {
-    // Delete the ratio selection message
-    try { await ctx.deleteMessage(); } catch (e) {}
-    
-    const result = await apimartClient.generateImageBuffer({
-      model: pending.model || "seedream-4.5",
-      prompt: pending.prompt,
-      size: newSize,
-      resolution: pending.resolution || "2K",
-      optimizePromptMode: prefs.promptMode || "standard",
-    });
-    
-    const actionButtons = [
-      [
-        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
-        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
-      ],
-      [
-        { text: `${pending.resolution === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` },
-        { text: "\u2728 New Art", callback_data: "art_new" },
-      ],
-    ];
-    
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio*\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
-        parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
-    
-    console.log(`[ART] User ${u.id} generated with new ratio (${newSize})`);
-    
-  } catch (error) {
-    console.error("[ART] Ratio change error:", error);
-    await ctx.reply(`\u274C Art generation failed: ${error.message?.slice(0, 100)}`);
-  }
-});
-
-// Handle resolution switch from image buttons (regenerate with different resolution)
-bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
-  // Check if this is from /ass settings or from image action buttons
-  // If from image buttons, it regenerates. If from settings, it just updates preference.
-  const u = ctx.from;
-  if (!u?.id) return;
-  
-  const pending = pendingArtPrompts.get(u.id);
-  
-  // If no pending prompt, this might be from settings - already handled by ass_res
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired. Use /a again.", show_alert: true });
-    return;
-  }
-  
-  if (!(await enforceRateLimit(ctx))) return;
-  
-  const match = ctx.callbackQuery.data.match(/^art_res:(.+)$/);
-  const newRes = match?.[1] || "2K";
-  
-  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating in ${newRes}...` });
-  
-  pending.resolution = newRes;
-  
-  const ratioConfig = getAPIMartRatioConfig(pending.size || "1:1");
-  const user = ensureUser(u.id, u);
-  const prefs = user.artPrefs || {};
-  
-  try {
-    const result = await apimartClient.generateImageBuffer({
-      model: pending.model || "seedream-4.5",
-      prompt: pending.prompt,
-      size: pending.size || "1:1",
-      resolution: newRes,
-      optimizePromptMode: prefs.promptMode || "standard",
-    });
-    
-    const actionButtons = [
-      [
-        { text: "\uD83D\uDD04 Regenerate", callback_data: "art_regen" },
-        { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
-      ],
-      [
-        { text: `${newRes === "2K" ? "\u2728 Upscale to 4K" : "\uD83D\uDDA5 Switch to 2K"}`, callback_data: `art_res:${newRes === "2K" ? "4K" : "2K"}` },
-        { text: "\u2728 New Art", callback_data: "art_new" },
-      ],
-    ];
-    
-    await ctx.api.sendPhoto(
-      ctx.chat.id,
-      new InputFile(result.buffer, "art_seedream.png"),
-      {
-        caption: `\uD83C\uDFA8 *Art Studio* (${newRes})\n\n` +
-                 `\uD83D\uDCDD _${pending.prompt.slice(0, 200)}${pending.prompt.length > 200 ? '...' : ''}_\n\n` +
-                 `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes} \u2022 ${result.actualTime || '?'}s\n` +
-                 `\u26A1 _Powered by ${getArtTagline()}_`,
-        parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: actionButtons }
-      }
-    );
-    
-    console.log(`[ART] User ${u.id} generated in ${newRes}`);
-    
-  } catch (error) {
-    console.error("[ART] Resolution switch error:", error);
-    await ctx.answerCallbackQuery({ text: `\u274C Failed: ${error.message?.slice(0, 50)}`, show_alert: true });
-  }
-});
-
-// New art prompt
-bot.callbackQuery("art_new", async (ctx) => {
-  await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "\uD83C\uDFA8 *New Art*\n\n" +
-    "Send me a new prompt with /a:\n\n" +
-    "`/a your prompt here`",
-    { parse_mode: "Markdown" }
-  );
-});
-
-// Cancel
-bot.callbackQuery("art_cancel", async (ctx) => {
-  await ctx.answerCallbackQuery({ text: "Cancelled" });
-  try { await ctx.deleteMessage(); } catch (e) {}
-});
 
 // =====================
 // WEBHOOK SERVER (Railway)
