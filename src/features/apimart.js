@@ -165,8 +165,9 @@ class APIMartClient {
     // Only add optional fields if they have values AND the model supports them
     if (size) body.size = size;
     // Only send resolution if explicitly provided AND model supports it — omit to use API default
+    // API expects lowercase: "2k", "4k" (not "2K", "4K")
     if (resolution && modelConfig.supportedResolutions?.includes(resolution)) {
-      body.resolution = resolution;
+      body.resolution = resolution.toLowerCase();
     }
     if (n > 1) body.n = n;
     if (imageUrls.length > 0) body.image_urls = imageUrls;
