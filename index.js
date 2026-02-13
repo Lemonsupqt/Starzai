@@ -2794,7 +2794,7 @@ function ensureUser(userId, from = null) {
       artPrefs: {
         model: "seedream-4.5",   // Current APIMart model
         size: "1:1",             // Aspect ratio
-        resolution: "2K",        // 2K or 4K
+        resolution: null,        // null = API default, or "2K"/"4K"
         promptMode: "standard",  // standard or fast
         safeMode: true,          // NSFW filter
         numImages: 1,            // Number of images per generation
@@ -2869,7 +2869,7 @@ function ensureUser(userId, from = null) {
       usersDb.users[id].artPrefs = {
         model: "seedream-4.5",
         size: "1:1",
-        resolution: "2K",
+        resolution: null,
         promptMode: "standard",
         safeMode: true,
         numImages: 1,
@@ -2879,6 +2879,8 @@ function ensureUser(userId, from = null) {
       // migration: add new artPrefs fields if missing
       if (usersDb.users[id].artPrefs.numImages === undefined) usersDb.users[id].artPrefs.numImages = 1;
       if (usersDb.users[id].artPrefs.referenceMode === undefined) usersDb.users[id].artPrefs.referenceMode = false;
+      // migration: reset resolution to null (API default) — old default "2K" caused errors
+      if (usersDb.users[id].artPrefs.resolution === "2K") usersDb.users[id].artPrefs.resolution = null;
     }
     saveUsers();
   }
@@ -17323,7 +17325,7 @@ function getArtTagline() {
 
 // Build the /ass settings message and keyboard
 function buildArtSettingsMessage(user, userId) {
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: null, promptMode: "standard", safeMode: true };
   const modelConfig = getAPIMartModelConfig(prefs.model) || getAPIMartModelConfig("seedream-4.5");
   const ratioConfig = getAPIMartRatioConfig(prefs.size);
   const isOwnerUser = OWNER_IDS.has(String(userId));
@@ -17344,7 +17346,8 @@ function buildArtSettingsMessage(user, userId) {
   
   // Only show resolution if model supports multiple
   if (modelConfig?.supportedResolutions?.length > 1) {
-    lines.push(`\uD83D\uDCF7 *Resolution:* ${prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : "\uD83D\uDDA5 2K Standard"}`);
+    const resLabel = prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : prefs.resolution === "2K" ? "\uD83D\uDDA5 2K Standard" : "\uD83C\uDF10 Auto (API Default)";
+    lines.push(`\uD83D\uDCF7 *Resolution:* ${resLabel}`);
   }
   
   // Only show speed if model supports prompt optimization
@@ -17377,7 +17380,7 @@ function buildArtSettingsMessage(user, userId) {
 }
 
 function buildArtSettingsKeyboard(user, userId) {
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard", safeMode: true };
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: null, promptMode: "standard", safeMode: true };
   const isOwnerUser = OWNER_IDS.has(String(userId));
   const canToggle = isOwnerUser || user.tier === 'premium' || user.tier === 'ultra';
   
@@ -17414,12 +17417,17 @@ function buildArtSettingsKeyboard(user, userId) {
   }
   
   // Resolution toggle (only if model supports multiple resolutions)
-  const supportedRes = currentModelConfig?.supportedResolutions || ["2K"];
-  if (supportedRes.length > 1) {
-    buttons.push([
-      { text: `${prefs.resolution === "2K" ? "\u2705 " : ""}\uD83D\uDDA5 2K`, callback_data: "ass_res:2K" },
-      { text: `${prefs.resolution === "4K" ? "\u2705 " : ""}\u2728 4K Ultra HD`, callback_data: "ass_res:4K" },
-    ]);
+  const supportedRes = currentModelConfig?.supportedResolutions || [];
+  if (supportedRes.length > 0) {
+    const resRow = [
+      { text: `${!prefs.resolution ? "\u2705 " : ""}\uD83C\uDF10 Auto`, callback_data: "ass_res:auto" },
+    ];
+    for (const r of supportedRes) {
+      const icon = r === "4K" ? "\u2728" : "\uD83D\uDDA5";
+      const label = r === "4K" ? "4K HD" : r;
+      resRow.push({ text: `${prefs.resolution === r ? "\u2705 " : ""}${icon} ${label}`, callback_data: `ass_res:${r}` });
+    }
+    buttons.push(resRow);
   }
   
   // Number of images selector
@@ -17562,7 +17570,7 @@ bot.command("a", async (ctx) => {
   }
   
   // Get user preferences
-  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: "2K", promptMode: "standard" };
+  const prefs = user.artPrefs || { model: "seedream-4.5", size: "1:1", resolution: null, promptMode: "standard" };
   
   // Try to detect aspect ratio from prompt
   const detectedRatio = parseAPIMartRatio(rawPrompt);
@@ -17583,7 +17591,7 @@ bot.command("a", async (ctx) => {
     requestedSize = sizeMap[requestedSize] || supportedSizes[0] || "1:1";
   }
   const finalSize = requestedSize;
-  const finalResolution = prefs.resolution || "2K";
+  const finalResolution = prefs.resolution || null;
   const ratioConfig = getAPIMartRatioConfig(finalSize);
   
   // Reference image URLs (populated by photo+caption handler)
@@ -17594,7 +17602,7 @@ bot.command("a", async (ctx) => {
     "\uD83C\uDFA8 *Generating your art...*\n" +
     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
     `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
-    `${ratioConfig.icon} ${ratioConfig.label} (${finalSize}) \u2022 ${finalResolution}\n` +
+    `${ratioConfig.icon} ${ratioConfig.label} (${finalSize}) \u2022 ${finalResolution || 'Auto'}\n` +
     `${modelConfig?.icon || '\uD83C\uDFA8'} ${modelConfig?.name || 'SeedDream 4.5'}\n\n` +
     "\u23F3 _Estimated: 15-30 seconds..._\n" +
     "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 10%",
@@ -17638,7 +17646,7 @@ bot.command("a", async (ctx) => {
         "\uD83C\uDFA8 *Generating your art...*\n" +
         "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
         `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n\n` +
-        `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}\n\n` +
+        `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution || 'Auto'}\n\n` +
         `${bar} ${progress}%`,
         { parse_mode: "Markdown" }
       );
@@ -17672,7 +17680,7 @@ bot.command("a", async (ctx) => {
     // Add resolution toggle if model supports it
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` }
+        { text: `${finalResolution === "4K" ? "\uD83C\uDF10 Auto" : finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "4K" ? "auto" : finalResolution === "2K" ? "4K" : "2K"}` }
       );
     }
     
@@ -17688,7 +17696,7 @@ bot.command("a", async (ctx) => {
     // Send images as compressed photos (preview) with action buttons on the last one
     const caption = `\uD83C\uDFA8 *Art Studio*\n\n` +
                     `\uD83D\uDCDD _${finalPrompt.slice(0, 180)}${finalPrompt.length > 180 ? '...' : ''}_\n\n` +
-                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution || 'Auto'}` +
                     `${numImages > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
                     `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
                     `\uD83D\uDCE5 _Tap HD Download for full quality file_`;
@@ -17788,14 +17796,15 @@ bot.command("ass", async (ctx) => {
     return;
   }
   
-  // Quick resolution: /ass 4k, /ass 2k
-  if (args === "4k" || args === "2k") {
+  // Quick resolution: /ass 4k, /ass 2k, /ass auto
+  if (args === "4k" || args === "2k" || args === "auto") {
     user.artPrefs = user.artPrefs || {};
-    user.artPrefs.resolution = args.toUpperCase();
+    user.artPrefs.resolution = args === "auto" ? null : args.toUpperCase();
     saveUsers();
+    const label = args === "auto" ? "Auto (API Default)" : args.toUpperCase();
     await ctx.reply(
-      `\u2705 Art resolution set to *${args.toUpperCase()}*\n\n` +
-      `_Now /a will generate in ${args.toUpperCase()} resolution!_`,
+      `\u2705 Art resolution set to *${label}*\n\n` +
+      `_Now /a will generate in ${label} resolution!_`,
       { parse_mode: "Markdown" }
     );
     return;
@@ -17858,13 +17867,14 @@ bot.callbackQuery(/^ass_res:(.+)$/, async (ctx) => {
   
   const user = ensureUser(u.id, u);
   const match = ctx.callbackQuery.data.match(/^ass_res:(.+)$/);
-  const newRes = match?.[1] || "2K";
+  const rawRes = match?.[1] || "auto";
+  const newRes = rawRes === "auto" ? null : rawRes;
   
   user.artPrefs = user.artPrefs || {};
   user.artPrefs.resolution = newRes;
   saveUsers();
   
-  await ctx.answerCallbackQuery({ text: `\u2705 Resolution: ${newRes}` });
+  await ctx.answerCallbackQuery({ text: `\u2705 Resolution: ${newRes || 'Auto (API Default)'}` });
   
   try {
     await ctx.editMessageText(buildArtSettingsMessage(user, u.id), {
@@ -17957,9 +17967,9 @@ bot.callbackQuery(/^ass_model:(.+)$/, async (ctx) => {
   }
   
   // Reset resolution if not supported
-  const currentRes = user.artPrefs.resolution || "2K";
+  const currentRes = user.artPrefs.resolution || null;
   if (modelConfig.supportedResolutions && !modelConfig.supportedResolutions.includes(currentRes)) {
-    user.artPrefs.resolution = modelConfig.defaultResolution || modelConfig.supportedResolutions[0] || "2K";
+    user.artPrefs.resolution = modelConfig.defaultResolution || null;
   }
   
   // Reset prompt mode if not supported
@@ -18012,7 +18022,7 @@ bot.callbackQuery("art_regen", async (ctx) => {
       model: pending.model || "seedream-4.5",
       prompt: pending.prompt,
       size: pending.size || "1:1",
-      resolution: pending.resolution || "2K",
+      resolution: pending.resolution || null,
       n: numImages,
       imageUrls: pending.referenceUrl ? [pending.referenceUrl] : [],
       optimizePromptMode: prefs.promptMode || "standard",
@@ -18040,13 +18050,13 @@ bot.callbackQuery("art_regen", async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` }
+        { text: `${pending.resolution === "4K" ? "\uD83C\uDF10 Auto" : pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "4K" ? "auto" : pending.resolution === "2K" ? "4K" : "2K"}` }
       );
     }
     
     const caption = `\uD83C\uDFA8 *Regenerated Art*\n\n` +
                     `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
-                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution}` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution || 'Auto'}` +
                     `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
                     `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
                     `\uD83D\uDCE5 _Tap HD Download for full quality_`;
@@ -18161,7 +18171,7 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
       model: pending.model || "seedream-4.5",
       prompt: pending.prompt,
       size: newSize,
-      resolution: pending.resolution || "2K",
+      resolution: pending.resolution || null,
       n: numImages,
       imageUrls: pending.referenceUrl ? [pending.referenceUrl] : [],
       optimizePromptMode: prefs.promptMode || "standard",
@@ -18189,13 +18199,13 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "2K" ? "4K" : "2K"}` }
+        { text: `${pending.resolution === "4K" ? "\uD83C\uDF10 Auto" : pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "4K" ? "auto" : pending.resolution === "2K" ? "4K" : "2K"}` }
       );
     }
     
     const caption = `\uD83C\uDFA8 *Art Studio*\n\n` +
                     `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
-                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution}` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${pending.resolution || 'Auto'}` +
                     `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
                     `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
                     `\uD83D\uDCE5 _Tap HD Download for full quality_`;
@@ -18244,9 +18254,10 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   
   const match = ctx.callbackQuery.data.match(/^art_res:(.+)$/);
-  const newRes = match?.[1] || "2K";
+  const rawRes = match?.[1] || "auto";
+  const newRes = rawRes === "auto" ? null : rawRes;
   
-  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating in ${newRes}...` });
+  await ctx.answerCallbackQuery({ text: `\uD83C\uDFA8 Generating in ${newRes || 'Auto'}...` });
   
   pending.resolution = newRes;
   
@@ -18288,13 +18299,13 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${newRes === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${newRes === "2K" ? "4K" : "2K"}` }
+        { text: `${newRes === "4K" ? "\uD83C\uDF10 Auto" : newRes === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${newRes === "4K" ? "auto" : newRes === "2K" ? "4K" : "2K"}` }
       );
     }
     
-    const caption = `\uD83C\uDFA8 *Art Studio* (${newRes})\n\n` +
+    const caption = `\uD83C\uDFA8 *Art Studio* (${newRes || 'Auto'})\n\n` +
                     `\uD83D\uDCDD _${pending.prompt.slice(0, 180)}${pending.prompt.length > 180 ? '...' : ''}_\n\n` +
-                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes}` +
+                    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${newRes || 'Auto'}` +
                     `${allBuffers.length > 1 ? ` \u2022 ${allBuffers.length} images` : ''} \u2022 ${result.actualTime || '?'}s\n` +
                     `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
                     `\uD83D\uDCE5 _Tap HD Download for full quality_`;
@@ -18501,7 +18512,7 @@ bot.on("message:photo", async (ctx, next) => {
     requestedSize = sizeMap[requestedSize] || supportedSizes[0] || "1:1";
   }
   const finalSize = requestedSize;
-  const finalResolution = prefs.resolution || "2K";
+  const finalResolution = prefs.resolution || null;
   const ratioConfig = getAPIMartRatioConfig(finalSize);
   
   const statusMsg = await ctx.reply(
@@ -18509,7 +18520,7 @@ bot.on("message:photo", async (ctx, next) => {
     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n" +
     `\uD83D\uDCDD _${finalPrompt.slice(0, 120)}${finalPrompt.length > 120 ? '...' : ''}_\n` +
     `\uD83D\uDDBC\uFE0F _With reference image_\n\n` +
-    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution}\n\n` +
+    `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution || 'Auto'}\n\n` +
     "\u23F3 _Estimated: 15-30 seconds..._\n" +
     "\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 10%",
     { parse_mode: "Markdown" }
@@ -18558,13 +18569,13 @@ bot.on("message:photo", async (ctx, next) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "2K" ? "4K" : "2K"}` }
+        { text: `${finalResolution === "4K" ? "\uD83C\uDF10 Auto" : finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "4K" ? "auto" : finalResolution === "2K" ? "4K" : "2K"}` }
       );
     }
     
     const caption2 = `\uD83C\uDFA8 *Art Studio* \u2022 _Reference_\n\n` +
                      `\uD83D\uDCDD _${finalPrompt.slice(0, 180)}${finalPrompt.length > 180 ? '...' : ''}_\n\n` +
-                     `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution} \u2022 ${result.actualTime || '?'}s\n` +
+                     `${ratioConfig.icon} ${ratioConfig.label} \u2022 ${finalResolution || 'Auto'} \u2022 ${result.actualTime || '?'}s\n` +
                      `${modelConfig?.icon || '\uD83C\uDFA8'} _${modelConfig?.name || 'Art'} \u2022 ${getArtTagline()}_\n\n` +
                      `\uD83D\uDCE5 _Tap HD Download for full quality file_`;
     

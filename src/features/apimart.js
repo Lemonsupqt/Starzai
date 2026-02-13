@@ -33,7 +33,7 @@ const APIMART_MODELS = {
     supportedSizes: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9", "9:21", "auto"],
     supportedResolutions: ["2K", "4K"],
     defaultSize: "1:1",
-    defaultResolution: "2K",
+    defaultResolution: null,
     promptOptimizationModes: ["standard", "fast"],
     supportsWatermark: true,
     maxPollAttempts: 60,
@@ -47,16 +47,16 @@ const APIMART_MODELS = {
     shortName: "GPT-4o",
     type: "image",
     provider: "OpenAI",
-    description: "Native multimodal image gen with 4K output & text rendering",
+    description: "Native multimodal image gen with text rendering",
     icon: "✨",
     costPerImage: 0.006,
-    capabilities: ["text-to-image", "image-editing", "reference-images", "4k", "text-rendering", "mask-editing", "batch"],
+    capabilities: ["text-to-image", "image-editing", "reference-images", "text-rendering", "mask-editing", "batch"],
     maxBatch: 4,
     maxReferenceImages: 5,
     supportedSizes: ["1:1", "2:3", "3:2"],
-    supportedResolutions: ["2K"],
+    supportedResolutions: [],
     defaultSize: "1:1",
-    defaultResolution: "2K",
+    defaultResolution: null,
     promptOptimizationModes: [],
     supportsWatermark: false,
     maxPollAttempts: 60,
@@ -164,7 +164,10 @@ class APIMartClient {
 
     // Only add optional fields if they have values AND the model supports them
     if (size) body.size = size;
-    if (resolution && modelConfig.supportedResolutions?.length > 1) body.resolution = resolution;
+    // Only send resolution if explicitly provided AND model supports it — omit to use API default
+    if (resolution && modelConfig.supportedResolutions?.includes(resolution)) {
+      body.resolution = resolution;
+    }
     if (n > 1) body.n = n;
     if (imageUrls.length > 0) body.image_urls = imageUrls;
     if (optimizePromptMode && modelConfig.promptOptimizationModes?.length > 0) {
