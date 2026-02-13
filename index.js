@@ -14274,6 +14274,10 @@ for (const cmd of ["lyrics", "ly"]) {
       buttons.push({ text: `📀 Other Versions (${result.allResults.length - 1})`, callback_data: `lyrics_versions:${ctx.from.id}` });
     }
     
+    // Check if user replied to an audio message — store its ID for synced lyrics reply
+    const repliedMsg = ctx.message?.reply_to_message;
+    const audioReplyId = (repliedMsg?.audio || repliedMsg?.voice) ? repliedMsg.message_id : null;
+
     // Store results for callbacks
     if (hasSynced || hasOtherVersions) {
       pendingLyricsResults.set(ctx.from.id, {
@@ -14283,6 +14287,8 @@ for (const cmd of ["lyrics", "ly"]) {
         syncedLyrics: result.syncedLyrics,
         trackName: result.trackName,
         artistName: result.artistName,
+        audioMessageId: audioReplyId,
+        chatId: ctx.chat?.id || null,
       });
       // Auto-cleanup after 10 minutes
       setTimeout(() => pendingLyricsResults.delete(ctx.from.id), 600000);
@@ -14334,26 +14340,40 @@ bot.callbackQuery(/^lyrics_synced:(\d+)$/, async (ctx) => {
     formattedSynced = formattedSynced.slice(0, maxLen) + '\n\n… <i>(truncated)</i>';
   }
   
+  const replyToAudioId = pending.audioMessageId;
+  const replyMarkup = {
+    inline_keyboard: [[
+      { text: '📄 Plain Lyrics', callback_data: `lyrics_plain:${ctx.from.id}` },
+      ...(pending.allResults.length > 1 ? [{ text: `📀 Other Versions`, callback_data: `lyrics_versions:${ctx.from.id}` }] : []),
+    ]]
+  };
+
   try {
-    await ctx.editMessageText(
-      header + formattedSynced,
-      {
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '📄 Plain Lyrics', callback_data: `lyrics_plain:${ctx.from.id}` },
-            ...(pending.allResults.length > 1 ? [{ text: `📀 Other Versions`, callback_data: `lyrics_versions:${ctx.from.id}` }] : []),
-          ]]
+    if (replyToAudioId) {
+      // Send as a reply to the audio message so timestamps align
+      await ctx.editMessageText(
+        header + formattedSynced,
+        {
+          parse_mode: 'HTML',
+          reply_markup: replyMarkup,
         }
-      }
-    );
+      );
+    } else {
+      await ctx.editMessageText(
+        header + formattedSynced,
+        {
+          parse_mode: 'HTML',
+          reply_markup: replyMarkup,
+        }
+      );
+    }
   } catch (e) {
-    // Message too long — send as document
-    await ctx.reply(`⏱ Synced lyrics for ${pending.artistName} - ${pending.trackName} (too long for message, sending as file):`);
+    // Message too long — send as reply to audio if possible
     const lrcContent = `[ar:${pending.artistName}]\n[ti:${pending.trackName}]\n\n${pending.syncedLyrics}`;
     await ctx.api.sendDocument(
       ctx.chat.id,
-      new InputFile(Buffer.from(lrcContent, 'utf-8'), `${pending.artistName} - ${pending.trackName}.lrc`)
+      new InputFile(Buffer.from(lrcContent, 'utf-8'), `${pending.artistName} - ${pending.trackName}.lrc`),
+      { reply_parameters: replyToAudioId ? { message_id: replyToAudioId } : undefined }
     );
   }
 });
@@ -14704,6 +14724,19 @@ bot.callbackQuery(/^mdl:/, async (ctx) => {
       } catch (e) { /* skip thumbnail */ }
     }
 
+    // Parse duration string "m:ss" to seconds for Telegram API
+    let durationSecs = undefined;
+    if (typeof fullSong.duration === 'number') {
+      durationSecs = fullSong.duration;
+    } else if (typeof fullSong.duration === 'string' && fullSong.duration.includes(':')) {
+      const parts = fullSong.duration.split(':').map(Number);
+      if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+        durationSecs = parts[0] * 60 + parts[1];
+      } else if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        durationSecs = parts[0] * 3600 + parts[1] * 60 + parts[2];
+      }
+    }
+
     // Send as audio with metadata
     const audioMsg = await ctx.replyWithAudio(
       new InputFile(audioBuffer, fileName),
@@ -14712,7 +14745,7 @@ bot.callbackQuery(/^mdl:/, async (ctx) => {
         parse_mode: 'HTML',
         title: fullSong.name,
         performer: fullSong.artist,
-        duration: typeof fullSong.duration === 'number' ? fullSong.duration : undefined,
+        duration: durationSecs,
         thumbnail: thumbInput,
         reply_markup: {
           inline_keyboard: [
@@ -14869,6 +14902,8 @@ bot.callbackQuery(/^mlyrics:/, async (ctx) => {
         syncedLyrics: result.syncedLyrics,
         trackName: result.trackName || song.name,
         artistName: result.artistName || song.artist,
+        audioMessageId: replyToId || null,
+        chatId: ctx.chat?.id || null,
       });
       setTimeout(() => pendingLyricsResults.delete(ctx.from.id), 600000);
 
@@ -24255,6 +24290,19 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch {}
       }
 
+      // Parse duration string "m:ss" to seconds for Telegram API
+      let durationSecs = undefined;
+      if (typeof fullSong.duration === 'number') {
+        durationSecs = fullSong.duration;
+      } else if (typeof fullSong.duration === 'string' && fullSong.duration.includes(':')) {
+        const parts = fullSong.duration.split(':').map(Number);
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          durationSecs = parts[0] * 60 + parts[1];
+        } else if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+          durationSecs = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        }
+      }
+
       // Send audio to user's DM first to get a file_id for inline editing
       let audioFileId = null;
       try {
@@ -24266,6 +24314,7 @@ bot.on("chosen_inline_result", async (ctx) => {
             parse_mode: 'HTML',
             title: fullSong.name,
             performer: fullSong.artist,
+            duration: durationSecs,
             thumbnail: thumbInput,
           }
         );
