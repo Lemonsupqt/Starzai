@@ -15992,10 +15992,10 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• Or just say: \"generate image of...\" or \"draw...\"",
     "• `/imgset` - Set default ratio & safe mode",
     "",
-    "🔍 *AI Image Upscaler (3 Engines)*",
-    "⚡ Fast (Real-ESRGAN) | 🌟 AuraSR | 💎 Clarity AI",
+    "🔍 *AI Image Upscaler (2 Engines)*",
+    "⚡ Fast (Real-ESRGAN) | 🌟 AuraSR (Photorealistic)",
     "• Reply to any photo with `/up`",
-    "• `/up 4x` `/up aura` `/up clarity`",
+    "• `/up 4x` `/up aura` `/up pixel`",
     "• Also on /a art result buttons!",
     "",
     "📊 *Stats*",
@@ -16516,10 +16516,10 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• Or just say: \"generate image of...\" or \"draw...\"",
     "• `/imgset` - Set default ratio & safe mode",
     "",
-    "🔍 *AI Image Upscaler (3 Engines)*",
-    "⚡ Fast (Real-ESRGAN) | 🌟 AuraSR | 💎 Clarity AI",
+    "🔍 *AI Image Upscaler (2 Engines)*",
+    "⚡ Fast (Real-ESRGAN) | 🌟 AuraSR (Photorealistic)",
     "• Reply to any photo with `/up`",
-    "• `/up 4x` `/up aura` `/up clarity`",
+    "• `/up 4x` `/up aura` `/up pixel`",
     "• Also on /a art result buttons!",
     "",
     "📊 *Stats*",
@@ -18423,8 +18423,6 @@ bot.callbackQuery("art_dl", async (ctx) => {
 const ESRGAN_SPACE_URL = "https://bookbot-image-upscaling-playground.hf.space";
 // Engine 2: AuraSR-v2 (GigaGAN) — photorealistic textures, ZeroGPU
 const AURASR_SPACE_URL = "https://gokaygokay-aurasr-v2.hf.space";
-// Engine 3: Finegrain/Clarity AI — diffusion-based, highest quality, ZeroGPU
-const FINEGRAIN_SPACE_URL = "https://finegrain-finegrain-image-enhancer.hf.space";
 
 const UPSCALE_MODELS = {
   // Real-ESRGAN models (fast ~3s)
@@ -18433,9 +18431,7 @@ const UPSCALE_MODELS = {
   "esrgan_pixel": { name: "4x Pixel Art",  icon: "🎮", scale: 4, engine: "esrgan", esrganModel: "minecraft_modelx4" },
   // AuraSR-v2 (photorealistic ~15-20s)
   "aurasr_4x":    { name: "4x AuraSR",     icon: "🌟", scale: 4, engine: "aurasr" },
-  // Finegrain/Clarity AI (highest quality ~20-30s)
-  "clarity_2x":   { name: "2x Clarity AI", icon: "💎", scale: 2, engine: "finegrain", fgScale: 2 },
-  "clarity_4x":   { name: "4x Clarity AI", icon: "💎", scale: 4, engine: "finegrain", fgScale: 4 },
+
 };
 const DEFAULT_UPSCALE_MODEL = "esrgan_4x";
 
@@ -18532,69 +18528,6 @@ async function upscaleAuraSR(imageBuffer) {
   }
 }
 
-// ─── Finegrain/Clarity AI upscaler (Gradio 5.x queue API) ───
-async function upscaleFinegrain(imageBuffer, upscaleFactor = 2) {
-  const sessionHash = "s_" + Math.random().toString(36).slice(2, 10);
-  const base64 = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
-  
-  // Step 1: Join queue (Gradio 5.x uses /gradio_api/ prefix, base64 for image)
-  const joinResp = await globalThis.fetch(FINEGRAIN_SPACE_URL + "/gradio_api/queue/join", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      data: [base64, "masterpiece, best quality, highres", "worst quality, low quality, normal quality", 42, upscaleFactor, 0.6, 1, 6, 112, 144, 0.35, 18, "DDIM"],
-      fn_index: 1,
-      session_hash: sessionHash,
-    }),
-  });
-  if (!joinResp.ok) throw new Error(`Finegrain queue join failed: ${joinResp.status}`);
-  
-  // Step 2: SSE polling
-  const dataResp = await globalThis.fetch(FINEGRAIN_SPACE_URL + "/gradio_api/queue/data?session_hash=" + sessionHash, {
-    headers: { "Accept": "text/event-stream" },
-  });
-  if (!dataResp.ok) throw new Error(`Finegrain SSE failed: ${dataResp.status}`);
-  
-  // Read SSE stream using Web ReadableStream API
-  const reader = dataResp.body.getReader();
-  const decoder = new TextDecoder();
-  let body = '';
-  const deadline = Date.now() + 180000;
-  
-  while (true) {
-    if (Date.now() > deadline) throw new Error('Clarity AI timeout (180s)');
-    const { done, value } = await reader.read();
-    if (done) throw new Error('Clarity AI: stream ended without result');
-    
-    body += decoder.decode(value, { stream: true });
-    const lines = body.split('\n');
-    // Keep last partial line
-    body = lines.pop() || '';
-    
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      try {
-        const json = JSON.parse(line.slice(5).trim());
-        if (json.msg === 'process_completed') {
-          reader.cancel();
-          // ImageSlider output: [[before, after]] — we want after (index 1)
-          const slider = json.output?.data?.[0];
-          if (!Array.isArray(slider) || slider.length < 2) {
-            throw new Error('Clarity AI: unexpected output format');
-          }
-          const afterUrl = slider[1]?.url;
-          if (!afterUrl) throw new Error('Clarity AI: no output URL');
-          const imgResp = await globalThis.fetch(afterUrl);
-          return Buffer.from(await imgResp.arrayBuffer());
-        }
-      } catch (e) {
-        if (e.message?.startsWith('Clarity AI:')) throw e;
-        /* partial SSE event, continue */
-      }
-    }
-  }
-}
-
 // ─── Unified upscale dispatcher ───
 async function upscaleImage(imageBuffer, model = DEFAULT_UPSCALE_MODEL) {
   const info = UPSCALE_MODELS[model];
@@ -18605,8 +18538,6 @@ async function upscaleImage(imageBuffer, model = DEFAULT_UPSCALE_MODEL) {
       return upscaleESRGAN(imageBuffer, info.esrganModel);
     case 'aurasr':
       return upscaleAuraSR(imageBuffer);
-    case 'finegrain':
-      return upscaleFinegrain(imageBuffer, info.fgScale || 2);
     default:
       throw new Error(`Unknown upscale engine: ${info.engine}`);
   }
@@ -18634,10 +18565,8 @@ for (const cmd of ["upscale", "up"]) {
         "`/up 2x` — 2x Fast\n" +
         "`/up 4x` — 4x Fast\n" +
         "`/up pixel` — 4x Pixel Art\n" +
-        "`/up aura` — 4x AuraSR (photorealistic)\n" +
-        "`/up clarity` — 2x Clarity AI (best quality)\n" +
-        "`/up clarity4x` — 4x Clarity AI\n\n" +
-        "⚡ _Fast models: ~3s | 🌟 AuraSR: ~15-20s | 💎 Clarity: ~20-30s_\n\n" +
+        "`/up aura` — 4x AuraSR (photorealistic)\n\n" +
+        "⚡ _Fast models: ~3s | 🌟 AuraSR: ~15-20s_\n\n" +
         "💡 _Also available as a button on /a results!_",
         { parse_mode: "Markdown" }
       );
@@ -18647,9 +18576,7 @@ for (const cmd of ["upscale", "up"]) {
     // Parse model from args
     const args = (ctx.message?.text || "").split(/\s+/).slice(1).join(" ").toLowerCase().trim();
     let model = DEFAULT_UPSCALE_MODEL;
-    if (args.includes("clarity4x") || args.includes("clarity 4x")) model = "clarity_4x";
-    else if (args.includes("clarity")) model = "clarity_2x";
-    else if (args.includes("aura")) model = "aurasr_4x";
+    if (args.includes("aura")) model = "aurasr_4x";
     else if (args.includes("pixel") || args.includes("minecraft")) model = "esrgan_pixel";
     else if (args.includes("2x")) model = "esrgan_2x";
     else if (args.includes("4x")) model = "esrgan_4x";
@@ -18667,7 +18594,7 @@ for (const cmd of ["upscale", "up"]) {
       return;
     }
     
-    const engineNote = modelInfo.engine === 'esrgan' ? 'a few seconds' : modelInfo.engine === 'aurasr' ? '15-20 seconds (GPU warming up)' : '20-30 seconds (GPU warming up)';
+    const engineNote = modelInfo.engine === 'esrgan' ? 'a few seconds' : '15-20 seconds (GPU warming up)';
     const statusMsg = await ctx.reply(
       `🔍 *Upscaling ${modelInfo.icon} ${modelInfo.name}...*\n_This may take ${engineNote}_`,
       { parse_mode: "Markdown" }
@@ -18697,7 +18624,7 @@ for (const cmd of ["upscale", "up"]) {
           caption: `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
                    `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
                    `⏱ ${elapsed}s\n\n` +
-                   `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : modelInfo.engine === 'aurasr' ? 'AuraSR-v2 (GigaGAN)' : 'Clarity AI (Diffusion)'}_`,
+                   `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : 'AuraSR-v2 (GigaGAN)'}_`,
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [
@@ -18756,12 +18683,12 @@ bot.callbackQuery("art_upscale", async (ctx) => {
     callback_data: `art_up_model:${key}`
   }));
   
-  await ctx.reply("🔍 *Choose upscale model:*\n\n⚡ Fast (~3s) | 🌟 AuraSR (~15-20s) | 💎 Clarity (~20-30s)", {
+  await ctx.reply("🔍 *Choose upscale model:*\n\n⚡ Fast (~3s) | 🌟 AuraSR (~15-20s)", {
     parse_mode: "Markdown",
     reply_markup: {
       inline_keyboard: [
-        modelButtons.slice(0, 3),  // ⚡ 2x Fast, ⚡ 4x Fast, 🎮 4x Pixel
-        modelButtons.slice(3, 6),  // 🌟 4x AuraSR, 💎 2x Clarity, 💎 4x Clarity
+        modelButtons.slice(0, 2),  // ⚡ 2x Fast, ⚡ 4x Fast
+        modelButtons.slice(2, 4),  // 🎮 4x Pixel, 🌟 4x AuraSR
       ]
     }
   });
@@ -18789,7 +18716,7 @@ bot.callbackQuery(/^art_up_model:(.+)$/, async (ctx) => {
   await ctx.answerCallbackQuery({ text: `🔍 Upscaling with ${modelInfo.name}...` });
   
   // Edit the model selection message to show progress
-  const engineNote2 = modelInfo.engine === 'esrgan' ? 'a few seconds' : modelInfo.engine === 'aurasr' ? '15-20 seconds' : '20-30 seconds';
+  const engineNote2 = modelInfo.engine === 'esrgan' ? 'a few seconds' : '15-20 seconds';
   try {
     await ctx.editMessageText(
       `🔍 *Upscaling ${modelInfo.icon} ${modelInfo.name}...*\n_Processing ${pending.buffers.length} image${pending.buffers.length > 1 ? 's' : ''}... (~${engineNote2})_`,
@@ -18813,7 +18740,7 @@ bot.callbackQuery(/^art_up_model:(.+)$/, async (ctx) => {
           caption: i === 0 
             ? `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
               `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
-              `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : modelInfo.engine === 'aurasr' ? 'AuraSR-v2 (GigaGAN)' : 'Clarity AI (Diffusion)'}_`
+              `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : 'AuraSR-v2 (GigaGAN)'}_`
             : undefined,
           parse_mode: "Markdown",
         }
@@ -18874,7 +18801,7 @@ bot.callbackQuery(/^art_up_redo:(.+)$/, async (ctx) => {
         caption: `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
                  `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
                  `⏱ ${elapsed}s\n\n` +
-                 `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : modelInfo.engine === 'aurasr' ? 'AuraSR-v2 (GigaGAN)' : 'Clarity AI (Diffusion)'}_`,
+                 `_Powered by ${modelInfo.engine === 'esrgan' ? 'Real-ESRGAN' : 'AuraSR-v2 (GigaGAN)'}_`,
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
