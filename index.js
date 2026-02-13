@@ -15992,6 +15992,12 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "• Or just say: \"generate image of...\" or \"draw...\"",
     "• `/imgset` - Set default ratio & safe mode",
     "",
+    "🔍 *AI Image Upscaler*",
+    "Upscale any image up to 4x with AI!",
+    "• Reply to any photo with `/up`",
+    "• `/up 2x` `/up 4x` `/up pixel`",
+    "• Also on /a art result buttons!",
+    "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
     "",
@@ -16509,6 +16515,12 @@ bot.callbackQuery("help_features", async (ctx) => {
     "• `/imagine prompt` - Free alternative",
     "• Or just say: \"generate image of...\" or \"draw...\"",
     "• `/imgset` - Set default ratio & safe mode",
+    "",
+    "🔍 *AI Image Upscaler*",
+    "Upscale any image up to 4x with AI!",
+    "• Reply to any photo with `/up`",
+    "• `/up 2x` `/up 4x` `/up pixel`",
+    "• Also on /a art result buttons!",
     "",
     "📊 *Stats*",
     "• /stats - Your usage statistics",
@@ -17555,7 +17567,8 @@ bot.command("a", async (ctx) => {
       "\u2022 _landscape_ \u2192 4:3\n" +
       "\u2022 _square_ \u2192 1:1\n\n" +
       `\uD83D\uDCCC *Your defaults:* ${ratioConfig.icon} ${ratioConfig.label} \u2022 ${prefs.resolution || '1080p'}\n` +
-      `_Use /ass to customize settings_\n\n` +
+      `_Use /ass to customize settings_\n` +
+      `\uD83D\uDD0D _Reply to any photo with /up to upscale!_\n\n` +
       `\u2728 _${modelConfig?.description || 'AI image generation'}_`,
       { parse_mode: "Markdown" }
     );
@@ -17682,13 +17695,13 @@ bot.command("a", async (ctx) => {
     }, onProgress);
     
     // Build action buttons
-    const actionButtons = [
-      [
+    const actionButtons = [      [
         { text: "\uD83D\uDD04 Regenerate", callback_data: `art_regen` },
         { text: "\uD83D\uDCD0 Change Ratio", callback_data: "art_ratio" },
       ],
       [
         { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\uD83D\uDD0D Upscale", callback_data: "art_upscale" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
@@ -18062,6 +18075,7 @@ bot.callbackQuery("art_regen", async (ctx) => {
       ],
       [
         { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\uD83D\uDD0D Upscale", callback_data: "art_upscale" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
@@ -18211,6 +18225,7 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
       ],
       [
         { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\uD83D\uDD0D Upscale", callback_data: "art_upscale" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
@@ -18310,6 +18325,7 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
       ],
       [
         { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\uD83D\uDD0D Upscale", callback_data: "art_upscale" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
@@ -18399,6 +18415,314 @@ bot.callbackQuery("art_dl", async (ctx) => {
   } catch (error) {
     console.error("[ART] HD download error:", error);
     await ctx.reply("\u274C Failed to send HD file. Try again.");
+  }
+});
+
+// ─── AI Image Upscale (Free, powered by HuggingFace) ───
+const UPSCALE_SPACE_URL = "https://bookbot-image-upscaling-playground.hf.space";
+const UPSCALE_MODELS = {
+  "modelx2": { name: "2x Standard", icon: "📐", scale: 2 },
+  "modelx2 25 JXL": { name: "2x HQ", icon: "✨", scale: 2 },
+  "modelx4": { name: "4x Ultra", icon: "🔍", scale: 4 },
+  "minecraft_modelx4": { name: "4x Pixel Art", icon: "🎮", scale: 4 },
+};
+const DEFAULT_UPSCALE_MODEL = "modelx4";
+
+async function upscaleImage(imageBuffer, model = DEFAULT_UPSCALE_MODEL) {
+  const base64 = `data:image/png;base64,${imageBuffer.toString('base64')}`;
+  
+  const resp = await fetch(UPSCALE_SPACE_URL + "/api/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: [base64, model] }),
+  });
+  
+  if (!resp.ok) throw new Error(`Upscale API returned ${resp.status}`);
+  
+  const result = await resp.json();
+  if (result.error) throw new Error(result.error);
+  
+  const outputBase64 = result.data?.[0];
+  if (!outputBase64 || typeof outputBase64 !== 'string' || !outputBase64.startsWith('data:')) {
+    throw new Error('Invalid upscale response');
+  }
+  
+  return Buffer.from(outputBase64.split(',')[1], 'base64');
+}
+
+// /upscale or /up command - reply to a photo to upscale it
+for (const cmd of ["upscale", "up"]) {
+  bot.command(cmd, async (ctx) => {
+    if (!(await enforceRateLimit(ctx))) return;
+    
+    const u = ctx.from;
+    if (!u?.id) return;
+    
+    const user = ensureUser(u.id, u);
+    const reply = ctx.message?.reply_to_message;
+    
+    // Check if replying to a photo
+    if (!reply?.photo && !reply?.document) {
+      await ctx.reply(
+        "🔍 *AI Image Upscaler*\n" +
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+        "Upscale any image up to 4x with AI!\n\n" +
+        "*Usage:* Reply to any photo with:\n" +
+        "`/up` — Upscale 4x (default)\n" +
+        "`/up 2x` — Upscale 2x\n" +
+        "`/up 2xhq` — Upscale 2x high quality\n" +
+        "`/up 4x` — Upscale 4x ultra\n" +
+        "`/up pixel` — Upscale 4x pixel art\n\n" +
+        "💡 _Also available as a button on /a results!_",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+    
+    // Parse model from args
+    const args = (ctx.message?.text || "").split(/\s+/).slice(1).join(" ").toLowerCase().trim();
+    let model = DEFAULT_UPSCALE_MODEL;
+    if (args.includes("2xhq") || args.includes("2x hq") || args.includes("hq")) model = "modelx2 25 JXL";
+    else if (args.includes("2x")) model = "modelx2";
+    else if (args.includes("pixel") || args.includes("minecraft")) model = "minecraft_modelx4";
+    else if (args.includes("4x")) model = "modelx4";
+    
+    const modelInfo = UPSCALE_MODELS[model];
+    
+    // Get photo file
+    let fileId;
+    if (reply.photo) {
+      fileId = reply.photo[reply.photo.length - 1].file_id;
+    } else if (reply.document?.mime_type?.startsWith('image/')) {
+      fileId = reply.document.file_id;
+    } else {
+      await ctx.reply("⚠️ Please reply to an image (photo or image document).");
+      return;
+    }
+    
+    const statusMsg = await ctx.reply(
+      `🔍 *Upscaling ${modelInfo.icon} ${modelInfo.name}...*\n_This may take a few seconds_`,
+      { parse_mode: "Markdown" }
+    );
+    
+    try {
+      // Download the image from Telegram
+      const file = await ctx.api.getFile(fileId);
+      const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+      const imgResp = await fetch(fileUrl);
+      if (!imgResp.ok) throw new Error('Failed to download image from Telegram');
+      const inputBuffer = Buffer.from(await imgResp.arrayBuffer());
+      
+      // Upscale
+      const startTime = Date.now();
+      const outputBuffer = await upscaleImage(inputBuffer, model);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      
+      const inputKB = (inputBuffer.length / 1024).toFixed(0);
+      const outputKB = (outputBuffer.length / 1024).toFixed(0);
+      
+      // Send as document for full quality
+      await ctx.api.sendDocument(
+        ctx.chat.id,
+        new InputFile(outputBuffer, `upscaled_${modelInfo.scale}x_${Date.now()}.png`),
+        {
+          caption: `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
+                   `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
+                   `⏱ ${elapsed}s\n\n` +
+                   `_Powered by Real-ESRGAN AI_`,
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              Object.entries(UPSCALE_MODELS)
+                .filter(([k]) => k !== model)
+                .slice(0, 3)
+                .map(([k, v]) => ({ text: `${v.icon} ${v.name}`, callback_data: `art_up_redo:${k}` }))
+            ]
+          }
+        }
+      );
+      
+      // Store for re-upscale with different model
+      pendingArtPrompts.set(u.id, {
+        ...pendingArtPrompts.get(u.id),
+        lastUpscaleInput: inputBuffer,
+      });
+      
+      // Delete status
+      try { await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id); } catch (e) {}
+      
+      console.log(`[UPSCALE] User ${u.id}: ${model}, ${inputKB}KB→${outputKB}KB, ${elapsed}s`);
+      
+    } catch (error) {
+      console.error("[UPSCALE] Error:", error);
+      try {
+        await ctx.api.editMessageText(
+          ctx.chat.id,
+          statusMsg.message_id,
+          `❌ *Upscale failed*\n\n${error.message?.slice(0, 150) || 'Unknown error'}\n\n_Try again or use a different model_`,
+          { parse_mode: "Markdown" }
+        );
+      } catch (e) {
+        await ctx.reply("❌ Upscale failed. Please try again.");
+      }
+    }
+  });
+}
+
+// ─── Upscale button on art results ───
+bot.callbackQuery("art_upscale", async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending || (!pending.buffers?.length && !pending.lastUpscaleInput)) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Generate a new image with /a", show_alert: true });
+    return;
+  }
+  
+  // Show model selection
+  await ctx.answerCallbackQuery({ text: "🔍 Choose upscale model..." });
+  
+  const modelButtons = Object.entries(UPSCALE_MODELS).map(([key, info]) => ({
+    text: `${info.icon} ${info.name}`,
+    callback_data: `art_up_model:${key}`
+  }));
+  
+  await ctx.reply("🔍 *Choose upscale model:*", {
+    parse_mode: "Markdown",
+    reply_markup: {
+      inline_keyboard: [
+        modelButtons.slice(0, 2),
+        modelButtons.slice(2, 4),
+      ]
+    }
+  });
+});
+
+// ─── Upscale with selected model (from art result) ───
+bot.callbackQuery(/^art_up_model:(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const match = ctx.callbackQuery.data.match(/^art_up_model:(.+)$/);
+  const model = match?.[1];
+  if (!model || !UPSCALE_MODELS[model]) {
+    await ctx.answerCallbackQuery({ text: "Invalid model", show_alert: true });
+    return;
+  }
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending || !pending.buffers?.length) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Generate a new image with /a", show_alert: true });
+    return;
+  }
+  
+  const modelInfo = UPSCALE_MODELS[model];
+  await ctx.answerCallbackQuery({ text: `🔍 Upscaling with ${modelInfo.name}...` });
+  
+  // Edit the model selection message to show progress
+  try {
+    await ctx.editMessageText(
+      `🔍 *Upscaling ${modelInfo.icon} ${modelInfo.name}...*\n_Processing ${pending.buffers.length} image${pending.buffers.length > 1 ? 's' : ''}..._`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (e) {}
+  
+  try {
+    const startTime = Date.now();
+    
+    for (let i = 0; i < pending.buffers.length; i++) {
+      const inputBuffer = pending.buffers[i];
+      const outputBuffer = await upscaleImage(inputBuffer, model);
+      const inputKB = (inputBuffer.length / 1024).toFixed(0);
+      const outputKB = (outputBuffer.length / 1024).toFixed(0);
+      
+      await ctx.api.sendDocument(
+        ctx.chat.id,
+        new InputFile(outputBuffer, `upscaled_${modelInfo.scale}x_${i + 1}_${Date.now()}.png`),
+        {
+          caption: i === 0 
+            ? `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
+              `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
+              `_Powered by Real-ESRGAN AI_`
+            : undefined,
+          parse_mode: "Markdown",
+        }
+      );
+    }
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    
+    // Delete the progress message
+    try { await ctx.deleteMessage(); } catch (e) {}
+    
+    console.log(`[UPSCALE] User ${u.id}: ${model}, ${pending.buffers.length} images, ${elapsed}s`);
+    
+  } catch (error) {
+    console.error("[UPSCALE] Error:", error);
+    try {
+      await ctx.editMessageText(
+        `❌ *Upscale failed*\n\n${error.message?.slice(0, 150) || 'Unknown error'}`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {}
+  }
+});
+
+// ─── Re-upscale with different model (from upscale result) ───
+bot.callbackQuery(/^art_up_redo:(.+)$/, async (ctx) => {
+  const u = ctx.from;
+  if (!u?.id) return;
+  
+  const match = ctx.callbackQuery.data.match(/^art_up_redo:(.+)$/);
+  const model = match?.[1];
+  if (!model || !UPSCALE_MODELS[model]) {
+    await ctx.answerCallbackQuery({ text: "Invalid model", show_alert: true });
+    return;
+  }
+  
+  const pending = pendingArtPrompts.get(u.id);
+  if (!pending?.lastUpscaleInput) {
+    await ctx.answerCallbackQuery({ text: "Session expired. Send the image again.", show_alert: true });
+    return;
+  }
+  
+  const modelInfo = UPSCALE_MODELS[model];
+  await ctx.answerCallbackQuery({ text: `🔍 Re-upscaling with ${modelInfo.name}...` });
+  
+  try {
+    const startTime = Date.now();
+    const inputBuffer = pending.lastUpscaleInput;
+    const outputBuffer = await upscaleImage(inputBuffer, model);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const inputKB = (inputBuffer.length / 1024).toFixed(0);
+    const outputKB = (outputBuffer.length / 1024).toFixed(0);
+    
+    await ctx.api.sendDocument(
+      ctx.chat.id,
+      new InputFile(outputBuffer, `upscaled_${modelInfo.scale}x_${Date.now()}.png`),
+      {
+        caption: `🔍 *AI Upscaled ${modelInfo.icon} ${modelInfo.name}*\n\n` +
+                 `📊 ${inputKB}KB → ${outputKB}KB (${modelInfo.scale}x)\n` +
+                 `⏱ ${elapsed}s\n\n` +
+                 `_Powered by Real-ESRGAN AI_`,
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            Object.entries(UPSCALE_MODELS)
+              .filter(([k]) => k !== model)
+              .slice(0, 3)
+              .map(([k, v]) => ({ text: `${v.icon} ${v.name}`, callback_data: `art_up_redo:${k}` }))
+          ]
+        }
+      }
+    );
+    
+    console.log(`[UPSCALE] User ${u.id}: re-upscale ${model}, ${inputKB}KB→${outputKB}KB, ${elapsed}s`);
+    
+  } catch (error) {
+    console.error("[UPSCALE] Re-upscale error:", error);
+    await ctx.reply(`❌ Upscale failed: ${error.message?.slice(0, 100) || 'Unknown error'}`);
   }
 });
 
@@ -18580,6 +18904,7 @@ bot.on("message:photo", async (ctx, next) => {
       ],
       [
         { text: "\uD83D\uDCE5 HD Download", callback_data: "art_dl" },
+        { text: "\uD83D\uDD0D Upscale", callback_data: "art_upscale" },
         { text: "\u2728 New Art", callback_data: "art_new" },
       ],
     ];
