@@ -17185,20 +17185,34 @@ function buildArtSettingsMessage(user, userId) {
   const safeStatus = isOwnerUser ? "OFF (owner)" : (prefs.safeMode !== false ? "ON" : "OFF");
   const safeIcon = isOwnerUser ? "\uD83D\uDD13" : (prefs.safeMode !== false ? "\uD83D\uDD12" : "\uD83D\uDD13");
   
-  const text = [
+  const lines = [
     "\u2699\uFE0F *Art Studio Settings*",
     "",
     `${modelConfig?.icon || "\uD83C\uDFA8"} *Model:* ${modelConfig?.name || prefs.model}`,
     `\u2022 _${modelConfig?.description || 'AI image generation'}_`,
+    `\u2022 _$${modelConfig?.costPerImage || '?'}/image \u2022 ${modelConfig?.provider || 'Unknown'}_`,
     "",
     `\uD83D\uDCD0 *Ratio:* ${ratioConfig.icon} ${ratioConfig.label} (${prefs.size})`,
-    `\uD83D\uDCF7 *Resolution:* ${prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : "\uD83D\uDDA5 2K Standard"}`,
-    `\u26A1 *Speed:* ${prefs.promptMode === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard (better quality)"}`,
+  ];
+  
+  // Only show resolution if model supports multiple
+  if (modelConfig?.supportedResolutions?.length > 1) {
+    lines.push(`\uD83D\uDCF7 *Resolution:* ${prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : "\uD83D\uDDA5 2K Standard"}`);
+  }
+  
+  // Only show speed if model supports prompt optimization
+  if (modelConfig?.promptOptimizationModes?.length > 0) {
+    lines.push(`\u26A1 *Speed:* ${prefs.promptMode === "fast" ? "\uD83C\uDFC3 Fast" : "\u2728 Standard (better quality)"}`);
+  }
+  
+  lines.push(
     `${safeIcon} *Safe Mode:* ${safeStatus}`,
     "",
     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
     "_Tap buttons below to customize_",
-  ].join("\n");
+  );
+  
+  const text = lines.join("\n");
   
   return text;
 }
@@ -17210,30 +17224,51 @@ function buildArtSettingsKeyboard(user, userId) {
   
   const buttons = [];
   
-  // Row 1: Aspect Ratio (most used)
-  buttons.push([
-    { text: `${prefs.size === "1:1" ? "\u2705 " : ""}\u2B1C Square`, callback_data: "ass_size:1:1" },
-    { text: `${prefs.size === "4:3" ? "\u2705 " : ""}\uD83D\uDDBC\uFE0F Landscape`, callback_data: "ass_size:4:3" },
-    { text: `${prefs.size === "3:4" ? "\u2705 " : ""}\uD83D\uDCF1 Portrait`, callback_data: "ass_size:3:4" },
-  ]);
+  // Get current model config for dynamic UI
+  const currentModel = prefs.model || "seedream-4.5";
+  const currentModelConfig = getAPIMartModelConfig(currentModel);
+  const supportedSizes = currentModelConfig?.supportedSizes || ["1:1"];
   
-  buttons.push([
-    { text: `${prefs.size === "16:9" ? "\u2705 " : ""}\uD83C\uDFAC Wide`, callback_data: "ass_size:16:9" },
-    { text: `${prefs.size === "9:16" ? "\u2705 " : ""}\uD83D\uDCF2 Story`, callback_data: "ass_size:9:16" },
-    { text: `${prefs.size === "3:2" ? "\u2705 " : ""}\uD83D\uDCF7 Photo`, callback_data: "ass_size:3:2" },
-  ]);
+  // All possible sizes with their display info
+  const allSizes = [
+    { key: "1:1", icon: "\u2B1C", label: "Square" },
+    { key: "4:3", icon: "\uD83D\uDDBC\uFE0F", label: "Landscape" },
+    { key: "3:4", icon: "\uD83D\uDCF1", label: "Portrait" },
+    { key: "16:9", icon: "\uD83C\uDFAC", label: "Wide" },
+    { key: "9:16", icon: "\uD83D\uDCF2", label: "Story" },
+    { key: "3:2", icon: "\uD83D\uDCF7", label: "Photo" },
+    { key: "2:3", icon: "\uD83D\uDCF1", label: "Tall" },
+  ];
   
-  // Row 3: Resolution toggle
-  buttons.push([
-    { text: `${prefs.resolution === "2K" ? "\u2705 " : ""}\uD83D\uDDA5 2K`, callback_data: "ass_res:2K" },
-    { text: `${prefs.resolution === "4K" ? "\u2705 " : ""}\u2728 4K Ultra HD`, callback_data: "ass_res:4K" },
-  ]);
+  // Filter to only show sizes the current model supports
+  const availableSizes = allSizes.filter(s => supportedSizes.includes(s.key));
   
-  // Row 4: Speed mode
-  buttons.push([
-    { text: `${prefs.promptMode === "standard" ? "\u2705 " : ""}\u2728 Standard`, callback_data: "ass_speed:standard" },
-    { text: `${prefs.promptMode === "fast" ? "\u2705 " : ""}\uD83C\uDFC3 Fast`, callback_data: "ass_speed:fast" },
-  ]);
+  // Split into rows of 3
+  for (let i = 0; i < availableSizes.length; i += 3) {
+    const row = availableSizes.slice(i, i + 3).map(s => ({
+      text: `${prefs.size === s.key ? "\u2705 " : ""}${s.icon} ${s.label}`,
+      callback_data: `ass_size:${s.key}`
+    }));
+    buttons.push(row);
+  }
+  
+  // Resolution toggle (only if model supports multiple resolutions)
+  const supportedRes = currentModelConfig?.supportedResolutions || ["2K"];
+  if (supportedRes.length > 1) {
+    buttons.push([
+      { text: `${prefs.resolution === "2K" ? "\u2705 " : ""}\uD83D\uDDA5 2K`, callback_data: "ass_res:2K" },
+      { text: `${prefs.resolution === "4K" ? "\u2705 " : ""}\u2728 4K Ultra HD`, callback_data: "ass_res:4K" },
+    ]);
+  }
+  
+  // Speed mode (only if model supports prompt optimization)
+  const supportedModes = currentModelConfig?.promptOptimizationModes || [];
+  if (supportedModes.length > 0) {
+    buttons.push([
+      { text: `${prefs.promptMode === "standard" ? "\u2705 " : ""}\u2728 Standard`, callback_data: "ass_speed:standard" },
+      { text: `${prefs.promptMode === "fast" ? "\u2705 " : ""}\uD83C\uDFC3 Fast`, callback_data: "ass_speed:fast" },
+    ]);
+  }
   
   // Row 5: Safe mode toggle (premium/ultra/owner only)
   if (canToggle) {
@@ -17349,10 +17384,22 @@ bot.command("a", async (ctx) => {
   const detectedRatio = parseAPIMartRatio(rawPrompt);
   const cleanedPrompt = detectedRatio ? cleanAPIMartPromptRatio(rawPrompt) : rawPrompt;
   const finalPrompt = cleanedPrompt || rawPrompt;
-  const finalSize = detectedRatio || prefs.size || "1:1";
-  const finalResolution = prefs.resolution || "2K";
   const finalModel = prefs.model || "seedream-4.5";
   const modelConfig = getAPIMartModelConfig(finalModel);
+  
+  // Map size to closest supported ratio for the selected model
+  let requestedSize = detectedRatio || prefs.size || "1:1";
+  const supportedSizes = modelConfig?.supportedSizes || ["1:1"];
+  if (!supportedSizes.includes(requestedSize)) {
+    // Fallback mapping: find closest supported ratio
+    const sizeMap = {
+      "4:3": "3:2", "3:4": "2:3", "16:9": "3:2", "9:16": "2:3",
+      "21:9": "3:2", "9:21": "2:3", "3:2": "3:2", "2:3": "2:3",
+    };
+    requestedSize = sizeMap[requestedSize] || supportedSizes[0] || "1:1";
+  }
+  const finalSize = requestedSize;
+  const finalResolution = prefs.resolution || "2K";
   const ratioConfig = getAPIMartRatioConfig(finalSize);
   
   // Send generating status
@@ -17676,6 +17723,24 @@ bot.callbackQuery(/^ass_model:(.+)$/, async (ctx) => {
   
   user.artPrefs = user.artPrefs || {};
   user.artPrefs.model = newModel;
+  
+  // Reset size if current size isn't supported by the new model
+  const currentSize = user.artPrefs.size || "1:1";
+  if (modelConfig.supportedSizes && !modelConfig.supportedSizes.includes(currentSize)) {
+    user.artPrefs.size = modelConfig.defaultSize || modelConfig.supportedSizes[0] || "1:1";
+  }
+  
+  // Reset resolution if not supported
+  const currentRes = user.artPrefs.resolution || "2K";
+  if (modelConfig.supportedResolutions && !modelConfig.supportedResolutions.includes(currentRes)) {
+    user.artPrefs.resolution = modelConfig.defaultResolution || modelConfig.supportedResolutions[0] || "2K";
+  }
+  
+  // Reset prompt mode if not supported
+  if (modelConfig.promptOptimizationModes?.length === 0) {
+    user.artPrefs.promptMode = null;
+  }
+  
   saveUsers();
   
   await ctx.answerCallbackQuery({ text: `\u2705 Model: ${modelConfig.name}` });

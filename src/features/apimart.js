@@ -3,7 +3,7 @@
  * ║                        APIMart Integration Module                            ║
  * ║              Future-proof provider for Image & Video generation              ║
  * ╠═══════════════════════════════════════════════════════════════════════════════╣
- * ║  Supports: SeedDream 4.5, and future models (video, etc.)                   ║
+ * ║  Supports: SeedDream 4.5, GPT-4o Image, and future models (video, etc.)     ║
  * ║  Architecture: Registry-based model system for easy expansion               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -41,13 +41,30 @@ const APIMART_MODELS = {
     estimatedTimeSeconds: 20,
   },
 
+  "gpt-4o-image": {
+    id: "gpt-4o-image",
+    name: "GPT-4o Image",
+    shortName: "GPT-4o",
+    type: "image",
+    provider: "OpenAI",
+    description: "Native multimodal image gen with 4K output & text rendering",
+    icon: "✨",
+    costPerImage: 0.006,
+    capabilities: ["text-to-image", "image-editing", "reference-images", "4k", "text-rendering", "mask-editing", "batch"],
+    maxBatch: 4,
+    maxReferenceImages: 5,
+    supportedSizes: ["1:1", "2:3", "3:2"],
+    supportedResolutions: ["2K"],
+    defaultSize: "1:1",
+    defaultResolution: "2K",
+    promptOptimizationModes: [],
+    supportsWatermark: false,
+    maxPollAttempts: 60,
+    pollIntervalMs: 2000,
+    estimatedTimeSeconds: 15,
+  },
+
   // ─── FUTURE: More image models ───
-  // "seedream-4.0": {
-  //   id: "doubao-seedance-4-0",
-  //   name: "SeedDream 4.0",
-  //   type: "image",
-  //   ...
-  // },
   // "flux-kontext": {
   //   id: "flux-kontext",
   //   name: "Flux Kontext",
@@ -145,15 +162,15 @@ class APIMartClient {
       prompt: prompt,
     };
 
-    // Only add optional fields if they have values
+    // Only add optional fields if they have values AND the model supports them
     if (size) body.size = size;
-    if (resolution) body.resolution = resolution;
+    if (resolution && modelConfig.supportedResolutions?.length > 1) body.resolution = resolution;
     if (n > 1) body.n = n;
     if (imageUrls.length > 0) body.image_urls = imageUrls;
-    if (optimizePromptMode) {
+    if (optimizePromptMode && modelConfig.promptOptimizationModes?.length > 0) {
       body["optimize_prompt_options"] = { mode: optimizePromptMode };
     }
-    if (watermark) body.watermark = true;
+    if (watermark && modelConfig.supportsWatermark) body.watermark = true;
 
     this.stats.totalRequests++;
     this.stats.lastRequest = Date.now();
