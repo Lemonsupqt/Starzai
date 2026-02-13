@@ -160,24 +160,41 @@ class APIMartClient {
     if (!modelConfig) throw new Error(`Unknown model: ${model}`);
     if (modelConfig.type !== "image") throw new Error(`Model ${model} is not an image model`);
 
+    // Build request body matching the playground's exact format
     const body = {
       model: modelConfig.id,
       prompt: prompt,
+      n: n,
     };
 
-    // Only add optional fields if they have values AND the model supports them
+    // Size (aspect ratio)
     if (size) body.size = size;
-    // Only send resolution if explicitly provided AND model supports it — omit to use API default
-    // Docs use uppercase "2K"/"4K" in cURL examples
+
+    // Resolution — only send if explicitly set AND model supports it
     if (resolution && modelConfig.supportedResolutions?.includes(resolution)) {
       body.resolution = resolution;
     }
-    if (n > 1) body.n = n;
+
+    // Reference images
     if (imageUrls.length > 0) body.image_urls = imageUrls;
-    if (optimizePromptMode && modelConfig.promptOptimizationModes?.length > 0) {
-      body["optimize_prompt_options"] = { mode: optimizePromptMode };
+
+    // SeedDream-specific: always include these fields to match playground format
+    // This ensures correct model routing on APIMart's backend
+    if (modelConfig.id.startsWith("doubao-seedance")) {
+      body.sequential_image_generation = "disabled";
+      body.watermark = Boolean(watermark);
+      // Only add prompt optimization if NO resolution is set
+      // (resolution + optimize_prompt_options may conflict on API side)
+      if (!body.resolution && optimizePromptMode && modelConfig.promptOptimizationModes?.length > 0) {
+        body.optimize_prompt_options = { mode: optimizePromptMode };
+      }
+    } else {
+      // Non-SeedDream models
+      if (optimizePromptMode && modelConfig.promptOptimizationModes?.length > 0) {
+        body.optimize_prompt_options = { mode: optimizePromptMode };
+      }
+      if (watermark && modelConfig.supportsWatermark) body.watermark = true;
     }
-    if (watermark && modelConfig.supportsWatermark) body.watermark = true;
 
     this.stats.totalRequests++;
     this.stats.lastRequest = Date.now();
