@@ -2794,7 +2794,7 @@ function ensureUser(userId, from = null) {
       artPrefs: {
         model: "seedream-4.5",   // Current APIMart model
         size: "1:1",             // Aspect ratio
-        resolution: null,        // null = API default, or "2K"/"4K"
+        resolution: null,        // null = API default, or "1080p"/"720p"/"480p"
         promptMode: "standard",  // standard or fast
         safeMode: true,          // NSFW filter
         numImages: 1,            // Number of images per generation
@@ -2879,8 +2879,8 @@ function ensureUser(userId, from = null) {
       // migration: add new artPrefs fields if missing
       if (usersDb.users[id].artPrefs.numImages === undefined) usersDb.users[id].artPrefs.numImages = 1;
       if (usersDb.users[id].artPrefs.referenceMode === undefined) usersDb.users[id].artPrefs.referenceMode = false;
-      // migration: reset resolution to null (API default) — old default "2K" caused errors
-      if (usersDb.users[id].artPrefs.resolution === "2K") usersDb.users[id].artPrefs.resolution = null;
+      // migration: reset resolution to null (API default) — 2K/4K not supported by current API tier
+      if (usersDb.users[id].artPrefs.resolution === "2K" || usersDb.users[id].artPrefs.resolution === "4K") usersDb.users[id].artPrefs.resolution = null;
     }
     saveUsers();
   }
@@ -17346,7 +17346,7 @@ function buildArtSettingsMessage(user, userId) {
   
   // Only show resolution if model supports multiple
   if (modelConfig?.supportedResolutions?.length > 1) {
-    const resLabel = prefs.resolution === "4K" ? "\u2728 4K Ultra HD" : prefs.resolution === "2K" ? "\uD83D\uDDA5 2K Standard" : "\uD83C\uDF10 Auto (API Default)";
+    const resLabel = prefs.resolution === "1080p" ? "\uD83D\uDCFA 1080p Full HD" : prefs.resolution === "720p" ? "\uD83D\uDDA5 720p HD" : prefs.resolution === "480p" ? "\uD83D\uDCF1 480p" : "\uD83C\uDF10 Auto (API Default)";
     lines.push(`\uD83D\uDCF7 *Resolution:* ${resLabel}`);
   }
   
@@ -17423,9 +17423,8 @@ function buildArtSettingsKeyboard(user, userId) {
       { text: `${!prefs.resolution ? "\u2705 " : ""}\uD83C\uDF10 Auto`, callback_data: "ass_res:auto" },
     ];
     for (const r of supportedRes) {
-      const icon = r === "4K" ? "\u2728" : "\uD83D\uDDA5";
-      const label = r === "4K" ? "4K HD" : r;
-      resRow.push({ text: `${prefs.resolution === r ? "\u2705 " : ""}${icon} ${label}`, callback_data: `ass_res:${r}` });
+      const icon = r === "1080p" ? "\uD83D\uDCFA" : r === "720p" ? "\uD83D\uDDA5" : "\uD83D\uDCF1";
+      resRow.push({ text: `${prefs.resolution === r ? "\u2705 " : ""}${icon} ${r}`, callback_data: `ass_res:${r}` });
     }
     buttons.push(resRow);
   }
@@ -17538,7 +17537,7 @@ bot.command("a", async (ctx) => {
       "\u2022 _portrait, mobile_ \u2192 3:4\n" +
       "\u2022 _landscape_ \u2192 4:3\n" +
       "\u2022 _square_ \u2192 1:1\n\n" +
-      `\uD83D\uDCCC *Your defaults:* ${ratioConfig.icon} ${ratioConfig.label} \u2022 ${prefs.resolution || '2K'}\n` +
+      `\uD83D\uDCCC *Your defaults:* ${ratioConfig.icon} ${ratioConfig.label} \u2022 ${prefs.resolution || 'Auto'}\n` +
       `_Use /ass to customize settings_\n\n` +
       `\u2728 _${modelConfig?.description || 'AI image generation'}_`,
       { parse_mode: "Markdown" }
@@ -17680,7 +17679,7 @@ bot.command("a", async (ctx) => {
     // Add resolution toggle if model supports it
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "4K" ? "\uD83C\uDF10 Auto" : finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "4K" ? "auto" : finalResolution === "2K" ? "4K" : "2K"}` }
+        { text: `${finalResolution === "1080p" ? "\uD83C\uDF10 Auto" : finalResolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${finalResolution === "1080p" ? "auto" : finalResolution === "720p" ? "1080p" : "720p"}` }
       );
     }
     
@@ -17796,12 +17795,12 @@ bot.command("ass", async (ctx) => {
     return;
   }
   
-  // Quick resolution: /ass 4k, /ass 2k, /ass auto
-  if (args === "4k" || args === "2k" || args === "auto") {
+  // Quick resolution: /ass 1080p, /ass 720p, /ass 480p, /ass auto
+  if (args === "1080p" || args === "720p" || args === "480p" || args === "auto") {
     user.artPrefs = user.artPrefs || {};
-    user.artPrefs.resolution = args === "auto" ? null : args.toUpperCase();
+    user.artPrefs.resolution = args === "auto" ? null : args;
     saveUsers();
-    const label = args === "auto" ? "Auto (API Default)" : args.toUpperCase();
+    const label = args === "auto" ? "Auto (API Default)" : args;
     await ctx.reply(
       `\u2705 Art resolution set to *${label}*\n\n` +
       `_Now /a will generate in ${label} resolution!_`,
@@ -18050,7 +18049,7 @@ bot.callbackQuery("art_regen", async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "4K" ? "\uD83C\uDF10 Auto" : pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "4K" ? "auto" : pending.resolution === "2K" ? "4K" : "2K"}` }
+        { text: `${pending.resolution === "1080p" ? "\uD83C\uDF10 Auto" : pending.resolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${pending.resolution === "1080p" ? "auto" : pending.resolution === "720p" ? "1080p" : "720p"}` }
       );
     }
     
@@ -18199,7 +18198,7 @@ bot.callbackQuery(/^art_ar:(.+):(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${pending.resolution === "4K" ? "\uD83C\uDF10 Auto" : pending.resolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${pending.resolution === "4K" ? "auto" : pending.resolution === "2K" ? "4K" : "2K"}` }
+        { text: `${pending.resolution === "1080p" ? "\uD83C\uDF10 Auto" : pending.resolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${pending.resolution === "1080p" ? "auto" : pending.resolution === "720p" ? "1080p" : "720p"}` }
       );
     }
     
@@ -18299,7 +18298,7 @@ bot.callbackQuery(/^art_res:(.+)$/, async (ctx) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${newRes === "4K" ? "\uD83C\uDF10 Auto" : newRes === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${newRes === "4K" ? "auto" : newRes === "2K" ? "4K" : "2K"}` }
+        { text: `${newRes === "1080p" ? "\uD83C\uDF10 Auto" : newRes === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${newRes === "1080p" ? "auto" : newRes === "720p" ? "1080p" : "720p"}` }
       );
     }
     
@@ -18569,7 +18568,7 @@ bot.on("message:photo", async (ctx, next) => {
     
     if (modelConfig?.supportedResolutions?.length > 1) {
       actionButtons[1].unshift(
-        { text: `${finalResolution === "4K" ? "\uD83C\uDF10 Auto" : finalResolution === "2K" ? "\u2728 4K" : "\uD83D\uDDA5 2K"}`, callback_data: `art_res:${finalResolution === "4K" ? "auto" : finalResolution === "2K" ? "4K" : "2K"}` }
+        { text: `${finalResolution === "1080p" ? "\uD83C\uDF10 Auto" : finalResolution === "720p" ? "\uD83D\uDCFA 1080p" : "\uD83D\uDDA5 720p"}`, callback_data: `art_res:${finalResolution === "1080p" ? "auto" : finalResolution === "720p" ? "1080p" : "720p"}` }
       );
     }
     
