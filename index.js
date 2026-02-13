@@ -14234,156 +14234,295 @@ bot.command("lyrics", async (ctx) => {
   );
 });
 
-// /music - Search and download music (JioSaavn API)
-const pendingMusicSearches = new Map(); // Store search results for selection
+// =====================
+// MUSIC SEARCH & DOWNLOAD (/m, /music, /song)
+// =====================
+const pendingMusicSearches = new Map(); // searchId -> { songs, query, userId }
+const pendingMusicBuffers = new Map();  // key -> Buffer (for HD download)
 
-bot.command(["music", "song"], async (ctx) => {
+bot.command(["m", "music", "song"], async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
-  
-  const text = ctx.message.text.replace(/^\/(music|song)\s*/i, '').trim();
-  
+
+  const text = ctx.message.text.replace(/^\/(m|music|song)\s*/i, '').trim();
+
   if (!text) {
     return ctx.reply(
-      '🎵 <b>Music Download</b>\n\n' +
+      '🎵 <b>Music Search & Download</b>\n\n' +
+      'Search millions of songs and download in high quality.\n\n' +
       '<b>Usage:</b>\n' +
-      '<code>/music song name</code>\n' +
-      '<code>/music artist - song</code>\n\n' +
+      '<code>/m song name</code>\n' +
+      '<code>/m artist - song</code>\n\n' +
       '<b>Examples:</b>\n' +
-      '<code>/music Shape of You</code>\n' +
-      '<code>/music Ed Sheeran - Perfect</code>\n\n' +
-      '<i>Powered by JioSaavn • 320kbps quality</i>',
+      '<code>/m Shape of You</code>\n' +
+      '<code>/m Ed Sheeran - Perfect</code>\n' +
+      '<code>/m Blinding Lights</code>\n\n' +
+      '<i>Powered by Virex • Up to 320kbps</i>',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
-  
-  const statusMsg = await ctx.reply('🔍 Searching for music...', {
-    reply_to_message_id: ctx.message?.message_id
-  });
-  
+
+  const statusMsg = await ctx.reply(
+    '🔍 <b>Searching...</b>\n<i>' + escapeHTML(text) + '</i>',
+    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  );
+
   try {
-    const result = await searchMusic(text, 5);
-    
+    const result = await searchMusic(text, 7);
+
     if (!result.success || !result.songs?.length) {
       await ctx.api.editMessageText(
         ctx.chat.id, statusMsg.message_id,
-        `❌ No songs found for "${escapeHTML(text)}"`,
+        '❌ <b>No results found</b>\n\n' +
+        `No songs matched "<i>${escapeHTML(text)}</i>"\n` +
+        'Try a different search term.',
         { parse_mode: 'HTML' }
       );
       return;
     }
-    
-    // Store search results for callback
-    const searchId = `ms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    pendingMusicSearches.set(searchId, result.songs);
-    
-    // Auto-expire after 5 minutes
-    setTimeout(() => pendingMusicSearches.delete(searchId), 5 * 60 * 1000);
-    
-    // Build song list with inline buttons
-    let message = `🎵 <b>Search Results for "${escapeHTML(text)}"</b>\n\n`;
-    
-    const buttons = result.songs.map((song, i) => {
-      message += `<b>${i + 1}.</b> ${escapeHTML(song.name)}\n`;
-      message += `    🎤 ${escapeHTML(song.artist)}\n`;
-      if (song.album) message += `    💿 ${escapeHTML(song.album)}\n`;
-      if (song.duration) message += `    ⏱ ${song.duration}\n`;
-      message += '\n';
-      
-      return [{ text: `${i + 1}. ${song.name.slice(0, 30)}${song.name.length > 30 ? '...' : ''}`, callback_data: `mdl:${searchId}:${i}` }];
+
+    // Store search results
+    const searchId = `ms_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    pendingMusicSearches.set(searchId, {
+      songs: result.songs,
+      query: text,
+      userId: ctx.from.id,
     });
-    
-    message += '<i>Select a song to download (320kbps)</i>';
-    
+    setTimeout(() => pendingMusicSearches.delete(searchId), 5 * 60 * 1000);
+
+    // Build results message
+    let msg = `🎵 <b>Results for "${escapeHTML(text)}"</b>\n`;
+    msg += `<i>${result.songs.length} songs found</i>\n\n`;
+
+    const keyboard = [];
+    result.songs.forEach((song, i) => {
+      const num = i + 1;
+      const dur = song.duration || '';
+      const yr = song.year ? ` • ${song.year}` : '';
+      msg += `<b>${num}.</b> ${escapeHTML(song.name)}\n`;
+      msg += `     <i>${escapeHTML(song.artist)}</i>`;
+      if (dur) msg += ` • ${dur}`;
+      msg += `${yr}\n`;
+    });
+
+    msg += '\n<i>Tap a song to download in 320kbps</i>';
+
+    // 2 buttons per row for compact layout
+    for (let i = 0; i < result.songs.length; i += 2) {
+      const row = [];
+      const s1 = result.songs[i];
+      const label1 = `${i + 1}. ${s1.name.length > 25 ? s1.name.slice(0, 24) + '…' : s1.name}`;
+      row.push({ text: label1, callback_data: `mdl:${searchId}:${i}` });
+
+      if (i + 1 < result.songs.length) {
+        const s2 = result.songs[i + 1];
+        const label2 = `${i + 2}. ${s2.name.length > 25 ? s2.name.slice(0, 24) + '…' : s2.name}`;
+        row.push({ text: label2, callback_data: `mdl:${searchId}:${i + 1}` });
+      }
+      keyboard.push(row);
+    }
+
+    // Cancel button
+    keyboard.push([{ text: '✖ Cancel', callback_data: `mcancel:${searchId}` }]);
+
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      message,
-      { 
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: buttons }
-      }
+      msg,
+      { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } }
     );
   } catch (error) {
+    console.error('[Music] Search error:', error);
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
-      `❌ Error: ${escapeHTML(error.message)}`,
+      `❌ <b>Search failed</b>\n<i>${escapeHTML(error.message)}</i>`,
       { parse_mode: 'HTML' }
     );
   }
 });
 
-// Callback for music download selection
+// Callback: download selected song
 bot.callbackQuery(/^mdl:/, async (ctx) => {
   const [, searchId, indexStr] = ctx.callbackQuery.data.split(':');
-  const songs = pendingMusicSearches.get(searchId);
-  
-  if (!songs) {
-    await ctx.answerCallbackQuery({ text: 'Search expired. Please search again.', show_alert: true });
-    return;
+  const searchData = pendingMusicSearches.get(searchId);
+
+  if (!searchData) {
+    return ctx.answerCallbackQuery({ text: '⏰ Search expired. Use /m to search again.', show_alert: true });
   }
-  
+
+  // Only the user who searched can select
+  if (searchData.userId !== ctx.from.id) {
+    return ctx.answerCallbackQuery({ text: '⚠️ This isn\'t your search.', show_alert: true });
+  }
+
   const index = parseInt(indexStr, 10);
-  const song = songs[index];
-  
+  const song = searchData.songs[index];
   if (!song) {
-    await ctx.answerCallbackQuery({ text: 'Song not found.', show_alert: true });
-    return;
+    return ctx.answerCallbackQuery({ text: 'Song not found.', show_alert: true });
   }
-  
-  await ctx.answerCallbackQuery({ text: 'Downloading...' });
-  
+
+  await ctx.answerCallbackQuery({ text: `Downloading ${song.name}...` });
+
   try {
+    // Update message to show download progress
     await ctx.editMessageText(
-      `🎵 <b>Downloading:</b> ${escapeHTML(song.name)}\n🎤 ${escapeHTML(song.artist)}\n\n<i>Please wait...</i>`,
+      `🎵 <b>${escapeHTML(song.name)}</b>\n` +
+      `🎤 <i>${escapeHTML(song.artist)}</i>\n\n` +
+      '⏳ <b>Downloading...</b> Please wait.',
       { parse_mode: 'HTML' }
     );
-    
-    // Get full song details with download URL
-    const songResult = await getSongById(song.id);
-    
-    if (!songResult.success || !songResult.song?.downloadUrl) {
-      await ctx.editMessageText(
-        `❌ Could not get download link for this song.\n\n<i>Try another result or search again.</i>`,
-        { parse_mode: 'HTML' }
-      );
-      return;
+
+    // Get download URL - prefer from search results, fallback to getSongById
+    let downloadUrl = song.downloadUrl;
+    let quality = song.quality || '320kbps';
+    let fullSong = song;
+
+    if (!downloadUrl) {
+      const songResult = await getSongById(song.id);
+      if (!songResult.success || !songResult.song?.downloadUrl) {
+        await ctx.editMessageText(
+          '❌ <b>Download failed</b>\n\n' +
+          `Could not get download link for "${escapeHTML(song.name)}".\n` +
+          '<i>Try another result or search again.</i>',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+      fullSong = songResult.song;
+      downloadUrl = fullSong.downloadUrl;
+      quality = fullSong.quality || '320kbps';
     }
-    
-    const fullSong = songResult.song;
-    
+
+    // Download the audio buffer for best quality
+    const audioRes = await fetch(downloadUrl);
+    if (!audioRes.ok) throw new Error(`Download failed (${audioRes.status})`);
+    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+    const fileSizeMB = (audioBuffer.length / (1024 * 1024)).toFixed(1);
+
+    // Clean filename
+    const fileName = `${(fullSong.artist || 'Unknown').replace(/[^a-zA-Z0-9\s-]/g, '')} - ${(fullSong.name || 'Unknown').replace(/[^a-zA-Z0-9\s-]/g, '')}.mp3`;
+
+    // Store buffer for HD download
+    const dlKey = `mdlbuf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    pendingMusicBuffers.set(dlKey, { buffer: audioBuffer, fileName, song: fullSong });
+    setTimeout(() => pendingMusicBuffers.delete(dlKey), 10 * 60 * 1000);
+
+    // Update progress
     await ctx.editMessageText(
-      `🎵 <b>Sending:</b> ${escapeHTML(fullSong.name)}\n🎤 ${escapeHTML(fullSong.artist)}\n💿 ${escapeHTML(fullSong.album)}\n📊 ${fullSong.quality}`,
+      `🎵 <b>${escapeHTML(fullSong.name)}</b>\n` +
+      `🎤 <i>${escapeHTML(fullSong.artist)}</i>\n\n` +
+      '📤 <b>Sending audio...</b>',
       { parse_mode: 'HTML' }
     );
-    
+
     // Build caption
     let caption = `🎵 <b>${escapeHTML(fullSong.name)}</b>\n`;
     caption += `🎤 ${escapeHTML(fullSong.artist)}\n`;
-    if (fullSong.album) caption += `💿 ${escapeHTML(fullSong.album)}\n`;
+    if (fullSong.album && fullSong.album !== 'Unknown') caption += `💿 ${escapeHTML(fullSong.album)}\n`;
     if (fullSong.duration) caption += `⏱ ${fullSong.duration}\n`;
-    caption += `📊 ${fullSong.quality}\n\n`;
-    caption += `<i>Downloaded via StarzAI</i>`;
-    
-    // Send the audio file
-    await ctx.replyWithAudio(fullSong.downloadUrl, {
-      caption: caption,
-      parse_mode: 'HTML',
-      title: fullSong.name,
-      performer: fullSong.artist,
-      thumbnail: fullSong.image ? { url: fullSong.image } : undefined
-    });
-    
-    // Delete the selection message
-    await ctx.deleteMessage();
+    caption += `📊 ${quality} • ${fileSizeMB}MB\n\n`;
+    caption += `<i>via StarzAI Music</i>`;
+
+    // Download thumbnail
+    let thumbInput = undefined;
+    if (fullSong.image) {
+      try {
+        const thumbRes = await fetch(fullSong.image);
+        if (thumbRes.ok) {
+          const thumbBuf = Buffer.from(await thumbRes.arrayBuffer());
+          thumbInput = new InputFile(thumbBuf, 'thumb.jpg');
+        }
+      } catch (e) { /* skip thumbnail */ }
+    }
+
+    // Send as audio with metadata
+    await ctx.replyWithAudio(
+      new InputFile(audioBuffer, fileName),
+      {
+        caption,
+        parse_mode: 'HTML',
+        title: fullSong.name,
+        performer: fullSong.artist,
+        duration: typeof fullSong.duration === 'number' ? fullSong.duration : undefined,
+        thumbnail: thumbInput,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '📥 HD File', callback_data: `mhd:${dlKey}` },
+              { text: '🔍 Search Again', callback_data: `mnew:${ctx.from.id}` },
+            ],
+          ],
+        },
+      }
+    );
+
+    // Delete the search message
+    try { await ctx.deleteMessage(); } catch (e) { /* ignore */ }
     pendingMusicSearches.delete(searchId);
-    
+
   } catch (error) {
+    console.error('[Music] Download error:', error);
     await ctx.editMessageText(
-      `❌ Error: ${escapeHTML(error.message)}`,
+      `❌ <b>Download failed</b>\n<i>${escapeHTML(error.message)}</i>\n\n` +
+      'Try another song or search again with /m',
       { parse_mode: 'HTML' }
     );
   }
+});
+
+// Callback: HD file download (send as document for original quality)
+bot.callbackQuery(/^mhd:/, async (ctx) => {
+  const dlKey = ctx.callbackQuery.data.slice(4);
+  const data = pendingMusicBuffers.get(dlKey);
+
+  if (!data) {
+    return ctx.answerCallbackQuery({ text: '⏰ File expired. Download the song again.', show_alert: true });
+  }
+
+  await ctx.answerCallbackQuery({ text: '📥 Sending HD file...' });
+
+  try {
+    const { buffer, fileName, song } = data;
+    const fileSizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
+
+    await ctx.replyWithDocument(
+      new InputFile(buffer, fileName),
+      {
+        caption:
+          `🎵 <b>${escapeHTML(song.name)}</b>\n` +
+          `🎤 ${escapeHTML(song.artist)}\n` +
+          `📊 320kbps • ${fileSizeMB}MB\n\n` +
+          `<i>Original quality — no compression</i>`,
+        parse_mode: 'HTML',
+      }
+    );
+  } catch (error) {
+    console.error('[Music] HD download error:', error);
+    await ctx.answerCallbackQuery({ text: '❌ Failed to send file.', show_alert: true });
+  }
+});
+
+// Callback: cancel search
+bot.callbackQuery(/^mcancel:/, async (ctx) => {
+  const searchId = ctx.callbackQuery.data.slice(8);
+  const searchData = pendingMusicSearches.get(searchId);
+
+  if (searchData && searchData.userId !== ctx.from.id) {
+    return ctx.answerCallbackQuery({ text: '⚠️ This isn\'t your search.', show_alert: true });
+  }
+
+  pendingMusicSearches.delete(searchId);
+  await ctx.answerCallbackQuery({ text: 'Cancelled.' });
+  try { await ctx.deleteMessage(); } catch (e) { /* ignore */ }
+});
+
+// Callback: search again prompt
+bot.callbackQuery(/^mnew:/, async (ctx) => {
+  const userId = ctx.callbackQuery.data.slice(5);
+  if (String(ctx.from.id) !== userId) {
+    return ctx.answerCallbackQuery({ text: '⚠️ This button is not for you.', show_alert: true });
+  }
+  await ctx.answerCallbackQuery({ text: 'Use /m <song name> to search again!' });
 });
 
 // /movie - Search movies
@@ -25262,6 +25401,7 @@ http
         { command: "model", description: "🤖 Choose AI model" },
         { command: "whoami", description: "👤 Your profile & stats" },
         { command: "reset", description: "🗑️ Clear chat memory" },
+        { command: "m", description: "🎵 Music search & download" },
         { command: "a", description: "🎨 Art Studio - AI image generation" },
         { command: "ass", description: "⚙️ Art Studio Settings" },
       ]);
@@ -25294,6 +25434,7 @@ http
               { command: "ownerhelp", description: "📘 Owner help guide" },
               { command: "allow", description: "✅ Allow model (allow <userId> <model>)" },
               { command: "deny", description: "🚫 Deny model (deny <userId> <model>)" },
+              { command: "m", description: "🎵 Music search & download" },
               { command: "a", description: "🎨 Art Studio - AI image generation" },
               { command: "ass", description: "⚙️ Art Studio Settings" },
             ],

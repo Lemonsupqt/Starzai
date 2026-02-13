@@ -136,9 +136,10 @@ const CONFIG = {
   // Multiple endpoints for fallback
   jiosaavn: {
     apis: [
-      'https://jiosaavn-api-privatecvc2.vercel.app',  // Primary - most reliable
-      'https://saavn.dev/api',                         // Fallback 1
-      'https://jiosaavn-api.vercel.app'                // Fallback 2
+      'https://jiosavan-api2.vercel.app',               // Primary - Virex (most reliable)
+      'https://jiosaavn-api-privatecvc2.vercel.app',    // Fallback 1
+      'https://saavn.dev/api',                          // Fallback 2
+      'https://jiosaavn-api.vercel.app'                 // Fallback 3
     ],
     timeout: 30000
   }
