@@ -16,10 +16,13 @@ import fetch from "node-fetch";
 // Each model entry defines its capabilities, defaults, and API mapping.
 // To add a new model: just add an entry to this registry.
 
+// Allow overriding model IDs via Railway env variables
+// e.g. APIMART_MODEL_SEEDREAM=doubao-seedance-4-5
+//      APIMART_MODEL_GPT4O=gpt-4o-image
 const APIMART_MODELS = {
   // ─── IMAGE GENERATION MODELS ───
   "seedream-4.5": {
-    id: "doubao-seedance-4-5",
+    id: process.env.APIMART_MODEL_SEEDREAM || "doubao-seedance-4-5",
     name: "SeedDream 4.5",
     shortName: "SD 4.5",
     type: "image",
@@ -42,7 +45,7 @@ const APIMART_MODELS = {
   },
 
   "gpt-4o-image": {
-    id: "gpt-4o-image",
+    id: process.env.APIMART_MODEL_GPT4O || "gpt-4o-image",
     name: "GPT-4o Image",
     shortName: "GPT-4o",
     type: "image",
@@ -165,9 +168,9 @@ class APIMartClient {
     // Only add optional fields if they have values AND the model supports them
     if (size) body.size = size;
     // Only send resolution if explicitly provided AND model supports it — omit to use API default
-    // API expects lowercase: "2k", "4k" (not "2K", "4K")
+    // Docs use uppercase "2K"/"4K" in cURL examples
     if (resolution && modelConfig.supportedResolutions?.includes(resolution)) {
-      body.resolution = resolution.toLowerCase();
+      body.resolution = resolution;
     }
     if (n > 1) body.n = n;
     if (imageUrls.length > 0) body.image_urls = imageUrls;
@@ -180,6 +183,7 @@ class APIMartClient {
     this.stats.lastRequest = Date.now();
 
     console.log(`[APIMart] Submitting ${modelConfig.name} generation: "${prompt.slice(0, 60)}..." (${size || 'default'}, ${resolution || 'default'})`);
+    console.log(`[APIMart] Request body:`, JSON.stringify(body));
 
     const response = await fetch(`${BASE_URL}/v1/images/generations`, {
       method: "POST",
