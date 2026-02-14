@@ -17934,15 +17934,15 @@ function buildArtSettingsKeyboard(user, userId) {
   
   // All possible sizes with their display info
   const allSizes = [
-    { key: "1:1", icon: "\u2B1C", label: "Square" },
-    { key: "4:3", icon: "\uD83D\uDDBC\uFE0F", label: "Landscape" },
-    { key: "3:4", icon: "\uD83D\uDCF1", label: "Portrait" },
-    { key: "16:9", icon: "\uD83C\uDFAC", label: "Wide" },
-    { key: "9:16", icon: "\uD83D\uDCF2", label: "Story" },
-    { key: "3:2", icon: "\uD83D\uDCF7", label: "Photo" },
-    { key: "2:3", icon: "\uD83D\uDCF1", label: "Tall" },
-    { key: "21:9", icon: "\uD83D\uDDA5\uFE0F", label: "Ultra Wide" },
-    { key: "9:21", icon: "\uD83D\uDCDC", label: "Ultra Vertical" },
+    { key: "1:1", icon: "⬜", label: "1:1" },
+    { key: "4:3", icon: "🖼️", label: "4:3" },
+    { key: "3:4", icon: "📱", label: "3:4" },
+    { key: "16:9", icon: "🎬", label: "16:9" },
+    { key: "9:16", icon: "📲", label: "9:16" },
+    { key: "3:2", icon: "📷", label: "3:2" },
+    { key: "2:3", icon: "📱", label: "2:3" },
+    { key: "21:9", icon: "🖥️", label: "21:9" },
+    { key: "9:21", icon: "📜", label: "9:21" },
   ];
   
   // Filter to only show sizes the current model supports
