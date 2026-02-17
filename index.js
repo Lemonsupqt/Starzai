@@ -17790,6 +17790,53 @@ bot.on("message:web_app_data", async (ctx) => {
   
   try {
     const data = JSON.parse(ctx.message.web_app_data.data);
+    
+    // ===== COMMAND DISPATCH (non-AI features from webapp) =====
+    if (data.command) {
+      const cmd = data.command;
+      console.log(`[WebApp] Command dispatch from ${userId}: ${cmd}`);
+      
+      // Map of commands to helpful instructions (sent in chat)
+      const cmdHelp = {
+        '/a': '🎨 Use `/a your prompt` to generate art',
+        '/img': '⚡ Use `/img your prompt` to generate an image',
+        '/img2': '✨ Use `/img2 your prompt` for Flux style',
+        '/imagine': '🖼 Use `/imagine your prompt` for free generation',
+        '/up': '📈 Reply to any photo with `/up` to upscale it',
+        '/imgset': '⚙️ Use `/imgset` to configure image settings',
+        '/m': '🎵 Use `/m song name` to search & download music',
+        '/lyrics': '🎤 Use `/lyrics song name` to get lyrics',
+        '/dl': '📥 Use `/dl URL` to download media from any platform',
+        '/movie': '🎬 Use `/movie title` to search movies',
+        '/tv': '📺 Use `/tv title` to search TV shows',
+        '/wallpaper': '🖼 Use `/wallpaper keyword` to find wallpapers',
+        '/qr': '▪️ Use `/qr text or URL` to generate a QR code',
+        '/weather': '⛅ Use `/weather city` to check weather',
+        '/translate': '🌐 Use `/translate [to:lang] text` to translate',
+        '/currency': '💱 Use `/currency 100 USD to EUR` to convert',
+        '/run': '▶️ Use `/run language\ncode` to run code',
+        '/wiki': '📖 Use `/wiki topic` to search Wikipedia',
+        '/define': '📚 Use `/define word` to look up definitions',
+        '/search': '🔎 Use `/search query` to search the web',
+        '/short': '🔗 Use `/short URL` to shorten a link',
+        '/convert': '🔃 Use `/convert value from to` to convert units',
+        '/todo': '📋 Use `/todo` to view tasks or `/todo add task` to add one',
+        '/stats': '📊 Use `/stats` to view your usage statistics',
+        '/fact': '💡 Use `/fact` to get a random fact',
+        '/quote': '💬 Use `/quote` to get a random quote',
+        '/today': '📅 Use `/today` to see this day in history',
+        '/truth': '👀 Use `/truth` to get a truth question',
+        '/dare': '🔥 Use `/dare` to get a dare challenge',
+        '/wyr': '🤔 Use `/wyr` to get a would-you-rather question',
+        '/roast': '😈 Use `/roast` to get roasted',
+      };
+      
+      const helpText = cmdHelp[cmd] || `Use \`${cmd}\` in chat to use this feature`;
+      await ctx.reply(`${helpText}\n\n_Tip: Type the command directly in chat!_`, { parse_mode: 'Markdown' });
+      return;
+    }
+    
+    // ===== AI MODE HANDLING (legacy tg.sendData fallback) =====
     const { mode, modeName, query, fullQuery } = data;
     
     console.log(`WebApp data from ${userId}: mode=${mode}, query=${query}`);
@@ -26669,6 +26716,161 @@ http
         res.statusCode = 500;
         res.end("Webhook error");
       }
+      return;
+    }
+    
+    // ===== WEBAPP AI CHAT API (no Telegram text limits) =====
+    if (req.method === "POST" && req.url === "/api/chat") {
+      // CORS headers
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      
+      try {
+        const body = await new Promise((resolve, reject) => {
+          let data = '';
+          req.on('data', chunk => { data += chunk; });
+          req.on('end', () => { try { resolve(JSON.parse(data)); } catch(e) { reject(e); } });
+          req.on('error', reject);
+        });
+        
+        const { mode, query, userId, initData } = body;
+        
+        // Validate Telegram initData to authenticate the request
+        if (!initData || !BOT_TOKEN) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ error: 'Unauthorized: missing initData' }));
+          return;
+        }
+        
+        // Validate initData using HMAC-SHA256
+        const params = new URLSearchParams(initData);
+        const hash = params.get('hash');
+        params.delete('hash');
+        const dataCheckArr = [...params.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`);
+        const dataCheckString = dataCheckArr.join('\n');
+        const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+        const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+        
+        if (computedHash !== hash) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ error: 'Unauthorized: invalid initData' }));
+          return;
+        }
+        
+        if (!mode || !query) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Missing mode or query' }));
+          return;
+        }
+        
+        // Extract userId from validated initData
+        const userParam = params.get('user');
+        let tgUserId = userId;
+        if (userParam) {
+          try { tgUserId = JSON.parse(userParam).id; } catch(e) {}
+        }
+        
+        if (!tgUserId) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Missing userId' }));
+          return;
+        }
+        
+        // Resolve user model
+        const model = ensureChosenModelValid(tgUserId);
+        const shortModel = model.split('/').pop();
+        
+        // Build system prompt based on mode — NO token limits for webapp!
+        let systemPrompt = 'You are a helpful AI assistant. Provide thorough, detailed responses without any length restrictions.';
+        let temperature = 0.7;
+        
+        switch (mode) {
+          case 'q:':
+            systemPrompt = 'Give concise but complete answers. Be direct and to the point.';
+            temperature = 0.5;
+            break;
+          case 'b:':
+            systemPrompt = 'You are a research expert. Provide comprehensive, well-structured analysis with multiple perspectives. Include key facts, implications, nuances, and detailed explanations. Be as thorough as needed — there is no length limit.';
+            break;
+          case 'code:':
+            systemPrompt = 'You are a programming expert. Provide clear, working code with thorough explanations. Use proper formatting with markdown code blocks. Include examples, edge cases, and best practices. No length restrictions.';
+            break;
+          case 'e:':
+            systemPrompt = 'Explain concepts thoroughly, like teaching a student. Use analogies, examples, and step-by-step breakdowns. Be as detailed as needed.';
+            break;
+          case 'sum:':
+            systemPrompt = 'Summarize the following text comprehensively, keeping all key points and important details.';
+            break;
+          case 'r:':
+            systemPrompt = 'You are a research assistant. Provide a thorough, well-structured research response with multiple sections, facts, and analysis. No length limit.';
+            break;
+          case 'as ':
+            systemPrompt = `You are roleplaying as ${query}. Stay completely in character throughout. Respond as ${query} would - use their speech patterns, vocabulary, mannerisms, and personality. Be creative and entertaining.`;
+            break;
+          case 'p:':
+            const partner = getPartner(tgUserId);
+            if (partner) {
+              systemPrompt = buildPartnerSystemPrompt(partner);
+            } else {
+              res.statusCode = 200;
+              res.end(JSON.stringify({ response: "You don't have a partner set up yet! Use /partner in the bot to create one.", model: shortModel }));
+              return;
+            }
+            break;
+        }
+        
+        // Character mode: different user message
+        let userMessage = query;
+        if (mode === 'as ') {
+          userMessage = 'Hello! Introduce yourself briefly.';
+        }
+        
+        console.log(`[WebApp API] User ${tgUserId} | mode=${mode} | model=${model} | query=${query.slice(0, 60)}`);
+        
+        // Call LLM with NO max_tokens limit (let the model respond fully)
+        const response = await llmText({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          temperature,
+          max_tokens: 16000, // Generous limit — webapp has no display restrictions
+          timeout: 60000,
+        });
+        
+        // Track usage
+        const user = ensureUser(tgUserId);
+        if (user.stats) {
+          user.stats.totalMessages = (user.stats.totalMessages || 0) + 1;
+          user.stats.lastActive = new Date().toISOString();
+          user.stats.lastModel = model;
+        }
+        
+        res.statusCode = 200;
+        res.end(JSON.stringify({
+          response: response || 'No response generated.',
+          model: shortModel,
+          mode: mode
+        }));
+        
+      } catch (e) {
+        console.error('[WebApp API] Error:', e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message || 'Internal server error' }));
+      }
+      return;
+    }
+    
+    // CORS preflight for /api/chat
+    if (req.method === "OPTIONS" && req.url === "/api/chat") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.statusCode = 204;
+      res.end();
       return;
     }
     
