@@ -4820,6 +4820,56 @@ function convertToTelegramHTML(text) {
   return result;
 }
 
+// Sanitize Telegram HTML — ensure all tags are properly closed
+function sanitizeTelegramHTML(html) {
+  if (!html) return html;
+  
+  // Fix unclosed tags by tracking open/close
+  const tagStack = [];
+  const tagRegex = /<(\/?)([a-zA-Z]+)(\s[^>]*)?>|<([a-zA-Z]+)(\s[^>]*)?\/?>/g;
+  let match;
+  
+  // Self-closing tags that don't need closing
+  const selfClosing = new Set(['br', 'hr', 'img']);
+  // Tags Telegram supports
+  const telegramTags = new Set(['b', 'i', 's', 'u', 'code', 'pre', 'a', 'blockquote', 'span', 'tg-spoiler']);
+  
+  let result = html;
+  
+  // First pass: find all tags and track what's open
+  const openTags = [];
+  const allMatches = [...html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?>/g)];
+  
+  for (const m of allMatches) {
+    const isClosing = m[1] === '/';
+    const tagName = m[2].toLowerCase();
+    
+    if (selfClosing.has(tagName)) continue;
+    
+    if (isClosing) {
+      // Find matching open tag from the end
+      const idx = openTags.lastIndexOf(tagName);
+      if (idx !== -1) {
+        openTags.splice(idx, 1);
+      }
+    } else {
+      openTags.push(tagName);
+    }
+  }
+  
+  // Close any unclosed tags in reverse order
+  for (let i = openTags.length - 1; i >= 0; i--) {
+    result += `</${openTags[i]}>`;
+  }
+  
+  // Also fix common broken patterns:
+  // Stray < or > that aren't part of tags (escape them)
+  // This catches cases like "x < y" that weren't escaped
+  result = result.replace(/<(?!\/?(b|i|s|u|code|pre|a|blockquote|span|tg-spoiler)(\s|>|\/)|!)/gi, '&lt;');
+  
+  return result;
+}
+
 // Helper function to escape HTML special characters
 function escapeHTML(text) {
   if (!text) return text;
@@ -16534,7 +16584,17 @@ bot.on('message:text', async (ctx, next) => {
         formatted = formatted.slice(0, 3950) + '\n\n<i>... (truncated)</i>';
       }
       
-      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+      // Sanitize HTML to fix unclosed tags
+      formatted = sanitizeTelegramHTML(formatted);
+      
+      try {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+      } catch (sendErr) {
+        // Fallback: strip all HTML and send as plain text
+        console.error('[AI Code Helper HTML]', sendErr.message);
+        const plainText = `${icons[lowerText]} ${titles[lowerText]} — ${session.language}\n\n${aiResponse}`;
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, plainText.slice(0, 4000));
+      }
     } catch (e) {
       console.error('[AI Code Helper]', e.message);
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ AI analysis failed: ${escapeHTML(e.message)}`, { parse_mode: 'HTML' });
@@ -16636,7 +16696,17 @@ bot.callbackQuery(/^code_(explain|fix|optimize|debug):(\d+)$/, async (ctx) => {
       formatted = formatted.slice(0, 3950) + '\n\n<i>... (truncated)</i>';
     }
     
-    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+    // Sanitize HTML to fix unclosed tags
+    formatted = sanitizeTelegramHTML(formatted);
+    
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+    } catch (sendErr) {
+      // Fallback: strip all HTML and send as plain text
+      console.error('[AI Code Helper Button HTML]', sendErr.message);
+      const plainText = `${icons[action]} ${titles[action]} — ${session.language}\n\n${aiResponse}`;
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, plainText.slice(0, 4000));
+    }
   } catch (e) {
     console.error('[AI Code Helper Button]', e.message);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ AI analysis failed: ${escapeHTML(e.message)}`, { parse_mode: 'HTML' });
