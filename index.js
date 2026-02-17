@@ -171,6 +171,9 @@ import {
   cleanPromptRatio as cleanAPIMartPromptRatio,
 } from './src/features/apimart.js';
 
+// Wednesday / Nevermore Games Webapp Module
+import { registerWednesdayWebapp } from './src/features/wednesday-webapp.js';
+
 // =====================
 // ENV
 // =====================
@@ -5076,6 +5079,9 @@ function mainMenuKeyboard(userId) {
     .text(webSearchIcon, "toggle_websearch")
     .switchInline("⚡ Try Inline", "");
 
+  // Nevermore Games webapp
+  kb.row().text("🏰 Nevermore Games", "open_nevermore");
+
   if (FEEDBACK_CHAT_ID) {
     kb.row().text("💡 Feedback", "menu_feedback");
   }
@@ -5531,6 +5537,11 @@ function inlineSettingsModelKeyboard(category, sessionKey, userId, page = 0) {
   
   return kb;
 }
+
+// =====================
+// WEDNESDAY / NEVERMORE WEBAPP MODULE
+// =====================
+registerWednesdayWebapp(bot, { enforceRateLimit });
 
 // =====================
 // COMMANDS
@@ -16557,19 +16568,27 @@ bot.callbackQuery("menu_features", async (ctx) => {
     "📊 *Stats*",
     "• /stats - Your usage statistics",
     "",
-    "📋 *Task Manager*",
+    "\ud83d\udccb *Task Manager*",
     "Advanced to-do list with priorities!",
-    "• `/todo` - View your tasks",
-    "• `/todo add task` - Quick add",
-    "• Categories, due dates, streaks",
+    "\u2022 `/todo` - View your tasks",
+    "\u2022 `/todo add task` - Quick add",
+    "\u2022 Categories, due dates, streaks",
+    "",
+    "\ud83c\udff0 *Nevermore Games*",
+    "Real-time multiplayer games!",
+    "\u2022 `/wednesday` or `/games` - Open Nevermore",
+    "\u2022 Stranger Things \u00d7 Wednesday themed",
+    "\u2022 Trivia, Puzzles, Battles & more",
   ].join("\n");
   
   const kb = new InlineKeyboard()
-    .text("📋 Tasks", "todo_list")
-    .text("🎨 Image Settings", "menu_imgset")
+    .text("\ud83d\udccb Tasks", "todo_list")
+    .text("\ud83c\udfa8 Image Settings", "menu_imgset")
     .row()
-    .text("💳 Plans & Benefits", "menu_plans")
-    .text("« Back to Menu", "menu_back");
+    .text("\ud83c\udff0 Nevermore Games", "open_nevermore")
+    .text("\ud83d\udcb3 Plans & Benefits", "menu_plans")
+    .row()
+    .text("\u00ab Back to Menu", "menu_back");
   
   try {
     await ctx.editMessageText(featuresText, {
@@ -26650,10 +26669,18 @@ http
     }
     
     // Serve WebApp static files
-    if (req.method === "GET" && req.url === "/webapp") {
+    if (req.method === "GET" && (req.url === "/webapp" || req.url === "/webapp/nevermore")) {
       try {
         const webappPath = path.join(process.cwd(), "webapp", "index.html");
-        const content = fs.readFileSync(webappPath, "utf8");
+        let content = fs.readFileSync(webappPath, "utf8");
+        // If /webapp/nevermore, auto-switch to Nevermore tab via query param
+        if (req.url === "/webapp/nevermore") {
+          content = content.replace('</head>', '<script>window.__autoTab="nevermore";</script></head>');
+          content = content.replace(
+            "if (urlParams.get('tab') === 'nevermore')",
+            "if (urlParams.get('tab') === 'nevermore' || window.__autoTab === 'nevermore')"
+          );
+        }
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.statusCode = 200;
         res.end(content);
@@ -26712,6 +26739,8 @@ http
         { command: "m", description: "🎵 Music search & download" },
         { command: "a", description: "🎨 Art Studio - AI image generation" },
         { command: "ass", description: "⚙️ Art Studio Settings" },
+        { command: "wednesday", description: "🏰 Nevermore Games - Wednesday webapp" },
+        { command: "games", description: "🎮 Play Nevermore Games" },
       ]);
       console.log("Bot commands registered (default)");
 
@@ -26745,6 +26774,8 @@ http
               { command: "m", description: "🎵 Music search & download" },
               { command: "a", description: "🎨 Art Studio - AI image generation" },
               { command: "ass", description: "⚙️ Art Studio Settings" },
+              { command: "wednesday", description: "🏰 Nevermore Games - Wednesday webapp" },
+              { command: "games", description: "🎮 Play Nevermore Games" },
             ],
             { scope: { type: "chat", chat_id: Number(ownerId) } }
           );

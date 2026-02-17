@@ -7,3 +7,4 @@ export * from './image-gen.js';
 export * from './todo.js';
 export * from './collab-todo.js';
 export * from './video.js';
+export * from './wednesday-webapp.js';
