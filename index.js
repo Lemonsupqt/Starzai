@@ -16198,14 +16198,27 @@ bot.command("run", async (ctx) => {
       '<b>Examples:</b>\n' +
       '<code>/run python\nprint("Hello World!")</code>\n\n' +
       '<code>/run js\nconsole.log([1,2,3].map(x => x*2))</code>\n\n' +
-      '<code>/run rust\nfn main() { println!("Hello!"); }</code>\n\n' +
-      '<b>Templates:</b> <code>/run template python</code>\n' +
-      '<b>AI Helper:</b> Reply to output with <code>explain</code>, <code>fix</code>, <code>optimize</code>, or <code>debug</code>\n\n' +
-      '<b>Multi-turn:</b> Reply to any output to continue coding!\n' +
+      '<code>/run c\n#include &lt;stdio.h&gt;\nint main() { printf("Hi!"); }</code>\n\n' +
+      '📦 <b>Templates</b> (100+ ready-to-run):\n' +
+      '• <code>/run template</code> — list all languages\n' +
+      '• <code>/run template python</code> — list Python templates\n' +
+      '• <code>/run template c fibonacci</code> — run it!\n\n' +
+      '🧠 <b>AI Code Helper</b> (buttons appear after running):\n' +
+      '• 📖 <b>Explain</b> — step-by-step explanation\n' +
+      '• 🔧 <b>Fix</b> — find and fix bugs\n' +
+      '• ⚡ <b>Optimize</b> — improve performance\n' +
+      '• 🔍 <b>Debug</b> — trace errors\n' +
+      '<i>Or reply with: explain, fix, optimize, debug</i>\n\n' +
+      '🔧 <b>Auto-Fix</b> (automatic):\n' +
+      '• Fixes caps: <code>Print→print</code>, <code>Printf→printf</code>\n' +
+      '• Fixes smart quotes → regular quotes\n' +
+      '• Adds missing <code>;</code> in C/C++ code\n' +
+      '• Shows notice when fixes are applied\n\n' +
+      '🔄 <b>Multi-turn</b> (reply to output):\n' +
       '• <code>+code</code> — append more code\n' +
-      '• <code>!code</code> — replace with new code (same lang)\n' +
-      '• <code>/run lang\ncode</code> — switch language\n\n' +
-      '<b>Stdin:</b> Use <code>---stdin---</code> separator\n\n' +
+      '• <code>!code</code> — replace with new code\n' +
+      '• Just type code — continues session\n\n' +
+      '⌨️ <b>Stdin:</b> Use <code>---stdin---</code> separator\n\n' +
       '<b>Languages:</b> python, javascript, c, c++, go, rust, java, kotlin, swift, csharp, typescript, haskell, ruby, perl, scala, dart, nim, zig, crystal, ocaml, pascal, fortran, lua, php, bash, sql, erlang, elixir, groovy, julia, r, d\n\n' +
       '<b>Aliases:</b> py, js, ts, cpp, cs, rb, rs, sh, kt, hs, jl, ml';
     
@@ -16326,17 +16339,24 @@ async function executeAndReply(ctx, language, code, userId) {
   
   const response = formatCodeOutput(result, code) + fixNotice;
   
+  // Build inline keyboard with AI helper buttons
+  const aiKeyboard = new InlineKeyboard()
+    .text('📖 Explain', `code_explain:${userId}`)
+    .text('🔧 Fix', `code_fix:${userId}`)
+    .text('⚡ Optimize', `code_optimize:${userId}`)
+    .text('🔍 Debug', `code_debug:${userId}`);
+  
   try {
     await ctx.api.editMessageText(
       ctx.chat.id, statusMsg.message_id,
       response,
-      { parse_mode: 'HTML' }
+      { parse_mode: 'HTML', reply_markup: aiKeyboard }
     );
   } catch (e) {
     // If message too long, send as file
     if (e.message?.includes('too long') || response.length > 4000) {
       const shortResponse = `💻 <b>${escapeHTML(result.language)} v${escapeHTML(result.version)}</b> — ${result.exitCode === 0 ? 'Success ✅' : 'Error ❌'}\n\n<i>Output too long — sent as file. Reply to continue coding.</i>`;
-      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, shortResponse, { parse_mode: 'HTML' });
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, shortResponse, { parse_mode: 'HTML', reply_markup: aiKeyboard });
       
       // Send output as text file
       const fullOutput = `=== ${result.language} v${result.version} ===\nExit code: ${result.exitCode}\n\n=== CODE ===\n${code}\n\n=== OUTPUT ===\n${result.output || '(none)'}${result.stderr ? '\n\n=== STDERR ===\n' + result.stderr : ''}`;
@@ -16404,7 +16424,10 @@ bot.on('message:text', async (ctx, next) => {
       
       const icons = { explain: '📖', fix: '🔧', optimize: '⚡', debug: '🔍' };
       const titles = { explain: 'Explanation', fix: 'Fix Suggestions', optimize: 'Optimization', debug: 'Debug Analysis' };
-      let formatted = `${icons[lowerText]} <b>${titles[lowerText]}</b> — ${escapeHTML(session.language)}\n\n${escapeHTML(aiResponse)}`;
+      
+      // Convert markdown AI response to proper Telegram HTML
+      const formattedBody = convertToTelegramHTML(aiResponse);
+      let formatted = `${icons[lowerText]} <b>${titles[lowerText]}</b> — ${escapeHTML(session.language)}\n\n${formattedBody}`;
       
       // Truncate for Telegram if needed
       if (formatted.length > 4000) {
@@ -16453,6 +16476,71 @@ bot.on('message:text', async (ctx, next) => {
   if (!newCode.trim()) return next();
   
   await executeAndReply(ctx, language, newCode, userId);
+});
+
+// Callback query handlers for AI Code Helper buttons
+bot.callbackQuery(/^code_(explain|fix|optimize|debug):(\d+)$/, async (ctx) => {
+  const match = ctx.callbackQuery.data.match(/^code_(explain|fix|optimize|debug):(\d+)$/);
+  if (!match) return ctx.answerCallbackQuery({ text: 'Invalid action' });
+  
+  const action = match[1];
+  const targetUserId = parseInt(match[2]);
+  const userId = ctx.from.id;
+  
+  // Only the user who ran the code can use the buttons
+  if (userId !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: '❌ Only the code author can use these buttons', show_alert: true });
+  }
+  
+  const session = codeSessions.get(userId);
+  if (!session || !session.history.length) {
+    return ctx.answerCallbackQuery({ text: '❌ No code session found', show_alert: true });
+  }
+  
+  await ctx.answerCallbackQuery({ text: `🧠 Analyzing (${action})...` });
+  
+  const lastRun = session.history[session.history.length - 1];
+  
+  const statusMsg = await ctx.reply(`🧠 AI ${action}ing your ${session.language} code...`, {
+    reply_to_message_id: ctx.callbackQuery.message?.message_id
+  });
+  
+  const prompts = {
+    explain: `Explain this ${session.language} code step by step. Be clear and educational.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 1000)}` : ''}${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 500)}` : ''}`,
+    fix: `This ${session.language} code has issues. Identify the bugs and provide the corrected code with explanations.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 1000)}` : ''}${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 500)}` : ''}\nExit code: ${lastRun.exitCode}`,
+    optimize: `Optimize this ${session.language} code for better performance, readability, and best practices. Show the improved version with explanations.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\``,
+    debug: `Debug this ${session.language} code. Analyze the errors, trace the logic, and explain what went wrong and how to fix it.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 1000)}` : ''}${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 500)}` : ''}\nExit code: ${lastRun.exitCode}`
+  };
+  
+  try {
+    const model = ensureChosenModelValid(userId);
+    const aiResponse = await llmText({
+      model,
+      messages: [
+        { role: 'system', content: 'You are an expert programmer. Provide clear, concise analysis. Use code blocks with language tags for any code. Keep responses focused and practical.' },
+        { role: 'user', content: prompts[action] }
+      ],
+      temperature: 0.3,
+      max_tokens: 4000,
+      timeout: 30000
+    });
+    
+    const icons = { explain: '📖', fix: '🔧', optimize: '⚡', debug: '🔍' };
+    const titles = { explain: 'Explanation', fix: 'Fix Suggestions', optimize: 'Optimization', debug: 'Debug Analysis' };
+    
+    // Convert markdown AI response to proper Telegram HTML
+    const formattedBody = convertToTelegramHTML(aiResponse);
+    let formatted = `${icons[action]} <b>${titles[action]}</b> — ${escapeHTML(session.language)}\n\n${formattedBody}`;
+    
+    if (formatted.length > 4000) {
+      formatted = formatted.slice(0, 3950) + '\n\n<i>... (truncated)</i>';
+    }
+    
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+  } catch (e) {
+    console.error('[AI Code Helper Button]', e.message);
+    await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ AI analysis failed: ${escapeHTML(e.message)}`, { parse_mode: 'HTML' });
+  }
 });
 
 // /wallpaper - Search wallpapers
@@ -27502,7 +27590,7 @@ http
         };
         
         // Use a good model for code analysis
-        const model = 'claude-sonnet-4-20250514';
+        const model = 'claude-sonnet-4-5-20250929';
         const aiResponse = await llmText({
           model,
           messages: [
