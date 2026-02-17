@@ -26673,12 +26673,12 @@ http
       try {
         const webappPath = path.join(process.cwd(), "webapp", "index.html");
         let content = fs.readFileSync(webappPath, "utf8");
-        // If /webapp/nevermore, auto-switch to Nevermore tab via query param
+        // If /webapp/nevermore, auto-scroll to Nevermore gateway
         if (req.url === "/webapp/nevermore") {
-          content = content.replace('</head>', '<script>window.__autoTab="nevermore";</script></head>');
+          content = content.replace('</head>', '<script>window.__scrollToNevermore=true;</script></head>');
           content = content.replace(
             "if (urlParams.get('tab') === 'nevermore')",
-            "if (urlParams.get('tab') === 'nevermore' || window.__autoTab === 'nevermore')"
+            "if (urlParams.get('tab') === 'nevermore' || window.__scrollToNevermore)"
           );
         }
         res.setHeader("Content-Type", "text/html; charset=utf-8");
