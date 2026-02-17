@@ -136,6 +136,9 @@ import {
   runCode,
   resolveRuntime,
   getSupportedLanguages,
+  autoFixCode,
+  getCodeTemplate,
+  CODE_TEMPLATES,
   searchWallpapers
 } from './src/features/super-utilities.js';
 import { promisify } from "util";
@@ -16196,12 +16199,13 @@ bot.command("run", async (ctx) => {
       '<code>/run python\nprint("Hello World!")</code>\n\n' +
       '<code>/run js\nconsole.log([1,2,3].map(x => x*2))</code>\n\n' +
       '<code>/run rust\nfn main() { println!("Hello!"); }</code>\n\n' +
+      '<b>Templates:</b> <code>/run template python</code>\n' +
+      '<b>AI Helper:</b> Reply to output with <code>explain</code>, <code>fix</code>, <code>optimize</code>, or <code>debug</code>\n\n' +
       '<b>Multi-turn:</b> Reply to any output to continue coding!\n' +
       '• <code>+code</code> — append more code\n' +
       '• <code>!code</code> — replace with new code (same lang)\n' +
       '• <code>/run lang\ncode</code> — switch language\n\n' +
-      '<b>Stdin:</b> Use <code>---stdin---</code> separator:\n' +
-      '<code>/run python\nname = input()\nprint(f"Hi {name}")\n---stdin---\nWorld</code>\n\n' +
+      '<b>Stdin:</b> Use <code>---stdin---</code> separator\n\n' +
       '<b>Languages:</b> python, javascript, c, c++, go, rust, java, kotlin, swift, csharp, typescript, haskell, ruby, perl, scala, dart, nim, zig, crystal, ocaml, pascal, fortran, lua, php, bash, sql, erlang, elixir, groovy, julia, r, d\n\n' +
       '<b>Aliases:</b> py, js, ts, cpp, cs, rb, rs, sh, kt, hs, jl, ml';
     
@@ -16210,6 +16214,44 @@ bot.command("run", async (ctx) => {
     }
     
     return ctx.reply(helpText, { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id });
+  }
+  
+  // Handle template command: /run template [lang] [name]
+  if (text.startsWith('template')) {
+    const parts = text.replace(/^template\s*/i, '').trim().split(/\s+/);
+    const lang = parts[0] || '';
+    const templateName = parts[1] || '';
+    
+    if (!lang) {
+      // Show all languages with templates
+      const langs = Object.keys(CODE_TEMPLATES);
+      let msg = '📋 <b>Code Templates</b>\n\n';
+      msg += '<b>Available languages:</b>\n';
+      for (const l of langs) {
+        const templates = Object.keys(CODE_TEMPLATES[l]);
+        msg += `• <b>${l}</b>: ${templates.join(', ')}\n`;
+      }
+      msg += '\n<b>Usage:</b> <code>/run template python fibonacci</code>';
+      return ctx.reply(msg, { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    const result = getCodeTemplate(lang, templateName);
+    if (!result.success) {
+      return ctx.reply(`❌ ${escapeHTML(result.error)}`, { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    if (result.templates) {
+      // Show available templates for this language
+      let msg = `📋 <b>${escapeHTML(result.language)} Templates</b>\n\n`;
+      for (const t of result.templates) {
+        msg += `• <b>${t.name}</b> — <code>${escapeHTML(t.preview)}</code>\n`;
+      }
+      msg += `\n<b>Usage:</b> <code>/run template ${result.language} ${result.templates[0].name}</code>`;
+      return ctx.reply(msg, { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id });
+    }
+    
+    // Run the template code
+    return executeAndReply(ctx, result.language, result.code, userId);
   }
   
   // Parse language and code
@@ -16245,6 +16287,17 @@ async function executeAndReply(ctx, language, code, userId) {
     code = code.slice(0, stdinSep).trim();
   }
   
+  // Auto-fix common code mistakes
+  const resolved = resolveRuntime(language);
+  let fixNotice = '';
+  if (resolved) {
+    const { fixedCode, fixes } = autoFixCode(resolved, code);
+    if (fixes.length > 0) {
+      code = fixedCode;
+      fixNotice = `\n🔧 <b>Auto-fixed:</b> ${fixes.join(', ')}`;
+    }
+  }
+  
   const statusMsg = await ctx.reply(`💻 Compiling <b>${escapeHTML(language)}</b>...`, {
     parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
@@ -16271,7 +16324,7 @@ async function executeAndReply(ctx, language, code, userId) {
   if (session.history.length > 20) session.history.shift(); // Keep last 20
   codeSessions.set(userId, session);
   
-  const response = formatCodeOutput(result, code);
+  const response = formatCodeOutput(result, code) + fixNotice;
   
   try {
     await ctx.api.editMessageText(
@@ -16317,6 +16370,54 @@ bot.on('message:text', async (ctx, next) => {
   
   const text = ctx.message.text.trim();
   if (!text) return next();
+  
+  // AI Code Helper commands
+  const aiCommands = ['explain', 'fix', 'optimize', 'debug'];
+  const lowerText = text.toLowerCase();
+  if (aiCommands.includes(lowerText)) {
+    const lastRun = session.history[session.history.length - 1];
+    if (!lastRun) return ctx.reply('No code in session to analyze.', { reply_to_message_id: ctx.message?.message_id });
+    
+    const statusMsg = await ctx.reply(`🧠 AI analyzing your ${session.language} code...`, {
+      reply_to_message_id: ctx.message?.message_id
+    });
+    
+    const prompts = {
+      explain: `Explain this ${session.language} code step by step. Be clear and educational.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 1000)}` : ''}${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 500)}` : ''}`,
+      fix: `This ${session.language} code has issues. Identify the bugs and provide the corrected code with explanations.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 1000)}` : ''}${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 500)}` : ''}\nExit code: ${lastRun.exitCode}`,
+      optimize: `Optimize this ${session.language} code for better performance, readability, and best practices. Show the improved version with explanations.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\``,
+      debug: `Debug this ${session.language} code. Analyze the errors, trace the logic, and explain what went wrong and how to fix it.\n\nCode:\n\`\`\`${session.language}\n${lastRun.code}\n\`\`\`${lastRun.stderr ? `\n\nErrors:\n${lastRun.stderr.slice(0, 1000)}` : ''}${lastRun.output ? `\n\nOutput:\n${lastRun.output.slice(0, 500)}` : ''}\nExit code: ${lastRun.exitCode}`
+    };
+    
+    try {
+      const model = ensureChosenModelValid(userId);
+      const aiResponse = await llmText({
+        model,
+        messages: [
+          { role: 'system', content: 'You are an expert programmer. Provide clear, concise analysis. Use code blocks with language tags for any code. Keep responses focused and practical.' },
+          { role: 'user', content: prompts[lowerText] }
+        ],
+        temperature: 0.3,
+        max_tokens: 4000,
+        timeout: 30000
+      });
+      
+      const icons = { explain: '📖', fix: '🔧', optimize: '⚡', debug: '🔍' };
+      const titles = { explain: 'Explanation', fix: 'Fix Suggestions', optimize: 'Optimization', debug: 'Debug Analysis' };
+      let formatted = `${icons[lowerText]} <b>${titles[lowerText]}</b> — ${escapeHTML(session.language)}\n\n${escapeHTML(aiResponse)}`;
+      
+      // Truncate for Telegram if needed
+      if (formatted.length > 4000) {
+        formatted = formatted.slice(0, 3950) + '\n\n<i>... (truncated)</i>';
+      }
+      
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, formatted, { parse_mode: 'HTML' });
+    } catch (e) {
+      console.error('[AI Code Helper]', e.message);
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ AI analysis failed: ${escapeHTML(e.message)}`, { parse_mode: 'HTML' });
+    }
+    return;
+  }
   
   let newCode = '';
   let language = session.language;
@@ -27332,7 +27433,7 @@ http
         let body = '';
         for await (const chunk of req) body += chunk;
         const data = JSON.parse(body);
-        const { language, code, stdin } = data;
+        let { language, code, stdin } = data;
         
         if (!language || !code) {
           res.statusCode = 400;
@@ -27341,20 +27442,113 @@ http
         }
         
         // Resolve runtime to validate language
-        const runtime = await resolveRuntime(language);
+        const runtime = resolveRuntime(language);
         if (!runtime) {
           res.statusCode = 400;
           res.end(JSON.stringify({ error: `Language "${language}" not found`, supported: true }));
           return;
         }
         
+        // Auto-fix common code mistakes
+        const { fixedCode, fixes } = autoFixCode(runtime, code);
+        if (fixes.length > 0) {
+          code = fixedCode;
+        }
+        
         const result = await runCode(language, code, { stdin: stdin || '' });
+        // Include auto-fix info in response
+        if (fixes.length > 0) {
+          result.autoFixes = fixes;
+        }
         res.statusCode = 200;
         res.end(JSON.stringify(result));
       } catch (e) {
         console.error('[API/run] Error:', e.message);
         res.statusCode = 500;
         res.end(JSON.stringify({ error: e.message || 'Internal server error' }));
+      }
+      return;
+    }
+    
+    // /api/code-help - AI Code Helper endpoint for webapp
+    if (req.method === "POST" && req.url === "/api/code-help") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Type", "application/json");
+      try {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const data = JSON.parse(body);
+        const { action, language, code, output, stderr, exitCode } = data;
+        
+        if (!action || !code) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Missing action or code' }));
+          return;
+        }
+        
+        const validActions = ['explain', 'fix', 'optimize', 'debug'];
+        if (!validActions.includes(action)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Invalid action. Use: explain, fix, optimize, debug' }));
+          return;
+        }
+        
+        const lang = language || 'unknown';
+        const prompts = {
+          explain: `Explain this ${lang} code step by step. Be clear and educational.\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\`${output ? `\n\nOutput:\n${output.slice(0, 2000)}` : ''}${stderr ? `\n\nErrors:\n${stderr.slice(0, 1000)}` : ''}`,
+          fix: `This ${lang} code has issues. Identify the bugs and provide the corrected code with explanations.\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\`${stderr ? `\n\nErrors:\n${stderr.slice(0, 2000)}` : ''}${output ? `\n\nOutput:\n${output.slice(0, 1000)}` : ''}\nExit code: ${exitCode ?? 'unknown'}`,
+          optimize: `Optimize this ${lang} code for better performance, readability, and best practices. Show the improved version with explanations.\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\``,
+          debug: `Debug this ${lang} code. Analyze the errors, trace the logic, and explain what went wrong and how to fix it.\n\nCode:\n\`\`\`${lang}\n${code}\n\`\`\`${stderr ? `\n\nErrors:\n${stderr.slice(0, 2000)}` : ''}${output ? `\n\nOutput:\n${output.slice(0, 1000)}` : ''}\nExit code: ${exitCode ?? 'unknown'}`
+        };
+        
+        // Use a good model for code analysis
+        const model = 'claude-sonnet-4-20250514';
+        const aiResponse = await llmText({
+          model,
+          messages: [
+            { role: 'system', content: 'You are an expert programmer. Provide clear, thorough analysis. Use markdown code blocks with language tags for any code. Be practical and educational. No length restrictions.' },
+            { role: 'user', content: prompts[action] }
+          ],
+          temperature: 0.3,
+          max_tokens: 8000,
+          timeout: 45000
+        });
+        
+        res.statusCode = 200;
+        res.end(JSON.stringify({ response: aiResponse, action }));
+      } catch (e) {
+        console.error('[API/code-help] Error:', e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message || 'AI analysis failed' }));
+      }
+      return;
+    }
+    
+    // /api/templates - Get code templates
+    if (req.method === "GET" && req.url?.startsWith("/api/templates")) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Type", "application/json");
+      try {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const lang = url.searchParams.get('lang');
+        const name = url.searchParams.get('name');
+        
+        if (lang && name) {
+          const result = getCodeTemplate(lang, name);
+          res.statusCode = 200;
+          res.end(JSON.stringify(result));
+        } else if (lang) {
+          const result = getCodeTemplate(lang);
+          res.statusCode = 200;
+          res.end(JSON.stringify(result));
+        } else {
+          // Return all templates
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, templates: CODE_TEMPLATES }));
+        }
+      } catch (e) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message }));
       }
       return;
     }
@@ -27377,7 +27571,7 @@ http
     // CORS preflight for /api/*
     if (req.method === "OPTIONS" && req.url?.startsWith("/api/")) {
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       res.statusCode = 204;
       res.end();

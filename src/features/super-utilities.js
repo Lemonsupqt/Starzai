@@ -1835,6 +1835,235 @@ function getSupportedLanguages() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CODE AUTO-FIX ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Auto-fix common code mistakes per language.
+ * Returns { fixedCode, fixes[] } where fixes describes what was changed.
+ */
+function autoFixCode(language, code) {
+  const fixes = [];
+  let fixed = code;
+
+  if (language === 'python') {
+    // Fix Print → print, Input → input, True/False caps
+    const pyFuncs = [
+      [/\bPrint\s*\(/g, 'print(', 'Print→print'],
+      [/\bInput\s*\(/g, 'input(', 'Input→input'],
+      [/\bLen\s*\(/g, 'len(', 'Len→len'],
+      [/\bRange\s*\(/g, 'range(', 'Range→range'],
+      [/\bStr\s*\(/g, 'str(', 'Str→str'],
+      [/\bInt\s*\(/g, 'int(', 'Int→int'],
+      [/\bFloat\s*\(/g, 'float(', 'Float→float'],
+      [/\bType\s*\(/g, 'type(', 'Type→type'],
+      [/\bList\s*\(/g, 'list(', 'List→list'],
+    ];
+    for (const [pat, rep, desc] of pyFuncs) {
+      if (pat.test(fixed)) {
+        fixed = fixed.replace(pat, rep);
+        fixes.push(desc);
+      }
+    }
+    // Fix smart quotes → regular quotes
+    if (/[\u201C\u201D]/.test(fixed)) {
+      fixed = fixed.replace(/[\u201C\u201D]/g, '"');
+      fixes.push('smart quotes→regular quotes');
+    }
+    if (/[\u2018\u2019]/.test(fixed)) {
+      fixed = fixed.replace(/[\u2018\u2019]/g, "'");
+      fixes.push('smart apostrophes→regular');
+    }
+  }
+
+  if (language === 'javascript' || language === 'typescript') {
+    // Fix Console.log → console.log, Document → document
+    const jsFixes = [
+      [/\bConsole\.log\s*\(/g, 'console.log(', 'Console.log→console.log'],
+      [/\bConsole\.error\s*\(/g, 'console.error(', 'Console.error→console.error'],
+      [/\bConsole\.warn\s*\(/g, 'console.warn(', 'Console.warn→console.warn'],
+      [/\bDocument\./g, 'document.', 'Document→document'],
+      [/\bMath\.random\s*\(\)/g, 'Math.random()', null], // Math is correct
+    ];
+    for (const [pat, rep, desc] of jsFixes) {
+      if (desc && pat.test(fixed)) {
+        fixed = fixed.replace(pat, rep);
+        fixes.push(desc);
+      }
+    }
+    // Fix smart quotes
+    if (/[\u201C\u201D]/.test(fixed)) {
+      fixed = fixed.replace(/[\u201C\u201D]/g, '"');
+      fixes.push('smart quotes→regular quotes');
+    }
+    if (/[\u2018\u2019]/.test(fixed)) {
+      fixed = fixed.replace(/[\u2018\u2019]/g, "'");
+      fixes.push('smart apostrophes→regular');
+    }
+    // Missing semicolons at end of lines (simple heuristic)
+    const lines = fixed.split('\n');
+    let semiFixed = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed && !trimmed.endsWith(';') && !trimmed.endsWith('{') && !trimmed.endsWith('}') &&
+          !trimmed.endsWith(',') && !trimmed.endsWith('(') && !trimmed.endsWith(':') &&
+          !trimmed.startsWith('//') && !trimmed.startsWith('/*') && !trimmed.startsWith('*') &&
+          !trimmed.startsWith('if') && !trimmed.startsWith('else') && !trimmed.startsWith('for') &&
+          !trimmed.startsWith('while') && !trimmed.startsWith('function') && !trimmed.startsWith('class') &&
+          !trimmed.startsWith('import') && !trimmed.startsWith('export') && !trimmed.startsWith('return') &&
+          !trimmed.startsWith('const ') && !trimmed.startsWith('let ') && !trimmed.startsWith('var ') &&
+          /^[a-zA-Z_$].*[)"'`\]\d]$/.test(trimmed)) {
+        lines[i] = lines[i] + ';';
+        semiFixed++;
+      }
+    }
+    if (semiFixed > 0) {
+      fixed = lines.join('\n');
+      fixes.push(`added ${semiFixed} missing semicolon${semiFixed > 1 ? 's' : ''}`);
+    }
+  }
+
+  if (language === 'c' || language === 'c++') {
+    // Fix Int → int, Void → void, Char → char, Float → float, Double → double
+    const cFixes = [
+      [/\bInt\b(?!\s*\.)/g, 'int', 'Int→int'],
+      [/\bVoid\b/g, 'void', 'Void→void'],
+      [/\bChar\b(?!\s*\.)/g, 'char', 'Char→char'],
+      [/\bFloat\b(?!\s*\.)/g, 'float', 'Float→float'],
+      [/\bDouble\b(?!\s*\.)/g, 'double', 'Double→double'],
+      [/\bReturn\b/g, 'return', 'Return→return'],
+      [/\bPrintf\s*\(/g, 'printf(', 'Printf→printf'],
+      [/\bScanf\s*\(/g, 'scanf(', 'Scanf→scanf'],
+      [/\bMain\s*\(/g, 'main(', 'Main→main'],
+    ];
+    for (const [pat, rep, desc] of cFixes) {
+      if (pat.test(fixed)) {
+        fixed = fixed.replace(pat, rep);
+        fixes.push(desc);
+      }
+    }
+    // Fix smart quotes
+    if (/[\u201C\u201D]/.test(fixed)) {
+      fixed = fixed.replace(/[\u201C\u201D]/g, '"');
+      fixes.push('smart quotes→regular quotes');
+    }
+    if (/[\u2018\u2019]/.test(fixed)) {
+      fixed = fixed.replace(/[\u2018\u2019]/g, "'");
+      fixes.push('smart apostrophes→regular');
+    }
+    // Fix #Include → #include
+    if (/#Include\b/g.test(fixed)) {
+      fixed = fixed.replace(/#Include\b/g, '#include');
+      fixes.push('#Include→#include');
+    }
+  }
+
+  if (language === 'java') {
+    // Fix common Java caps issues
+    const javaFixes = [
+      [/\bstring\b(?=\s+\w)/g, 'String', 'string→String'],
+      [/\bSystem\.Out\./gi, 'System.out.', 'System.Out→System.out'],
+      [/\bsystem\.out\./g, 'System.out.', 'system→System'],
+      [/\bPublic\b/g, 'public', 'Public→public'],
+      [/\bStatic\b/g, 'static', 'Static→static'],
+      [/\bClass\b(?=\s+\w)/g, 'class', 'Class→class'],
+    ];
+    for (const [pat, rep, desc] of javaFixes) {
+      if (pat.test(fixed)) {
+        fixed = fixed.replace(pat, rep);
+        fixes.push(desc);
+      }
+    }
+    // Fix smart quotes
+    if (/[\u201C\u201D]/.test(fixed)) {
+      fixed = fixed.replace(/[\u201C\u201D]/g, '"');
+      fixes.push('smart quotes→regular quotes');
+    }
+  }
+
+  // Universal fixes for all languages
+  // Fix en-dash/em-dash used as minus
+  if (/[\u2013\u2014]/.test(fixed)) {
+    fixed = fixed.replace(/[\u2013\u2014]/g, '-');
+    fixes.push('em/en dash→minus sign');
+  }
+  // Fix non-breaking spaces
+  if (/\u00A0/.test(fixed)) {
+    fixed = fixed.replace(/\u00A0/g, ' ');
+    fixes.push('non-breaking spaces→regular spaces');
+  }
+  // Fix fullwidth characters (common from mobile keyboards)
+  if (/[\uFF08\uFF09\uFF1B\uFF1A\uFF0C]/.test(fixed)) {
+    fixed = fixed.replace(/\uFF08/g, '(').replace(/\uFF09/g, ')').replace(/\uFF1B/g, ';').replace(/\uFF1A/g, ':').replace(/\uFF0C/g, ',');
+    fixes.push('fullwidth→ASCII punctuation');
+  }
+
+  return { fixedCode: fixed, fixes };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CODE TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const CODE_TEMPLATES = {
+  python: {
+    hello: 'print("Hello, World!")',
+    input: 'name = input("Enter your name: ")\nprint(f"Hello, {name}!")',
+    loop: 'for i in range(10):\n    print(f"Number: {i}")',
+    function: 'def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("World"))',
+    class: 'class Animal:\n    def __init__(self, name, sound):\n        self.name = name\n        self.sound = sound\n\n    def speak(self):\n        return f"{self.name} says {self.sound}!"\n\ndog = Animal("Dog", "Woof")\nprint(dog.speak())',
+    fibonacci: 'def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        print(a, end=" ")\n        a, b = b, a + b\n\nfib(20)',
+    sort: 'arr = [64, 34, 25, 12, 22, 11, 90]\nprint(f"Original: {arr}")\narr.sort()\nprint(f"Sorted: {arr}")',
+    api: 'import urllib.request\nimport json\n\nurl = "https://api.github.com"\nwith urllib.request.urlopen(url) as response:\n    data = json.loads(response.read())\n    print(json.dumps(data, indent=2))',
+  },
+  javascript: {
+    hello: 'console.log("Hello, World!");',
+    array: 'const nums = [1, 2, 3, 4, 5];\nconst doubled = nums.map(n => n * 2);\nconst sum = nums.reduce((a, b) => a + b, 0);\nconsole.log("Doubled:", doubled);\nconsole.log("Sum:", sum);',
+    async: 'async function fetchData() {\n  const response = await fetch("https://api.github.com");\n  const data = await response.json();\n  console.log(JSON.stringify(data, null, 2));\n}\nfetchData();',
+    class: 'class Calculator {\n  constructor() { this.result = 0; }\n  add(n) { this.result += n; return this; }\n  sub(n) { this.result -= n; return this; }\n  mul(n) { this.result *= n; return this; }\n  get() { return this.result; }\n}\n\nconst calc = new Calculator();\nconsole.log(calc.add(10).mul(2).sub(5).get());',
+    fibonacci: 'function* fibonacci() {\n  let [a, b] = [0, 1];\n  while (true) {\n    yield a;\n    [a, b] = [b, a + b];\n  }\n}\n\nconst fib = fibonacci();\nfor (let i = 0; i < 15; i++) {\n  process.stdout.write(fib.next().value + " ");\n}',
+  },
+  c: {
+    hello: '#include <stdio.h>\n\nint main() {\n    printf("Hello, World!\\n");\n    return 0;\n}',
+    input: '#include <stdio.h>\n\nint main() {\n    int a, b;\n    printf("Enter two numbers: ");\n    scanf("%d %d", &a, &b);\n    printf("Sum: %d\\n", a + b);\n    return 0;\n}',
+    sort: '#include <stdio.h>\n\nvoid bubbleSort(int arr[], int n) {\n    for (int i = 0; i < n-1; i++)\n        for (int j = 0; j < n-i-1; j++)\n            if (arr[j] > arr[j+1]) {\n                int temp = arr[j];\n                arr[j] = arr[j+1];\n                arr[j+1] = temp;\n            }\n}\n\nint main() {\n    int arr[] = {64, 34, 25, 12, 22, 11, 90};\n    int n = sizeof(arr)/sizeof(arr[0]);\n    bubbleSort(arr, n);\n    printf("Sorted: ");\n    for (int i = 0; i < n; i++) printf("%d ", arr[i]);\n    return 0;\n}',
+  },
+  'c++': {
+    hello: '#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, World!" << endl;\n    return 0;\n}',
+    vector: '#include <iostream>\n#include <vector>\n#include <algorithm>\nusing namespace std;\n\nint main() {\n    vector<int> v = {5, 3, 8, 1, 9, 2};\n    sort(v.begin(), v.end());\n    for (int x : v) cout << x << " ";\n    cout << endl;\n    return 0;\n}',
+  },
+  java: {
+    hello: 'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello, World!");\n    }\n}',
+    class: 'public class Main {\n    static class Person {\n        String name;\n        int age;\n        Person(String name, int age) {\n            this.name = name;\n            this.age = age;\n        }\n        String greet() {\n            return "Hi, I\'m " + name + ", age " + age;\n        }\n    }\n\n    public static void main(String[] args) {\n        Person p = new Person("Alice", 25);\n        System.out.println(p.greet());\n    }\n}',
+  },
+  go: {
+    hello: 'package main\n\nimport "fmt"\n\nfunc main() {\n    fmt.Println("Hello, World!")\n}',
+    goroutine: 'package main\n\nimport (\n    "fmt"\n    "sync"\n)\n\nfunc main() {\n    var wg sync.WaitGroup\n    for i := 0; i < 5; i++ {\n        wg.Add(1)\n        go func(id int) {\n            defer wg.Done()\n            fmt.Printf("Goroutine %d running\\n", id)\n        }(i)\n    }\n    wg.Wait()\n    fmt.Println("All done!")\n}',
+  },
+  rust: {
+    hello: 'fn main() {\n    println!("Hello, World!");\n}',
+    ownership: 'fn main() {\n    let s1 = String::from("hello");\n    let s2 = s1.clone();\n    println!("s1 = {}, s2 = {}", s1, s2);\n\n    let v = vec![1, 2, 3, 4, 5];\n    let sum: i32 = v.iter().sum();\n    println!("Sum of {:?} = {}", v, sum);\n}',
+  },
+};
+
+function getCodeTemplate(language, templateName) {
+  const lang = resolveRuntime(language);
+  if (!lang || !CODE_TEMPLATES[lang]) {
+    return { success: false, error: `No templates available for ${language}` };
+  }
+  const templates = CODE_TEMPLATES[lang];
+  if (templateName && templates[templateName]) {
+    return { success: true, language: lang, name: templateName, code: templates[templateName] };
+  }
+  // Return list of available templates
+  return {
+    success: true,
+    language: lang,
+    templates: Object.keys(templates).map(k => ({ name: k, preview: templates[k].split('\n')[0] }))
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MEDIA FEATURES
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1927,6 +2156,9 @@ export {
   runCode,
   resolveRuntime,
   getSupportedLanguages,
+  autoFixCode,
+  getCodeTemplate,
+  CODE_TEMPLATES,
   
   // Media
   searchWallpapers,

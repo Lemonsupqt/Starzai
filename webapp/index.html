@@ -9,6 +9,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <!-- Marked.js for markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Prism.js for syntax highlighting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -692,23 +696,24 @@
     /* ===== CODE COMPILER ===== */
     .compiler-section {
       background: var(--bg-card);
-      border: 1px solid var(--border);
+      border: 1px solid rgba(139, 92, 246, 0.25);
       border-radius: var(--radius);
       overflow: hidden;
       margin-bottom: 24px;
+      box-shadow: 0 4px 24px rgba(139, 92, 246, 0.08);
     }
     .compiler-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 16px;
       border-bottom: 1px solid var(--border);
-      background: rgba(139, 92, 246, 0.05);
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(236, 72, 153, 0.05));
     }
     .compiler-header-left {
       display: flex; align-items: center; gap: 10px;
     }
     .compiler-header-icon {
       width: 36px; height: 36px; border-radius: 10px;
-      background: rgba(139, 92, 246, 0.15);
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(236, 72, 153, 0.15));
       display: flex; align-items: center; justify-content: center;
       font-size: 18px;
     }
@@ -728,8 +733,41 @@
       background-repeat: no-repeat; background-position: right 8px center;
       padding-right: 28px;
     }
+    /* Template bar */
+    .compiler-templates {
+      display: flex; gap: 6px; padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,0.15);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .compiler-templates::-webkit-scrollbar { display: none; }
+    .template-chip {
+      padding: 4px 12px; background: var(--bg-surface);
+      border: 1px solid var(--border); border-radius: 100px;
+      font-size: 11px; color: var(--text-dim); white-space: nowrap;
+      cursor: pointer; transition: all 0.2s ease;
+      font-family: 'Inter', sans-serif; font-weight: 500;
+    }
+    .template-chip:hover { border-color: var(--accent); color: var(--accent-light); background: rgba(139,92,246,0.08); }
+    .template-chip:active { transform: scale(0.95); }
     .compiler-editor {
       position: relative;
+    }
+    /* Line numbers + code area wrapper */
+    .compiler-code-wrap {
+      display: flex; position: relative;
+      background: #0d0d0f;
+    }
+    .compiler-line-numbers {
+      padding: 14px 0; padding-left: 12px; padding-right: 8px;
+      background: #0a0a0c;
+      border-right: 1px solid rgba(255,255,255,0.06);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; line-height: 1.6;
+      color: #4a4a5a; text-align: right;
+      user-select: none; min-width: 36px;
+      overflow: hidden;
     }
     .compiler-textarea {
       width: 100%; min-height: 180px; max-height: 400px;
@@ -791,6 +829,15 @@
       cursor: pointer; transition: all 0.2s ease;
     }
     .compiler-clear-btn:hover { border-color: var(--red); color: var(--red); }
+    /* Auto-fix notice */
+    .compiler-autofix {
+      display: none; padding: 8px 16px;
+      border-top: 1px solid rgba(251, 146, 60, 0.2);
+      background: rgba(251, 146, 60, 0.06);
+      font-size: 12px; color: var(--orange);
+      font-family: 'Inter', sans-serif;
+    }
+    .compiler-autofix.visible { display: flex; align-items: center; gap: 6px; }
     .compiler-output {
       border-top: 1px solid var(--border);
       display: none;
@@ -822,6 +869,63 @@
     .compiler-output-content .stderr {
       color: var(--red); margin-top: 8px;
       padding-top: 8px; border-top: 1px solid rgba(248,113,113,0.2);
+    }
+    /* Syntax highlighted output */
+    .compiler-output-content pre[class*="language-"] {
+      margin: 0; padding: 0; background: transparent;
+      font-size: 12px;
+    }
+    .compiler-output-content code[class*="language-"] {
+      font-size: 12px;
+    }
+    /* AI Helper panel */
+    .compiler-ai-panel {
+      border-top: 1px solid var(--border);
+      display: none;
+    }
+    .compiler-ai-panel.visible { display: block; }
+    .compiler-ai-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(139, 92, 246, 0.06);
+      border-bottom: 1px solid var(--border);
+    }
+    .compiler-ai-title {
+      font-size: 13px; font-weight: 700; color: var(--accent-light);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .compiler-ai-actions {
+      display: flex; gap: 6px;
+    }
+    .ai-action-btn {
+      padding: 5px 12px; background: var(--bg-surface);
+      border: 1px solid var(--border); border-radius: 100px;
+      font-size: 11px; font-weight: 600; color: var(--text-dim);
+      cursor: pointer; transition: all 0.2s ease;
+      font-family: 'Inter', sans-serif;
+    }
+    .ai-action-btn:hover { border-color: var(--accent); color: var(--accent-light); }
+    .ai-action-btn.active { border-color: var(--accent); color: var(--accent-light); background: rgba(139,92,246,0.1); }
+    .ai-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .compiler-ai-content {
+      padding: 14px 16px;
+      background: #0a0a0c;
+      max-height: 500px; overflow-y: auto;
+      font-size: 13px; line-height: 1.7; color: #e2e8f0;
+    }
+    .compiler-ai-content p { margin-bottom: 10px; }
+    .compiler-ai-content code { background: rgba(139,92,246,0.12); padding: 2px 5px; border-radius: 4px; font-size: 12px; }
+    .compiler-ai-content pre { background: #111113; padding: 12px; border-radius: 8px; margin: 10px 0; overflow-x: auto; }
+    .compiler-ai-content pre code { background: transparent; padding: 0; }
+    .compiler-ai-loading {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--text-muted); font-size: 13px;
+      padding: 20px 0;
+    }
+    .compiler-ai-loading .spinner {
+      width: 14px; height: 14px; border: 2px solid rgba(139,92,246,0.3);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.6s linear infinite;
     }
     .compiler-history {
       padding: 8px 16px; border-top: 1px solid var(--border);
@@ -1107,10 +1211,10 @@
     <!-- ===== CODE COMPILER ===== -->
     <div class="section-header fade-in stagger-5">
       <div class="section-title">
-        <div class="st-icon" style="background:rgba(139,92,246,0.12);">&#128187;</div>
+        <div class="st-icon" style="background:linear-gradient(135deg, rgba(139,92,246,0.15), rgba(236,72,153,0.1));">&#128187;</div>
         Code Compiler
       </div>
-      <div class="section-badge">80+ langs</div>
+      <div class="section-badge" style="background:rgba(139,92,246,0.12);color:var(--accent-light);">33 Languages • AI Helper</div>
     </div>
 
     <div class="compiler-section fade-in stagger-5" id="compilerSection">
@@ -1118,8 +1222,8 @@
         <div class="compiler-header-left">
           <div class="compiler-header-icon">&#9654;&#65039;</div>
           <div class="compiler-header-text">
-            <h3>Run Code</h3>
-            <span>Powered by Piston API</span>
+            <h3>Code Runner</h3>
+            <span>Ctrl+Enter to run • AI-powered</span>
           </div>
         </div>
         <select class="compiler-lang-select" id="compilerLang">
@@ -1129,7 +1233,7 @@
           <option value="java">Java</option>
           <option value="c">C</option>
           <option value="c++">C++</option>
-          <option value="csharp.net">C#</option>
+          <option value="csharp">C#</option>
           <option value="go">Go</option>
           <option value="rust">Rust</option>
           <option value="ruby">Ruby</option>
@@ -1143,30 +1247,29 @@
           <option value="perl">Perl</option>
           <option value="haskell">Haskell</option>
           <option value="elixir">Elixir</option>
-          <option value="clojure">Clojure</option>
-          <option value="sqlite3">SQL</option>
-          <option value="rscript">R</option>
+          <option value="sql">SQL</option>
+          <option value="r">R</option>
           <option value="nim">Nim</option>
           <option value="zig">Zig</option>
-          <option value="vlang">V</option>
           <option value="crystal">Crystal</option>
           <option value="fortran">Fortran</option>
           <option value="pascal">Pascal</option>
           <option value="d">D</option>
           <option value="ocaml">OCaml</option>
           <option value="erlang">Erlang</option>
-          <option value="racket">Racket</option>
-          <option value="prolog">Prolog</option>
-          <option value="coffeescript">CoffeeScript</option>
-          <option value="powershell">PowerShell</option>
-          <option value="freebasic">FreeBASIC</option>
-          <option value="nasm">Assembly</option>
-          <option value="brainfuck">Brainfuck</option>
+          <option value="julia">Julia</option>
+          <option value="groovy">Groovy</option>
         </select>
       </div>
 
+      <!-- Template chips -->
+      <div class="compiler-templates" id="compilerTemplates"></div>
+
       <div class="compiler-editor">
-        <textarea class="compiler-textarea" id="compilerCode" placeholder="Write your code here...&#10;&#10;# Python example:&#10;print('Hello, World!')" spellcheck="false"></textarea>
+        <div class="compiler-code-wrap">
+          <div class="compiler-line-numbers" id="lineNumbers">1</div>
+          <textarea class="compiler-textarea" id="compilerCode" placeholder="Write your code here...&#10;&#10;# Python example:&#10;print('Hello, World!')" spellcheck="false"></textarea>
+        </div>
       </div>
 
       <label class="compiler-stdin-toggle">
@@ -1182,12 +1285,32 @@
         <button class="compiler-clear-btn" id="compilerClearBtn">Clear</button>
       </div>
 
+      <!-- Auto-fix notice -->
+      <div class="compiler-autofix" id="compilerAutofix">
+        <span>🔧</span>
+        <span id="autofixText"></span>
+      </div>
+
       <div class="compiler-output" id="compilerOutput">
         <div class="compiler-output-header">
           <div class="compiler-output-status" id="compilerStatus"></div>
           <div class="compiler-output-meta" id="compilerMeta"></div>
         </div>
         <div class="compiler-output-content" id="compilerOutputContent"></div>
+      </div>
+
+      <!-- AI Code Helper -->
+      <div class="compiler-ai-panel" id="compilerAiPanel">
+        <div class="compiler-ai-header">
+          <div class="compiler-ai-title">🧠 AI Code Helper</div>
+          <div class="compiler-ai-actions">
+            <button class="ai-action-btn" data-action="explain">📖 Explain</button>
+            <button class="ai-action-btn" data-action="fix">🔧 Fix</button>
+            <button class="ai-action-btn" data-action="optimize">⚡ Optimize</button>
+            <button class="ai-action-btn" data-action="debug">🔍 Debug</button>
+          </div>
+        </div>
+        <div class="compiler-ai-content" id="compilerAiContent"></div>
       </div>
 
       <div class="compiler-history" id="compilerHistory" style="display:none;"></div>
@@ -2059,11 +2182,12 @@
     });
 
     // =====================
-    // CODE COMPILER
+    // CODE COMPILER (Enhanced)
     // =====================
     (function() {
       const langSelect = document.getElementById('compilerLang');
       const codeArea = document.getElementById('compilerCode');
+      const lineNumbers = document.getElementById('lineNumbers');
       const stdinToggle = document.getElementById('stdinToggle');
       const stdinArea = document.getElementById('compilerStdin');
       const runBtn = document.getElementById('compilerRunBtn');
@@ -2073,9 +2197,111 @@
       const metaEl = document.getElementById('compilerMeta');
       const outputContent = document.getElementById('compilerOutputContent');
       const historyBar = document.getElementById('compilerHistory');
+      const autofixBar = document.getElementById('compilerAutofix');
+      const autofixText = document.getElementById('autofixText');
+      const templateBar = document.getElementById('compilerTemplates');
+      const aiPanel = document.getElementById('compilerAiPanel');
+      const aiContent = document.getElementById('compilerAiContent');
 
       let compilerHistory = [];
       let isRunning = false;
+      let lastRunResult = null;
+      let lastRunCode = '';
+
+      // Prism language map
+      const prismLangMap = {
+        'python': 'python', 'javascript': 'javascript', 'typescript': 'typescript',
+        'java': 'java', 'c': 'c', 'c++': 'cpp', 'csharp': 'csharp',
+        'go': 'go', 'rust': 'rust', 'ruby': 'ruby', 'php': 'php',
+        'swift': 'swift', 'kotlin': 'kotlin', 'dart': 'dart', 'scala': 'scala',
+        'bash': 'bash', 'lua': 'lua', 'perl': 'perl', 'haskell': 'haskell',
+        'elixir': 'elixir', 'sql': 'sql', 'r': 'r', 'nim': 'nim',
+        'zig': 'zig', 'crystal': 'crystal', 'fortran': 'fortran',
+        'pascal': 'pascal', 'd': 'd', 'ocaml': 'ocaml', 'erlang': 'erlang',
+        'julia': 'julia', 'groovy': 'groovy'
+      };
+
+      // Code templates (fetched from API or fallback)
+      const defaultTemplates = {
+        python: {
+          hello: 'print("Hello, World!")',
+          input: 'name = input("Enter your name: ")\nprint(f"Hello, {name}!")',
+          loop: 'for i in range(10):\n    print(f"Number: {i}")',
+          function: 'def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("World"))',
+          class: 'class Animal:\n    def __init__(self, name, sound):\n        self.name = name\n        self.sound = sound\n\n    def speak(self):\n        return f"{self.name} says {self.sound}!"\n\ndog = Animal("Dog", "Woof")\nprint(dog.speak())',
+          fibonacci: 'def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        print(a, end=" ")\n        a, b = b, a + b\n\nfib(20)',
+          sort: 'arr = [64, 34, 25, 12, 22, 11, 90]\nprint(f"Original: {arr}")\narr.sort()\nprint(f"Sorted: {arr}")',
+        },
+        javascript: {
+          hello: 'console.log("Hello, World!");',
+          array: 'const nums = [1, 2, 3, 4, 5];\nconst doubled = nums.map(n => n * 2);\nconst sum = nums.reduce((a, b) => a + b, 0);\nconsole.log("Doubled:", doubled);\nconsole.log("Sum:", sum);',
+          class: 'class Calculator {\n  constructor() { this.result = 0; }\n  add(n) { this.result += n; return this; }\n  sub(n) { this.result -= n; return this; }\n  mul(n) { this.result *= n; return this; }\n  get() { return this.result; }\n}\n\nconst calc = new Calculator();\nconsole.log(calc.add(10).mul(2).sub(5).get());',
+          fibonacci: 'function* fibonacci() {\n  let [a, b] = [0, 1];\n  while (true) {\n    yield a;\n    [a, b] = [b, a + b];\n  }\n}\n\nconst fib = fibonacci();\nfor (let i = 0; i < 15; i++) {\n  process.stdout.write(fib.next().value + " ");\n}',
+        },
+        c: {
+          hello: '#include <stdio.h>\n\nint main() {\n    printf("Hello, World!\\n");\n    return 0;\n}',
+          input: '#include <stdio.h>\n\nint main() {\n    int a, b;\n    printf("Enter two numbers: ");\n    scanf("%d %d", &a, &b);\n    printf("Sum: %d\\n", a + b);\n    return 0;\n}',
+          sort: '#include <stdio.h>\n\nvoid bubbleSort(int arr[], int n) {\n    for (int i = 0; i < n-1; i++)\n        for (int j = 0; j < n-i-1; j++)\n            if (arr[j] > arr[j+1]) {\n                int temp = arr[j];\n                arr[j] = arr[j+1];\n                arr[j+1] = temp;\n            }\n}\n\nint main() {\n    int arr[] = {64, 34, 25, 12, 22, 11, 90};\n    int n = sizeof(arr)/sizeof(arr[0]);\n    bubbleSort(arr, n);\n    printf("Sorted: ");\n    for (int i = 0; i < n; i++) printf("%d ", arr[i]);\n    return 0;\n}',
+        },
+        'c++': {
+          hello: '#include <iostream>\nusing namespace std;\n\nint main() {\n    cout << "Hello, World!" << endl;\n    return 0;\n}',
+          vector: '#include <iostream>\n#include <vector>\n#include <algorithm>\nusing namespace std;\n\nint main() {\n    vector<int> v = {5, 3, 8, 1, 9, 2};\n    sort(v.begin(), v.end());\n    for (int x : v) cout << x << " ";\n    cout << endl;\n    return 0;\n}',
+        },
+        java: {
+          hello: 'public class Main {\n    public static void main(String[] args) {\n        System.out.println("Hello, World!");\n    }\n}',
+          class: 'public class Main {\n    static class Person {\n        String name;\n        int age;\n        Person(String name, int age) {\n            this.name = name;\n            this.age = age;\n        }\n        String greet() {\n            return "Hi, I\'m " + name + ", age " + age;\n        }\n    }\n\n    public static void main(String[] args) {\n        Person p = new Person("Alice", 25);\n        System.out.println(p.greet());\n    }\n}',
+        },
+        go: {
+          hello: 'package main\n\nimport "fmt"\n\nfunc main() {\n    fmt.Println("Hello, World!")\n}',
+          goroutine: 'package main\n\nimport (\n    "fmt"\n    "sync"\n)\n\nfunc main() {\n    var wg sync.WaitGroup\n    for i := 0; i < 5; i++ {\n        wg.Add(1)\n        go func(id int) {\n            defer wg.Done()\n            fmt.Printf("Goroutine %d running\\n", id)\n        }(i)\n    }\n    wg.Wait()\n    fmt.Println("All done!")\n}',
+        },
+        rust: {
+          hello: 'fn main() {\n    println!("Hello, World!");\n}',
+          ownership: 'fn main() {\n    let s1 = String::from("hello");\n    let s2 = s1.clone();\n    println!("s1 = {}, s2 = {}", s1, s2);\n\n    let v = vec![1, 2, 3, 4, 5];\n    let sum: i32 = v.iter().sum();\n    println!("Sum of {:?} = {}", v, sum);\n}',
+        },
+      };
+
+      // Update line numbers
+      function updateLineNumbers() {
+        const lines = codeArea.value.split('\n').length;
+        lineNumbers.textContent = Array.from({length: lines}, (_, i) => i + 1).join('\n');
+      }
+
+      // Sync scroll between textarea and line numbers
+      codeArea.addEventListener('scroll', () => {
+        lineNumbers.scrollTop = codeArea.scrollTop;
+      });
+      codeArea.addEventListener('input', updateLineNumbers);
+      updateLineNumbers();
+
+      // Update template chips when language changes
+      function updateTemplateChips() {
+        const lang = langSelect.value;
+        const templates = defaultTemplates[lang];
+        if (!templates) {
+          templateBar.style.display = 'none';
+          return;
+        }
+        templateBar.style.display = 'flex';
+        templateBar.innerHTML = Object.keys(templates).map(name =>
+          `<div class="template-chip" data-lang="${lang}" data-template="${name}">${name}</div>`
+        ).join('');
+      }
+
+      // Template chip click handler
+      templateBar.addEventListener('click', (e) => {
+        const chip = e.target.closest('.template-chip');
+        if (!chip) return;
+        const lang = chip.dataset.lang;
+        const name = chip.dataset.template;
+        const templates = defaultTemplates[lang];
+        if (templates && templates[name]) {
+          codeArea.value = templates[name];
+          updateLineNumbers();
+          codeArea.focus();
+          showToast(`Loaded ${name} template`);
+        }
+      });
 
       // Tab key inserts spaces in textarea
       codeArea.addEventListener('keydown', (e) => {
@@ -2085,6 +2311,7 @@
           const end = codeArea.selectionEnd;
           codeArea.value = codeArea.value.substring(0, start) + '  ' + codeArea.value.substring(end);
           codeArea.selectionStart = codeArea.selectionEnd = start + 2;
+          updateLineNumbers();
         }
         // Ctrl/Cmd + Enter to run
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -2106,44 +2333,36 @@
         codeArea.value = '';
         stdinArea.value = '';
         outputPanel.classList.remove('visible');
+        autofixBar.classList.remove('visible');
+        aiPanel.classList.remove('visible');
+        lastRunResult = null;
+        lastRunCode = '';
+        updateLineNumbers();
         codeArea.focus();
       });
 
-      // Boilerplate templates per language
-      const templates = {
-        'python': 'print("Hello, World!")',
-        'javascript': 'console.log("Hello, World!");',
-        'typescript': 'console.log("Hello, World!");',
-        'java': 'public class Main {\n  public static void main(String[] args) {\n    System.out.println("Hello, World!");\n  }\n}',
-        'c': '#include <stdio.h>\nint main() {\n  printf("Hello, World!\\n");\n  return 0;\n}',
-        'c++': '#include <iostream>\nusing namespace std;\nint main() {\n  cout << "Hello, World!" << endl;\n  return 0;\n}',
-        'csharp.net': 'using System;\nclass Program {\n  static void Main() {\n    Console.WriteLine("Hello, World!");\n  }\n}',
-        'go': 'package main\nimport "fmt"\nfunc main() {\n  fmt.Println("Hello, World!")\n}',
-        'rust': 'fn main() {\n  println!("Hello, World!");\n}',
-        'ruby': 'puts "Hello, World!"',
-        'php': '<?php\necho "Hello, World!\\n";',
-        'swift': 'print("Hello, World!")',
-        'kotlin': 'fun main() {\n  println("Hello, World!")\n}',
-        'bash': 'echo "Hello, World!"',
-        'lua': 'print("Hello, World!")',
-        'haskell': 'main = putStrLn "Hello, World!"',
-        'scala': 'object Main extends App {\n  println("Hello, World!")\n}',
-        'dart': 'void main() {\n  print(\'Hello, World!\');\n}',
-        'perl': 'print "Hello, World!\\n";',
-        'elixir': 'IO.puts "Hello, World!"',
-        'nim': 'echo "Hello, World!"',
-        'zig': 'const std = @import("std");\npub fn main() !void {\n  const stdout = std.io.getStdOut().writer();\n  try stdout.print("Hello, World!\\n", .{});\n}',
-      };
-
-      // Auto-fill template when language changes (if code is empty or is a template)
+      // Language change
       langSelect.addEventListener('change', () => {
         const lang = langSelect.value;
         const currentCode = codeArea.value.trim();
-        const isTemplate = Object.values(templates).some(t => t.trim() === currentCode);
-        if (!currentCode || isTemplate) {
-          codeArea.value = templates[lang] || '';
+        // Check if current code is a template
+        let isTemplate = false;
+        for (const langTemplates of Object.values(defaultTemplates)) {
+          if (Object.values(langTemplates).some(t => t.trim() === currentCode)) {
+            isTemplate = true;
+            break;
+          }
         }
+        if (!currentCode || isTemplate) {
+          const templates = defaultTemplates[lang];
+          codeArea.value = templates ? templates.hello || Object.values(templates)[0] : '';
+          updateLineNumbers();
+        }
+        updateTemplateChips();
       });
+
+      // Initialize
+      updateTemplateChips();
 
       async function runCode() {
         if (isRunning) return;
@@ -2161,6 +2380,7 @@
         runBtn.classList.add('loading');
         runBtn.disabled = true;
         outputPanel.classList.add('visible');
+        autofixBar.classList.remove('visible');
         statusEl.className = 'compiler-output-status';
         statusEl.textContent = '\u23f3 Running...';
         metaEl.textContent = '';
@@ -2178,11 +2398,19 @@
           const result = await res.json();
           const elapsed = Date.now() - startTime;
 
+          // Show auto-fix notice
+          if (result.autoFixes && result.autoFixes.length > 0) {
+            autofixText.textContent = 'Auto-fixed: ' + result.autoFixes.join(', ');
+            autofixBar.classList.add('visible');
+          }
+
           if (!result.success) {
             statusEl.className = 'compiler-output-status error';
             statusEl.innerHTML = '\u274c Error';
             outputContent.textContent = result.error || 'Execution failed';
             metaEl.textContent = `${elapsed}ms`;
+            lastRunResult = result;
+            lastRunCode = code;
           } else {
             const isError = result.exitCode !== 0 || result.compileError;
             statusEl.className = `compiler-output-status ${isError ? 'error' : 'success'}`;
@@ -2199,6 +2427,25 @@
             }
             if (!outputText) outputText = '(no output)';
             outputContent.textContent = outputText;
+
+            // Try syntax highlighting on the output
+            try {
+              const pLang = prismLangMap[language] || language;
+              if (result.output && Prism.languages[pLang]) {
+                const highlighted = Prism.highlight(result.output, Prism.languages[pLang], pLang);
+                // Only use highlighted version for code output, not for errors
+                if (!isError && !result.stderr) {
+                  outputContent.innerHTML = `<pre class="language-${pLang}"><code>${highlighted}</code></pre>`;
+                }
+              }
+            } catch(e) { /* ignore highlighting errors */ }
+
+            lastRunResult = result;
+            lastRunCode = code;
+
+            // Show AI helper panel after run
+            aiPanel.classList.add('visible');
+            aiContent.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">Click a button above to analyze your code with AI</div>';
 
             // Add to history
             compilerHistory.push({
@@ -2219,6 +2466,57 @@
           runBtn.disabled = false;
         }
       }
+
+      // AI Code Helper
+      document.querySelectorAll('.ai-action-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!lastRunCode) {
+            showToast('Run some code first!');
+            return;
+          }
+          const action = btn.dataset.action;
+          
+          // Disable all buttons
+          document.querySelectorAll('.ai-action-btn').forEach(b => { b.disabled = true; b.classList.remove('active'); });
+          btn.classList.add('active');
+          
+          aiContent.innerHTML = '<div class="compiler-ai-loading"><div class="spinner"></div> AI is analyzing your code...</div>';
+          
+          try {
+            const res = await fetch(`${API_BASE}/api/code-help`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action,
+                language: langSelect.value,
+                code: lastRunCode,
+                output: lastRunResult?.output || '',
+                stderr: lastRunResult?.stderr || '',
+                exitCode: lastRunResult?.exitCode
+              })
+            });
+            
+            const data = await res.json();
+            if (data.error) {
+              aiContent.innerHTML = `<div style="color:var(--red);">❌ ${data.error}</div>`;
+            } else {
+              // Render markdown response
+              const html = typeof marked !== 'undefined' && marked.parse
+                ? marked.parse(data.response || '')
+                : (data.response || '').replace(/\n/g, '<br>');
+              aiContent.innerHTML = html;
+              // Apply Prism highlighting to code blocks
+              aiContent.querySelectorAll('pre code').forEach(block => {
+                try { Prism.highlightElement(block); } catch(e) {}
+              });
+            }
+          } catch (err) {
+            aiContent.innerHTML = `<div style="color:var(--red);">❌ Failed to connect: ${err.message}</div>`;
+          } finally {
+            document.querySelectorAll('.ai-action-btn').forEach(b => { b.disabled = false; });
+          }
+        });
+      });
 
       function updateHistory() {
         if (compilerHistory.length === 0) {
