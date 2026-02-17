@@ -16189,7 +16189,7 @@ bot.command("run", async (ctx) => {
   // No args — show help with session info
   if (!text) {
     const session = codeSessions.get(userId);
-    let helpText = '💻 <b>Code Compiler</b> — 80+ Languages\n\n' +
+    let helpText = '💻 <b>Code Compiler</b> — 33 Languages\n\n' +
       '<b>Usage:</b>\n' +
       '<code>/run language\nyour code here</code>\n\n' +
       '<b>Examples:</b>\n' +
@@ -16202,8 +16202,9 @@ bot.command("run", async (ctx) => {
       '• <code>/run lang\ncode</code> — switch language\n\n' +
       '<b>Stdin:</b> Use <code>---stdin---</code> separator:\n' +
       '<code>/run python\nname = input()\nprint(f"Hi {name}")\n---stdin---\nWorld</code>\n\n' +
-      '<b>Popular:</b> python, js, ts, java, c, cpp, go, rust, ruby, php, c#, kotlin, swift, bash, sql, r, scala, haskell, lua, perl, dart, zig\n\n' +
-      '<i>80+ languages supported via Piston API</i>';
+      '<b>Languages:</b> python, javascript, c, c++, go, rust, java, kotlin, swift, csharp, typescript, haskell, ruby, perl, scala, dart, nim, zig, crystal, ocaml, pascal, fortran, lua, php, bash, sql, erlang, elixir, groovy, julia, r, d\n\n' +
+      '<b>Aliases:</b> py, js, ts, cpp, cs, rb, rs, sh, kt, hs, jl, ml\n\n' +
+      '<i>Powered by Godbolt + Wandbox</i>';
     
     if (session) {
       helpText += `\n\n📂 <b>Active session:</b> ${escapeHTML(session.language)} (${session.history.length} run${session.history.length !== 1 ? 's' : ''})`;
