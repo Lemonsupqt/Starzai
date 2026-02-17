@@ -16145,6 +16145,42 @@ setInterval(() => {
   }
 }, 1000 * 60 * 5);
 
+// Strip ANSI escape codes from compiler output
+function stripAnsi(text) {
+  if (!text) return text;
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\[\d+;?\d*m/g, '').replace(/\[K/g, '').replace(/\[m/g, '');
+}
+
+// Detect if code needs stdin input
+function codeNeedsInput(language, code) {
+  const lang = language?.toLowerCase() || '';
+  if (['c', 'c++', 'cpp'].includes(lang)) {
+    return /\b(scanf|gets|fgets|getchar|getline|cin\s*>>)\b/.test(code);
+  }
+  if (['python', 'py'].includes(lang)) {
+    return /\binput\s*\(/.test(code);
+  }
+  if (['javascript', 'js', 'node'].includes(lang)) {
+    return /\b(readline|prompt)\s*\(/.test(code);
+  }
+  if (['java'].includes(lang)) {
+    return /\b(Scanner|BufferedReader|readLine)\b/.test(code);
+  }
+  if (['go', 'golang'].includes(lang)) {
+    return /\b(fmt\.Scan|bufio\.NewReader|os\.Stdin)\b/.test(code);
+  }
+  if (['rust', 'rs'].includes(lang)) {
+    return /\b(stdin|read_line)\b/.test(code);
+  }
+  if (['ruby', 'rb'].includes(lang)) {
+    return /\b(gets|readline|STDIN)\b/.test(code);
+  }
+  if (['php'].includes(lang)) {
+    return /\b(fgets|readline|STDIN)\b/.test(code);
+  }
+  return false;
+}
+
 function formatCodeOutput(result, code, showCode = true) {
   let response = '';
   
@@ -16169,9 +16205,10 @@ function formatCodeOutput(result, code, showCode = true) {
     response += `📤 <b>Output:</b> <i>(no output)</i>\n\n`;
   }
   
-  // Errors
+  // Errors — strip ANSI escape codes
   if (result.stderr) {
-    const err = result.stderr.length > 1500 ? result.stderr.slice(0, 1500) + '\n... (truncated)' : result.stderr;
+    const cleanErr = stripAnsi(result.stderr);
+    const err = cleanErr.length > 1500 ? cleanErr.slice(0, 1500) + '\n... (truncated)' : cleanErr;
     response += `⚠️ <b>${result.compileError ? 'Compile Errors' : 'Stderr'}:</b>\n<pre>${escapeHTML(err)}</pre>\n\n`;
   }
   
@@ -16335,16 +16372,28 @@ async function executeAndReply(ctx, language, code, userId) {
   session.updatedAt = Date.now();
   session.history.push({ code, output: result.output, stderr: result.stderr, exitCode: result.exitCode });
   if (session.history.length > 20) session.history.shift(); // Keep last 20
+  
+  // Detect if code needs stdin input
+  const needsInput = codeNeedsInput(session.language, code);
+  session.needsInput = needsInput;
   codeSessions.set(userId, session);
   
-  const response = formatCodeOutput(result, code) + fixNotice;
+  let inputNotice = '';
+  if (needsInput && !stdin) {
+    inputNotice = '\n\n📥 <b>This code needs input!</b> Reply with your input data, or use <code>---stdin---</code>';
+  }
   
-  // Build inline keyboard with AI helper buttons
+  const response = formatCodeOutput(result, code) + fixNotice + inputNotice;
+  
+  // Build inline keyboard with AI helper buttons + input button
   const aiKeyboard = new InlineKeyboard()
     .text('📖 Explain', `code_explain:${userId}`)
     .text('🔧 Fix', `code_fix:${userId}`)
     .text('⚡ Optimize', `code_optimize:${userId}`)
     .text('🔍 Debug', `code_debug:${userId}`);
+  if (needsInput && !stdin) {
+    aiKeyboard.row().text('📥 Provide Input', `code_input:${userId}`);
+  }
   
   try {
     await ctx.api.editMessageText(
@@ -16382,9 +16431,9 @@ bot.on('message:text', async (ctx, next) => {
   const session = codeSessions.get(userId);
   if (!session) return next();
   
-  // Check if the replied message is a code output (contains our markers)
+  // Check if the replied message is a code output or input prompt (contains our markers)
   const replyText = reply.text || reply.caption || '';
-  if (!replyText.includes('Reply to continue') && !replyText.includes('Exit:') && !replyText.includes('Code Compiler')) return next();
+  if (!replyText.includes('Reply to continue') && !replyText.includes('Exit:') && !replyText.includes('Code Compiler') && !replyText.includes('Provide Input')) return next();
   
   if (!(await enforceRateLimit(ctx))) return;
   
@@ -16394,6 +16443,57 @@ bot.on('message:text', async (ctx, next) => {
   // AI Code Helper commands
   const aiCommands = ['explain', 'fix', 'optimize', 'debug'];
   const lowerText = text.toLowerCase();
+  
+  // Smart stdin detection: if session needs input and the reply looks like data (not code),
+  // re-run the code with the reply as stdin
+  if (session.needsInput && !text.startsWith('+') && !text.startsWith('!') && !text.startsWith('/run')) {
+    // Check if the reply looks like input data rather than code
+    // Input data: numbers, short text, comma/space separated values
+    // Code: has keywords, braces, semicolons, function calls, etc.
+    const looksLikeCode = /[{};]/.test(text) || /\b(def |function |class |import |#include|int |void |return |for |while |if )/.test(text);
+    const looksLikeInput = /^[\d\s.,\-+eE\n]+$/.test(text.trim()) || // numbers/spaces
+      (text.split('\n').length <= 5 && text.length < 200 && !looksLikeCode); // short non-code text
+    
+    if (looksLikeInput && !looksLikeCode) {
+      // Re-run the same code with this as stdin
+      const statusMsg = await ctx.reply(`📥 Running with input: <code>${escapeHTML(text.slice(0, 100))}</code>...`, {
+        parse_mode: 'HTML',
+        reply_to_message_id: ctx.message?.message_id
+      });
+      
+      const result = await runCode(session.language, session.code, { stdin: text });
+      
+      if (!result.success) {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ ${escapeHTML(result.error)}`, { parse_mode: 'HTML' });
+        return;
+      }
+      
+      // Update session
+      session.lastMessageId = statusMsg.message_id;
+      session.updatedAt = Date.now();
+      session.needsInput = false; // Input was provided
+      session.history.push({ code: session.code, output: result.output, stderr: result.stderr, exitCode: result.exitCode, stdin: text });
+      if (session.history.length > 20) session.history.shift();
+      codeSessions.set(userId, session);
+      
+      const response = formatCodeOutput(result, session.code, false) + `\n📥 <b>Input:</b> <code>${escapeHTML(text.slice(0, 200))}</code>`;
+      
+      const aiKeyboard = new InlineKeyboard()
+        .text('📖 Explain', `code_explain:${userId}`)
+        .text('🔧 Fix', `code_fix:${userId}`)
+        .text('⚡ Optimize', `code_optimize:${userId}`)
+        .text('🔍 Debug', `code_debug:${userId}`)
+        .row().text('📥 New Input', `code_input:${userId}`);
+      
+      try {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response, { parse_mode: 'HTML', reply_markup: aiKeyboard });
+      } catch (e) {
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response.replace(/<[^>]+>/g, ''));
+      }
+      return;
+    }
+  }
+  
   if (aiCommands.includes(lowerText)) {
     const lastRun = session.history[session.history.length - 1];
     if (!lastRun) return ctx.reply('No code in session to analyze.', { reply_to_message_id: ctx.message?.message_id });
@@ -16541,6 +16641,39 @@ bot.callbackQuery(/^code_(explain|fix|optimize|debug):(\d+)$/, async (ctx) => {
     console.error('[AI Code Helper Button]', e.message);
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, `❌ AI analysis failed: ${escapeHTML(e.message)}`, { parse_mode: 'HTML' });
   }
+});
+
+// Callback handler for "Provide Input" button
+bot.callbackQuery(/^code_input:(\d+)$/, async (ctx) => {
+  const match = ctx.callbackQuery.data.match(/^code_input:(\d+)$/);
+  if (!match) return ctx.answerCallbackQuery({ text: 'Invalid action' });
+  
+  const targetUserId = parseInt(match[1]);
+  const userId = ctx.from.id;
+  
+  if (userId !== targetUserId) {
+    return ctx.answerCallbackQuery({ text: '❌ Only the code author can use this', show_alert: true });
+  }
+  
+  const session = codeSessions.get(userId);
+  if (!session) {
+    return ctx.answerCallbackQuery({ text: '❌ No code session found', show_alert: true });
+  }
+  
+  // Mark session as awaiting input
+  session.needsInput = true;
+  codeSessions.set(userId, session);
+  
+  await ctx.answerCallbackQuery({ text: '📥 Reply to this message with your input data!' });
+  await ctx.reply(
+    `📥 <b>Provide Input for ${escapeHTML(session.language)} code</b>\n\n` +
+    `Reply to this message with the input your program expects.\n\n` +
+    `<b>Examples:</b>\n` +
+    `• Single number: <code>42</code>\n` +
+    `• Multiple values: <code>5 10</code>\n` +
+    `• Multiple lines:\n<code>hello\nworld</code>`,
+    { parse_mode: 'HTML', reply_to_message_id: ctx.callbackQuery.message?.message_id }
+  );
 });
 
 // /wallpaper - Search wallpapers
