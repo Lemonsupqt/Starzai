@@ -16203,8 +16203,7 @@ bot.command("run", async (ctx) => {
       '<b>Stdin:</b> Use <code>---stdin---</code> separator:\n' +
       '<code>/run python\nname = input()\nprint(f"Hi {name}")\n---stdin---\nWorld</code>\n\n' +
       '<b>Languages:</b> python, javascript, c, c++, go, rust, java, kotlin, swift, csharp, typescript, haskell, ruby, perl, scala, dart, nim, zig, crystal, ocaml, pascal, fortran, lua, php, bash, sql, erlang, elixir, groovy, julia, r, d\n\n' +
-      '<b>Aliases:</b> py, js, ts, cpp, cs, rb, rs, sh, kt, hs, jl, ml\n\n' +
-      '<i>Powered by Godbolt + Wandbox</i>';
+      '<b>Aliases:</b> py, js, ts, cpp, cs, rb, rs, sh, kt, hs, jl, ml';
     
     if (session) {
       helpText += `\n\n📂 <b>Active session:</b> ${escapeHTML(session.language)} (${session.history.length} run${session.history.length !== 1 ? 's' : ''})`;
