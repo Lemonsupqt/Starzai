@@ -752,17 +752,33 @@
     });
 
     // =====================
-    // NEVERMORE LAUNCH
+    // NEVERMORE LAUNCH (with Telegram auto-login)
     // =====================
-    const NEVERMORE_URL = 'https://wednesday-addams-production.up.railway.app/';
+    const NEVERMORE_BASE = 'https://wednesday-addams-production.up.railway.app/';
+
+    function buildNevermoreURL() {
+      // Get Telegram user data for auto-login
+      const tgUser = tg.initDataUnsafe?.user;
+      if (tgUser && tgUser.id) {
+        const params = new URLSearchParams();
+        params.set('tg_id', String(tgUser.id));
+        const displayName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ') 
+          || tgUser.username 
+          || 'Telegram User';
+        params.set('tg_name', displayName);
+        return NEVERMORE_BASE + '?' + params.toString();
+      }
+      return NEVERMORE_BASE;
+    }
 
     function openNevermore() {
+      const url = buildNevermoreURL();
       // Method 1: Try Telegram's openLink (opens in-app browser)
       if (tg.openLink) {
-        tg.openLink(NEVERMORE_URL);
+        tg.openLink(url);
       } else {
         // Fallback: regular open
-        window.open(NEVERMORE_URL, '_blank');
+        window.open(url, '_blank');
       }
     }
 

@@ -4,6 +4,9 @@
  * Separate module for the Wednesday Addams / Nevermore Games webapp integration.
  * Adds /wednesday command + callback buttons + inline keyboard with webapp link.
  * 
+ * AUTO-LOGIN: Appends ?tg_id=<userId>&tg_name=<firstName> to the Nevermore URL
+ * so the Wednesday Addams webapp can auto-login/register users from Telegram.
+ * 
  * This module is FULLY SELF-CONTAINED — it does NOT modify any existing handlers.
  * Just import registerWednesdayWebapp(bot) in index.js and call it once.
  * 
@@ -16,13 +19,33 @@ import { InlineKeyboard } from "grammy";
 // CONSTANTS
 // =====================
 
-const NEVERMORE_URL = "https://wednesday-addams-production.up.railway.app/";
+const NEVERMORE_BASE_URL = "https://wednesday-addams-production.up.railway.app/";
 
 const FEATURE_NAME = "WednesdayWebapp";
 
 // =====================
 // HELPERS
 // =====================
+
+/**
+ * Build a Nevermore URL with Telegram auto-login params
+ * @param {object} user - Telegram user object (ctx.from)
+ * @returns {string} URL with tg_id and tg_name query params
+ */
+function buildNevermoreURL(user) {
+  if (!user || !user.id) return NEVERMORE_BASE_URL;
+
+  const params = new URLSearchParams();
+  params.set("tg_id", String(user.id));
+
+  // Build display name: first_name + last_name, or username, or fallback
+  const displayName = [user.first_name, user.last_name].filter(Boolean).join(" ") 
+    || user.username 
+    || "Telegram User";
+  params.set("tg_name", displayName);
+
+  return `${NEVERMORE_BASE_URL}?${params.toString()}`;
+}
 
 /**
  * Build the Nevermore welcome message (HTML formatted)
@@ -40,26 +63,32 @@ function buildNevermoreMessage() {
     "• 🏆 Global Leaderboard & Achievements",
     "• 👥 Multiplayer rooms with friends",
     "",
+    "🔐 <b>Auto-login:</b> Your Telegram account is linked automatically!",
+    "",
     "Tap the button below to enter the Nevermore Academy!",
   ].join("\n");
 }
 
 /**
- * Build the Nevermore inline keyboard
+ * Build the Nevermore inline keyboard with auto-login URL
+ * @param {object} user - Telegram user object (ctx.from)
  */
-function buildNevermoreKeyboard() {
+function buildNevermoreKeyboard(user) {
+  const url = buildNevermoreURL(user);
   return new InlineKeyboard()
-    .webApp("🏰 Enter Nevermore", NEVERMORE_URL)
+    .webApp("🏰 Enter Nevermore", url)
     .row()
     .text("« Back to Menu", "menu_back");
 }
 
 /**
  * Build a compact Nevermore button for embedding in other menus
+ * @param {object} user - Telegram user object (ctx.from)
  */
-function buildNevermoreCompactKeyboard() {
+function buildNevermoreCompactKeyboard(user) {
+  const url = buildNevermoreURL(user);
   return new InlineKeyboard()
-    .webApp("🏰 Nevermore Games", NEVERMORE_URL);
+    .webApp("🏰 Nevermore Games", url);
 }
 
 // =====================
@@ -85,7 +114,7 @@ export function registerWednesdayWebapp(bot, options = {}) {
 
     await ctx.reply(buildNevermoreMessage(), {
       parse_mode: "HTML",
-      reply_markup: buildNevermoreKeyboard(),
+      reply_markup: buildNevermoreKeyboard(ctx.from),
     });
   });
 
@@ -95,7 +124,7 @@ export function registerWednesdayWebapp(bot, options = {}) {
 
     await ctx.reply(buildNevermoreMessage(), {
       parse_mode: "HTML",
-      reply_markup: buildNevermoreKeyboard(),
+      reply_markup: buildNevermoreKeyboard(ctx.from),
     });
   });
 
@@ -105,7 +134,7 @@ export function registerWednesdayWebapp(bot, options = {}) {
 
     await ctx.reply(buildNevermoreMessage(), {
       parse_mode: "HTML",
-      reply_markup: buildNevermoreKeyboard(),
+      reply_markup: buildNevermoreKeyboard(ctx.from),
     });
   });
 
@@ -117,18 +146,18 @@ export function registerWednesdayWebapp(bot, options = {}) {
     try {
       await ctx.editMessageText(buildNevermoreMessage(), {
         parse_mode: "HTML",
-        reply_markup: buildNevermoreKeyboard(),
+        reply_markup: buildNevermoreKeyboard(ctx.from),
       });
     } catch (e) {
       // If edit fails (e.g. message unchanged), send new message
       await ctx.reply(buildNevermoreMessage(), {
         parse_mode: "HTML",
-        reply_markup: buildNevermoreKeyboard(),
+        reply_markup: buildNevermoreKeyboard(ctx.from),
       });
     }
   });
 
-  console.log(`[${FEATURE_NAME}] ✅ Registered: /wednesday, /nevermore, /games + callback`);
+  console.log(`[${FEATURE_NAME}] ✅ Registered: /wednesday, /nevermore, /games + callback (with auto-login)`);
 }
 
 // =====================
@@ -136,7 +165,8 @@ export function registerWednesdayWebapp(bot, options = {}) {
 // =====================
 
 export {
-  NEVERMORE_URL,
+  NEVERMORE_BASE_URL,
+  buildNevermoreURL,
   buildNevermoreMessage,
   buildNevermoreKeyboard,
   buildNevermoreCompactKeyboard,
