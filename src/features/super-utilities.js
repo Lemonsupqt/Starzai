@@ -117,9 +117,7 @@ const CONFIG = {
   wikipedia: {
     api: 'https://en.wikipedia.org/api/rest_v1/page/summary'
   },
-  piston: {
-    api: 'https://emkc.org/api/v2/piston'
-  },
+  // piston API is dead (whitelist-only since Feb 2026) — now using Godbolt + Wandbox
   lyrics: {
     api: 'https://api.lyrics.ovh/v1',
     lrclib: 'https://lrclib.net/api'
@@ -1563,122 +1561,257 @@ async function getWouldYouRather() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DEV TOOLS
+// DEV TOOLS — Dual Provider: Godbolt (primary) + Wandbox (fallback)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Run code using Piston API
- */
-// Cache runtimes so we don't fetch every call
-let _runtimesCache = null;
-let _runtimesCacheTime = 0;
-const RUNTIMES_CACHE_TTL = 1000 * 60 * 30; // 30 min
+// Godbolt compiler IDs for each language
+const GODBOLT_COMPILERS = {
+  'python': { id: 'python312', lang: 'python', name: 'Python 3.12' },
+  'javascript': { id: 'v8trunk', lang: 'javascript', name: 'V8 (trunk)' },
+  'c': { id: 'cg141', lang: 'c', name: 'GCC 14.1' },
+  'c++': { id: 'g141', lang: 'c++', name: 'G++ 14.1' },
+  'go': { id: 'gltip', lang: 'go', name: 'Go (tip)' },
+  'rust': { id: 'r1820', lang: 'rust', name: 'Rust 1.82.0' },
+  'java': { id: 'java2400', lang: 'java', name: 'JDK 24' },
+  'kotlin': { id: 'kotlinc2010', lang: 'kotlin', name: 'Kotlin 2.0.10' },
+  'swift': { id: 'swift60', lang: 'swift', name: 'Swift 6.0' },
+  'csharp': { id: 'dotnet901csharp', lang: 'csharp', name: 'C# .NET 9' },
+  'typescript': { id: 'tsc_0_0_26_gc', lang: 'typescript', name: 'TS Native' },
+  'haskell': { id: 'ghc9101', lang: 'haskell', name: 'GHC 9.10.1' },
+  'ruby': { id: 'ruby341', lang: 'ruby', name: 'Ruby 3.4.1' },
+  'perl': { id: 'perl542', lang: 'perl', name: 'Perl 5.42' },
+  'scala': { id: 'scalac351', lang: 'scala', name: 'Scala 3.5.1' },
+  'dart': { id: 'dart340', lang: 'dart', name: 'Dart 3.4.0' },
+  'nim': { id: 'nim226', lang: 'nim', name: 'Nim 2.2.6' },
+  'zig': { id: 'zigtrunk', lang: 'zig', name: 'Zig (trunk)' },
+  'crystal': { id: 'crystal1133', lang: 'crystal', name: 'Crystal 1.13.3' },
+  'ocaml': { id: 'ocaml520', lang: 'ocaml', name: 'OCaml 5.2.0' },
+  'd': { id: 'dmd21091', lang: 'd', name: 'DMD 2.109.1' },
+  'pascal': { id: 'fpc322', lang: 'pascal', name: 'FPC 3.2.2' },
+  'fortran': { id: 'gfortran141', lang: 'fortran', name: 'GFortran 14.1' },
+};
 
-async function getRuntimes() {
-  if (_runtimesCache && Date.now() - _runtimesCacheTime < RUNTIMES_CACHE_TTL) return _runtimesCache;
-  const res = await fetch(`${CONFIG.piston.api}/runtimes`);
-  _runtimesCache = await res.json();
-  _runtimesCacheTime = Date.now();
-  return _runtimesCache;
-}
+// Wandbox compiler IDs (fallback)
+const WANDBOX_COMPILERS = {
+  'python': { compiler: 'cpython-3.12.7', name: 'CPython 3.12.7' },
+  'javascript': { compiler: 'nodejs-20.17.0', name: 'Node.js 20.17' },
+  'c': { compiler: 'gcc-head-c', name: 'GCC HEAD (C)' },
+  'c++': { compiler: 'gcc-head', name: 'GCC HEAD (C++)' },
+  'go': { compiler: 'go-1.23.2', name: 'Go 1.23.2' },
+  'rust': { compiler: 'rust-1.82.0', name: 'Rust 1.82.0' },
+  'java': { compiler: 'openjdk-jdk-22+36', name: 'OpenJDK 22' },
+  'csharp': { compiler: 'mono-6.12.0.199', name: 'Mono 6.12' },
+  'ruby': { compiler: 'ruby-3.4.1', name: 'Ruby 3.4.1' },
+  'perl': { compiler: 'perl-5.42.0', name: 'Perl 5.42' },
+  'swift': { compiler: 'swift-6.0.1', name: 'Swift 6.0.1' },
+  'haskell': { compiler: 'ghc-9.10.1', name: 'GHC 9.10.1' },
+  'scala': { compiler: 'scala-3.5.1', name: 'Scala 3.5.1' },
+  'lua': { compiler: 'lua-5.4.7', name: 'Lua 5.4.7' },
+  'php': { compiler: 'php-8.3.12', name: 'PHP 8.3' },
+  'nim': { compiler: 'nim-2.2.6', name: 'Nim 2.2.6' },
+  'crystal': { compiler: 'crystal-1.13.3', name: 'Crystal 1.13.3' },
+  'erlang': { compiler: 'erlang-27.1', name: 'Erlang 27.1' },
+  'elixir': { compiler: 'elixir-1.17.3', name: 'Elixir 1.17.3' },
+  'ocaml': { compiler: 'ocaml-5.2.0', name: 'OCaml 5.2.0' },
+  'd': { compiler: 'dmd-2.109.1', name: 'DMD 2.109.1' },
+  'pascal': { compiler: 'fpc-3.2.2', name: 'FPC 3.2.2' },
+  'bash': { compiler: 'bash', name: 'Bash' },
+  'sql': { compiler: 'sqlite-3.46.1', name: 'SQLite 3.46' },
+  'typescript': { compiler: 'typescript-5.6.2', name: 'TypeScript 5.6' },
+  'kotlin': { compiler: 'kotlinc-2.0.10', name: 'Kotlin 2.0.10' },
+  'groovy': { compiler: 'groovy-4.0.23', name: 'Groovy 4.0' },
+  'julia': { compiler: 'julia-1.10.5', name: 'Julia 1.10.5' },
+  'r': { compiler: 'r-4.4.1', name: 'R 4.4.1' },
+  'zig': { compiler: 'zig-head', name: 'Zig HEAD' },
+};
+
+// Language alias map
+const LANG_ALIASES = {
+  'py': 'python', 'py3': 'python', 'python3': 'python',
+  'js': 'javascript', 'node': 'javascript', 'nodejs': 'javascript',
+  'ts': 'typescript', 'deno': 'typescript',
+  'cpp': 'c++', 'cc': 'c++', 'cxx': 'c++',
+  'cs': 'csharp', 'c#': 'csharp',
+  'rb': 'ruby', 'rs': 'rust',
+  'sh': 'bash', 'shell': 'bash',
+  'pl': 'perl', 'kt': 'kotlin',
+  'hs': 'haskell', 'ex': 'elixir', 'exs': 'elixir',
+  'jl': 'julia', 'ml': 'ocaml',
+  'pas': 'pascal', 'f90': 'fortran', 'f95': 'fortran',
+  'sc': 'scala', 'groov': 'groovy',
+};
 
 /**
- * Resolve a language string to a Piston runtime.
- * Matches by language name, aliases, or common abbreviations.
+ * Resolve a language input to a canonical language name.
  */
-async function resolveRuntime(input) {
-  const runtimes = await getRuntimes();
+function resolveRuntime(input) {
   const q = input.toLowerCase().trim();
-  // Direct language match
-  let rt = runtimes.find(r => r.language === q);
-  if (rt) return rt;
+  // Direct match
+  if (GODBOLT_COMPILERS[q] || WANDBOX_COMPILERS[q]) return q;
   // Alias match
-  rt = runtimes.find(r => (r.aliases || []).includes(q));
-  if (rt) return rt;
-  // Extra shorthand map for common aliases not in Piston
-  const extra = {
-    'py': 'python', 'py3': 'python', 'python3': 'python',
-    'js': 'javascript', 'node': 'javascript',
-    'ts': 'typescript', 'deno': 'typescript',
-    'cpp': 'c++', 'c++': 'c++', 'cc': 'c++',
-    'cs': 'csharp.net', 'csharp': 'csharp.net', 'c#': 'csharp.net',
-    'rb': 'ruby', 'rs': 'rust',
-    'sh': 'bash', 'shell': 'bash',
-    'pl': 'perl', 'kt': 'kotlin',
-    'hs': 'haskell', 'ex': 'elixir', 'exs': 'elixir',
-    'r': 'rscript', 'sql': 'sqlite3',
-    'asm': 'nasm', 'vb': 'basic.net', 'ps': 'powershell',
-    'pwsh': 'powershell', 'ps1': 'powershell',
-    'f#': 'fsharp.net', 'fs': 'fsharp.net',
-    'sc': 'scala', 'ml': 'ocaml',
-    'pas': 'pascal', 'bf': 'brainfuck'
-  };
-  if (extra[q]) {
-    rt = runtimes.find(r => r.language === extra[q]);
-    if (rt) return rt;
-  }
+  if (LANG_ALIASES[q]) return LANG_ALIASES[q];
   // Partial match
-  rt = runtimes.find(r => r.language.startsWith(q));
-  return rt || null;
+  const all = new Set([...Object.keys(GODBOLT_COMPILERS), ...Object.keys(WANDBOX_COMPILERS)]);
+  for (const lang of all) {
+    if (lang.startsWith(q)) return lang;
+  }
+  return null;
 }
 
+/**
+ * Execute code via Godbolt Compiler Explorer API
+ */
+async function runViaGodbolt(language, code, stdin = '') {
+  const compiler = GODBOLT_COMPILERS[language];
+  if (!compiler) return null;
+
+  const payload = {
+    source: code,
+    options: {
+      userArguments: '',
+      executeParameters: { args: '', stdin: stdin || '' },
+      compilerOptions: { executorRequest: true },
+      filters: { execute: true }
+    }
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const res = await fetch(`https://godbolt.org/api/compiler/${compiler.id}/compile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    // Check for build errors
+    if (data.buildResult && data.buildResult.code !== 0) {
+      const errLines = (data.buildResult.stderr || []).map(l => l.text).join('\n');
+      return {
+        success: true,
+        language: language,
+        version: compiler.name,
+        output: '',
+        stderr: errLines || 'Compilation failed',
+        exitCode: data.buildResult.code,
+        compileError: true,
+        provider: 'Godbolt'
+      };
+    }
+
+    if (data.didExecute) {
+      const stdout = (data.stdout || []).map(l => l.text).join('\n');
+      const stderr = (data.stderr || []).map(l => l.text).join('\n');
+      return {
+        success: true,
+        language: language,
+        version: compiler.name,
+        output: stdout,
+        stderr: stderr,
+        exitCode: data.code || 0,
+        execTime: data.execTime,
+        provider: 'Godbolt'
+      };
+    }
+
+    // Didn't execute — might be a compile-only language on Godbolt
+    return null;
+  } catch (e) {
+    clearTimeout(timeout);
+    return null; // fallback to Wandbox
+  }
+}
+
+/**
+ * Execute code via Wandbox API (fallback)
+ */
+async function runViaWandbox(language, code, stdin = '') {
+  const compiler = WANDBOX_COMPILERS[language];
+  if (!compiler) return null;
+
+  const payload = {
+    code: code,
+    compiler: compiler.compiler,
+    save: false
+  };
+  if (stdin) payload.stdin = stdin;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const res = await fetch('https://wandbox.org/api/compile.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    // Check for compiler errors
+    if (data.compiler_error && data.compiler_error.trim()) {
+      return {
+        success: true,
+        language: language,
+        version: compiler.name,
+        output: '',
+        stderr: data.compiler_error,
+        exitCode: parseInt(data.status) || 1,
+        compileError: true,
+        provider: 'Wandbox'
+      };
+    }
+
+    return {
+      success: true,
+      language: language,
+      version: compiler.name,
+      output: data.program_output || '',
+      stderr: data.program_error || '',
+      exitCode: parseInt(data.status) || 0,
+      provider: 'Wandbox'
+    };
+  } catch (e) {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+/**
+ * Run code with automatic provider fallback: Godbolt → Wandbox
+ */
 async function runCode(language, code, options = {}) {
   try {
-    const runtime = await resolveRuntime(language);
-    if (!runtime) {
-      // Build suggestion list
-      const runtimes = await getRuntimes();
-      const langs = [...new Set(runtimes.map(r => r.language))].sort();
+    const resolved = resolveRuntime(language);
+    if (!resolved) {
+      const all = new Set([...Object.keys(GODBOLT_COMPILERS), ...Object.keys(WANDBOX_COMPILERS)]);
+      const langs = [...all].sort();
       return {
         success: false,
         error: `Language "${language}" not found.\n\nSupported (${langs.length}): ${langs.join(', ')}`
       };
     }
 
-    const payload = {
-      language: runtime.language,
-      version: runtime.version,
-      files: [{ name: options.filename || 'main', content: code }]
-    };
-    if (options.stdin) payload.stdin = options.stdin;
-    if (options.args) payload.args = options.args;
-    payload.compile_timeout = 15000;
-    payload.run_timeout = 10000;
-    payload.compile_memory_limit = -1;
-    payload.run_memory_limit = -1;
+    const stdin = options.stdin || '';
 
-    const response = await fetch(`${CONFIG.piston.api}/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    // Try Godbolt first
+    let result = await runViaGodbolt(resolved, code, stdin);
+    if (result) return result;
 
-    const result = await response.json();
+    // Fallback to Wandbox
+    result = await runViaWandbox(resolved, code, stdin);
+    if (result) return result;
 
-    if (result.compile && result.compile.code !== 0) {
-      return {
-        success: true,
-        language: runtime.language,
-        version: runtime.version,
-        output: '',
-        stderr: result.compile.stderr || result.compile.output || 'Compilation failed',
-        exitCode: result.compile.code,
-        compileError: true
-      };
-    }
-
-    if (result.run) {
-      return {
-        success: true,
-        language: runtime.language,
-        version: runtime.version,
-        output: result.run.stdout || result.run.output || '',
-        stderr: result.run.stderr || '',
-        exitCode: result.run.code
-      };
-    }
-
-    return { success: false, error: result.message || 'Execution failed' };
+    return { success: false, error: `Both execution providers failed for ${resolved}. Please try again later.` };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1687,22 +1820,18 @@ async function runCode(language, code, options = {}) {
 /**
  * Get supported programming languages
  */
-async function getSupportedLanguages() {
-  try {
-    const response = await fetch(`${CONFIG.piston.api}/runtimes`);
-    const runtimes = await response.json();
-    
+function getSupportedLanguages() {
+  const all = new Set([...Object.keys(GODBOLT_COMPILERS), ...Object.keys(WANDBOX_COMPILERS)]);
+  const languages = [...all].sort().map(lang => {
+    const gb = GODBOLT_COMPILERS[lang];
+    const wb = WANDBOX_COMPILERS[lang];
     return {
-      success: true,
-      languages: runtimes.map(r => ({
-        language: r.language,
-        version: r.version,
-        aliases: r.aliases
-      }))
+      language: lang,
+      version: gb ? gb.name : wb ? wb.name : lang,
+      aliases: Object.entries(LANG_ALIASES).filter(([, v]) => v === lang).map(([k]) => k)
     };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
+  });
+  return { success: true, languages };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
