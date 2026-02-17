@@ -5081,7 +5081,9 @@ function mainMenuKeyboard(userId) {
 
   // Web App button (opens StarzAI homepage webapp)
   if (PUBLIC_URL) {
-    kb.row().webApp("🌐 Web App", `${PUBLIC_URL.replace(/\/$/, '')}/webapp`);
+    const baseUrl = PUBLIC_URL.replace(/\/$/, '');
+    const webappUrl = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
+    kb.row().webApp("🌐 Web App", `${webappUrl}/webapp`);
   }
 
   if (FEEDBACK_CHAT_ID) {
