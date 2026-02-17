@@ -758,25 +758,34 @@
     .compiler-code-wrap {
       display: flex; position: relative;
       background: #0d0d0f;
+      overflow: hidden;
+      border-radius: 8px 8px 0 0;
     }
     .compiler-line-numbers {
-      padding: 14px 0; padding-left: 12px; padding-right: 8px;
+      padding: 14px 8px 14px 12px;
       background: #0a0a0c;
       border-right: 1px solid rgba(255,255,255,0.06);
       font-family: 'JetBrains Mono', monospace;
-      font-size: 12px; line-height: 1.6;
+      font-size: 13px; line-height: 1.5;
       color: #4a4a5a; text-align: right;
-      user-select: none; min-width: 36px;
+      user-select: none; min-width: 40px;
       overflow: hidden;
+      white-space: pre;
+      flex-shrink: 0;
     }
     .compiler-textarea {
-      width: 100%; min-height: 180px; max-height: 400px;
+      flex: 1; min-height: 180px; max-height: 400px;
       background: #0d0d0f; color: #e2e8f0;
       border: none; padding: 14px 16px;
       font-family: 'JetBrains Mono', monospace;
-      font-size: 13px; line-height: 1.6;
+      font-size: 13px; line-height: 1.5;
       resize: vertical; outline: none;
       tab-size: 2;
+      white-space: pre;
+      overflow-x: auto;
+      overflow-y: auto;
+      word-wrap: normal;
+      overflow-wrap: normal;
     }
     .compiler-textarea::placeholder { color: #4a4a5a; }
     .compiler-stdin-toggle {
