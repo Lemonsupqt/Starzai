@@ -134,6 +134,7 @@ import {
   getTruthOrDare,
   getWouldYouRather,
   runCode,
+  resolveRuntime,
   getSupportedLanguages,
   searchWallpapers
 } from './src/features/super-utilities.js';
@@ -16125,47 +16126,131 @@ bot.command("wyr", async (ctx) => {
   );
 });
 
-// /run - Code runner
+// ═══════════════════════════════════════════════════════════════════════════════
+// /run - Dynamic Multi-Turn Code Compiler
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Code session storage: userId -> { language, code, history[], lastMessageId }
+const codeSessions = new Map();
+const CODE_SESSION_TTL = 1000 * 60 * 30; // 30 min
+
+// Cleanup stale sessions periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, session] of codeSessions) {
+    if (now - session.updatedAt > CODE_SESSION_TTL) codeSessions.delete(key);
+  }
+}, 1000 * 60 * 5);
+
+function formatCodeOutput(result, code, showCode = true) {
+  let response = '';
+  
+  // Header
+  response += `💻 <b>${escapeHTML(result.language)} v${escapeHTML(result.version)}</b>`;
+  if (result.compileError) response += ` — <b>Compile Error</b>`;
+  else if (result.exitCode !== 0) response += ` — <b>Runtime Error</b>`;
+  else response += ` — <b>Success</b> ✅`;
+  response += '\n\n';
+  
+  // Code (collapsed if long)
+  if (showCode) {
+    const codePreview = code.length > 500 ? code.slice(0, 500) + '\n... (truncated)' : code;
+    response += `📝 <b>Code:</b>\n<pre><code class="language-${escapeHTML(result.language)}">${escapeHTML(codePreview)}</code></pre>\n\n`;
+  }
+  
+  // Output
+  if (result.output) {
+    const out = result.output.length > 3000 ? result.output.slice(0, 3000) + '\n... (output truncated)' : result.output;
+    response += `📤 <b>Output:</b>\n<pre>${escapeHTML(out)}</pre>\n\n`;
+  } else if (!result.stderr && !result.compileError) {
+    response += `📤 <b>Output:</b> <i>(no output)</i>\n\n`;
+  }
+  
+  // Errors
+  if (result.stderr) {
+    const err = result.stderr.length > 1500 ? result.stderr.slice(0, 1500) + '\n... (truncated)' : result.stderr;
+    response += `⚠️ <b>${result.compileError ? 'Compile Errors' : 'Stderr'}:</b>\n<pre>${escapeHTML(err)}</pre>\n\n`;
+  }
+  
+  // Footer
+  response += `<i>Exit: ${result.exitCode} • Reply to continue coding</i>`;
+  
+  return response;
+}
+
 bot.command("run", async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
   ensureUser(ctx.from.id, ctx.from);
   
-  const text = ctx.message.text.replace(/^\/run\s*/i, '').trim();
+  const text = ctx.message.text.replace(/^\/run(@\w+)?\s*/i, '').trim();
+  const userId = ctx.from.id;
   
+  // No args — show help with session info
   if (!text) {
-    const popular = ['python', 'javascript', 'java', 'c', 'cpp', 'go', 'rust', 'ruby', 'php'];
-    
-    return ctx.reply(
-      '💻 <b>Code Runner</b>\n\n' +
+    const session = codeSessions.get(userId);
+    let helpText = '💻 <b>Code Compiler</b> — 80+ Languages\n\n' +
       '<b>Usage:</b>\n' +
       '<code>/run language\nyour code here</code>\n\n' +
-      '<b>Example:</b>\n' +
+      '<b>Examples:</b>\n' +
       '<code>/run python\nprint("Hello World!")</code>\n\n' +
-      `<b>Popular languages:</b> ${popular.join(', ')}\n\n` +
-      `<i>50+ languages supported!</i>`,
-      { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
-    );
+      '<code>/run js\nconsole.log([1,2,3].map(x => x*2))</code>\n\n' +
+      '<code>/run rust\nfn main() { println!("Hello!"); }</code>\n\n' +
+      '<b>Multi-turn:</b> Reply to any output to continue coding!\n' +
+      '• <code>+code</code> — append more code\n' +
+      '• <code>!code</code> — replace with new code (same lang)\n' +
+      '• <code>/run lang\ncode</code> — switch language\n\n' +
+      '<b>Stdin:</b> Use <code>---stdin---</code> separator:\n' +
+      '<code>/run python\nname = input()\nprint(f"Hi {name}")\n---stdin---\nWorld</code>\n\n' +
+      '<b>Popular:</b> python, js, ts, java, c, cpp, go, rust, ruby, php, c#, kotlin, swift, bash, sql, r, scala, haskell, lua, perl, dart, zig\n\n' +
+      '<i>80+ languages supported via Piston API</i>';
+    
+    if (session) {
+      helpText += `\n\n📂 <b>Active session:</b> ${escapeHTML(session.language)} (${session.history.length} run${session.history.length !== 1 ? 's' : ''})`;
+    }
+    
+    return ctx.reply(helpText, { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id });
   }
   
+  // Parse language and code
   const lines = text.split('\n');
   const language = lines[0].trim().toLowerCase();
-  const code = lines.slice(1).join('\n');
+  let code = lines.slice(1).join('\n');
   
   if (!code) {
+    // Maybe the whole text is code and they want to use their session language
+    const session = codeSessions.get(userId);
+    if (session) {
+      code = text;
+      return executeAndReply(ctx, session.language, code, userId);
+    }
     return ctx.reply(
       '❌ Please provide code to run.\n\n' +
       '<b>Format:</b>\n' +
-      '<code>/run language\nyour code here</code>',
+      '<code>/run language\nyour code here</code>\n\n' +
+      '<i>Tip: If you have an active session, just reply to the output!</i>',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
   
-  const statusMsg = await ctx.reply(`💻 Running ${language} code...`, {
+  await executeAndReply(ctx, language, code, userId);
+});
+
+async function executeAndReply(ctx, language, code, userId) {
+  // Parse stdin if present
+  let stdin = '';
+  const stdinSep = code.indexOf('---stdin---');
+  if (stdinSep !== -1) {
+    stdin = code.slice(stdinSep + 11).trim();
+    code = code.slice(0, stdinSep).trim();
+  }
+  
+  const statusMsg = await ctx.reply(`💻 Compiling <b>${escapeHTML(language)}</b>...`, {
+    parse_mode: 'HTML',
     reply_to_message_id: ctx.message?.message_id
   });
   
-  const result = await runCode(language, code);
+  const result = await runCode(language, code, { stdin });
   
   if (!result.success) {
     await ctx.api.editMessageText(
@@ -16176,23 +16261,97 @@ bot.command("run", async (ctx) => {
     return;
   }
   
-  let response = `💻 <b>${escapeHTML(result.language)} ${escapeHTML(result.version)}</b>\n\n`;
+  // Save session
+  const session = codeSessions.get(userId) || { language: result.language, code: '', history: [], updatedAt: Date.now() };
+  session.language = result.language;
+  session.code = code;
+  session.lastMessageId = statusMsg.message_id;
+  session.updatedAt = Date.now();
+  session.history.push({ code, output: result.output, stderr: result.stderr, exitCode: result.exitCode });
+  if (session.history.length > 20) session.history.shift(); // Keep last 20
+  codeSessions.set(userId, session);
   
-  if (result.output) {
-    response += `<b>Output:</b>\n<code>${escapeHTML(result.output.slice(0, 2000))}</code>\n`;
+  const response = formatCodeOutput(result, code);
+  
+  try {
+    await ctx.api.editMessageText(
+      ctx.chat.id, statusMsg.message_id,
+      response,
+      { parse_mode: 'HTML' }
+    );
+  } catch (e) {
+    // If message too long, send as file
+    if (e.message?.includes('too long') || response.length > 4000) {
+      const shortResponse = `💻 <b>${escapeHTML(result.language)} v${escapeHTML(result.version)}</b> — ${result.exitCode === 0 ? 'Success ✅' : 'Error ❌'}\n\n<i>Output too long — sent as file. Reply to continue coding.</i>`;
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, shortResponse, { parse_mode: 'HTML' });
+      
+      // Send output as text file
+      const fullOutput = `=== ${result.language} v${result.version} ===\nExit code: ${result.exitCode}\n\n=== CODE ===\n${code}\n\n=== OUTPUT ===\n${result.output || '(none)'}${result.stderr ? '\n\n=== STDERR ===\n' + result.stderr : ''}`;
+      const buf = Buffer.from(fullOutput, 'utf-8');
+      await ctx.replyWithDocument(
+        { source: buf, filename: `output_${result.language}.txt` },
+        { caption: `💻 ${result.language} output • Reply to continue`, reply_to_message_id: statusMsg.message_id }
+      );
+    } else {
+      // Fallback: send without HTML
+      await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, response.replace(/<[^>]+>/g, ''));
+    }
+  }
+}
+
+// Reply-to-continue: detect replies to code output messages
+bot.on('message:text', async (ctx, next) => {
+  // Only process if replying to a bot message
+  const reply = ctx.message?.reply_to_message;
+  if (!reply || !reply.from?.is_bot) return next();
+  
+  const userId = ctx.from.id;
+  const session = codeSessions.get(userId);
+  if (!session) return next();
+  
+  // Check if the replied message is a code output (contains our markers)
+  const replyText = reply.text || reply.caption || '';
+  if (!replyText.includes('Reply to continue') && !replyText.includes('Exit:') && !replyText.includes('Code Compiler')) return next();
+  
+  if (!(await enforceRateLimit(ctx))) return;
+  
+  const text = ctx.message.text.trim();
+  if (!text) return next();
+  
+  let newCode = '';
+  let language = session.language;
+  
+  // Check for special prefixes
+  if (text.startsWith('+')) {
+    // Append mode: add to existing code
+    newCode = session.code + '\n' + text.slice(1).trim();
+  } else if (text.startsWith('!')) {
+    // Replace mode: new code, same language
+    newCode = text.slice(1).trim();
+  } else if (text.startsWith('/run')) {
+    // Full /run command in reply — let the command handler take it
+    return next();
+  } else {
+    // Default: treat as new code in the same language
+    // Check if first line looks like a language
+    const firstLine = text.split('\n')[0].trim().toLowerCase();
+    const restLines = text.split('\n').slice(1).join('\n');
+    
+    // Try to resolve as language
+    const rt = await resolveRuntime(firstLine);
+    if (rt && restLines.trim()) {
+      // User specified a new language
+      language = firstLine;
+      newCode = restLines;
+    } else {
+      // Treat entire text as code continuation
+      newCode = session.code + '\n' + text;
+    }
   }
   
-  if (result.stderr) {
-    response += `\n<b>Errors:</b>\n<code>${escapeHTML(result.stderr.slice(0, 500))}</code>\n`;
-  }
+  if (!newCode.trim()) return next();
   
-  response += `\n<i>Exit code: ${result.exitCode}</i>`;
-  
-  await ctx.api.editMessageText(
-    ctx.chat.id, statusMsg.message_id,
-    response,
-    { parse_mode: 'HTML' }
-  );
+  await executeAndReply(ctx, language, newCode, userId);
 });
 
 // /wallpaper - Search wallpapers
@@ -27161,6 +27320,56 @@ http
         console.error('[WebApp Feature API] Error:', e.message);
         res.statusCode = 500;
         res.end(JSON.stringify({ error: e.message || 'Internal server error' }));
+      }
+      return;
+    }
+    
+    // /api/run - Code execution endpoint for webapp compiler
+    if (req.method === "POST" && req.url === "/api/run") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Type", "application/json");
+      try {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const data = JSON.parse(body);
+        const { language, code, stdin } = data;
+        
+        if (!language || !code) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Missing language or code' }));
+          return;
+        }
+        
+        // Resolve runtime to validate language
+        const runtime = await resolveRuntime(language);
+        if (!runtime) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: `Language "${language}" not found`, supported: true }));
+          return;
+        }
+        
+        const result = await runCode(language, code, { stdin: stdin || '' });
+        res.statusCode = 200;
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        console.error('[API/run] Error:', e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message || 'Internal server error' }));
+      }
+      return;
+    }
+    
+    // /api/runtimes - Get supported languages
+    if (req.method === "GET" && req.url === "/api/runtimes") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Content-Type", "application/json");
+      try {
+        const result = await getSupportedLanguages();
+        res.statusCode = 200;
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message }));
       }
       return;
     }

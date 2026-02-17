@@ -689,6 +689,157 @@
       font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
     }
 
+    /* ===== CODE COMPILER ===== */
+    .compiler-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+    .compiler-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(139, 92, 246, 0.05);
+    }
+    .compiler-header-left {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .compiler-header-icon {
+      width: 36px; height: 36px; border-radius: 10px;
+      background: rgba(139, 92, 246, 0.15);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .compiler-header-text h3 {
+      font-size: 15px; font-weight: 700; color: var(--text);
+    }
+    .compiler-header-text span {
+      font-size: 11px; color: var(--text-muted);
+    }
+    .compiler-lang-select {
+      background: var(--bg-surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius-xs);
+      padding: 6px 10px; font-size: 13px; font-family: 'Inter', sans-serif;
+      font-weight: 600; cursor: pointer; outline: none;
+      -webkit-appearance: none; appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 8px center;
+      padding-right: 28px;
+    }
+    .compiler-editor {
+      position: relative;
+    }
+    .compiler-textarea {
+      width: 100%; min-height: 180px; max-height: 400px;
+      background: #0d0d0f; color: #e2e8f0;
+      border: none; padding: 14px 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; line-height: 1.6;
+      resize: vertical; outline: none;
+      tab-size: 2;
+    }
+    .compiler-textarea::placeholder { color: #4a4a5a; }
+    .compiler-stdin-toggle {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px; border-top: 1px solid var(--border);
+      background: rgba(0,0,0,0.2); cursor: pointer;
+      font-size: 12px; color: var(--text-muted);
+    }
+    .compiler-stdin-toggle input[type=checkbox] {
+      accent-color: var(--accent);
+    }
+    .compiler-stdin {
+      width: 100%; min-height: 60px; max-height: 120px;
+      background: #0a0a0c; color: #e2e8f0;
+      border: none; border-top: 1px solid var(--border);
+      padding: 10px 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; line-height: 1.5;
+      resize: vertical; outline: none;
+      display: none;
+    }
+    .compiler-stdin.visible { display: block; }
+    .compiler-actions {
+      display: flex; gap: 8px; padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: rgba(0,0,0,0.15);
+    }
+    .compiler-run-btn {
+      flex: 1; padding: 10px 16px;
+      background: linear-gradient(135deg, var(--accent), var(--pink));
+      color: white; border: none; border-radius: var(--radius-xs);
+      font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .compiler-run-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--accent-glow); }
+    .compiler-run-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .compiler-run-btn .spinner {
+      width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white; border-radius: 50%;
+      animation: spin 0.6s linear infinite; display: none;
+    }
+    .compiler-run-btn.loading .spinner { display: block; }
+    .compiler-run-btn.loading .btn-text { display: none; }
+    .compiler-clear-btn {
+      padding: 10px 16px;
+      background: var(--bg-surface); color: var(--text-dim);
+      border: 1px solid var(--border); border-radius: var(--radius-xs);
+      font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .compiler-clear-btn:hover { border-color: var(--red); color: var(--red); }
+    .compiler-output {
+      border-top: 1px solid var(--border);
+      display: none;
+    }
+    .compiler-output.visible { display: block; }
+    .compiler-output-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0.2);
+    }
+    .compiler-output-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; font-weight: 600;
+    }
+    .compiler-output-status.success { color: var(--green); }
+    .compiler-output-status.error { color: var(--red); }
+    .compiler-output-meta {
+      font-size: 11px; color: var(--text-muted);
+    }
+    .compiler-output-content {
+      padding: 12px 16px;
+      background: #0a0a0c;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; line-height: 1.6;
+      color: #e2e8f0;
+      max-height: 400px; overflow-y: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .compiler-output-content .stderr {
+      color: var(--red); margin-top: 8px;
+      padding-top: 8px; border-top: 1px solid rgba(248,113,113,0.2);
+    }
+    .compiler-history {
+      padding: 8px 16px; border-top: 1px solid var(--border);
+      display: flex; gap: 6px; overflow-x: auto;
+      background: rgba(0,0,0,0.1);
+    }
+    .compiler-history::-webkit-scrollbar { display: none; }
+    .history-chip {
+      padding: 4px 10px; background: var(--bg-surface);
+      border: 1px solid var(--border); border-radius: 100px;
+      font-size: 11px; color: var(--text-muted); white-space: nowrap;
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .history-chip:hover { border-color: var(--accent); color: var(--text); }
+    .history-chip.success { border-color: rgba(52,211,153,0.3); }
+    .history-chip.error { border-color: rgba(248,113,113,0.3); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     /* ===== TOAST NOTIFICATION ===== */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -951,6 +1102,95 @@
       <div class="util-chip" data-cmd="/dare"><span class="uc-icon">&#128293;</span><span class="uc-name">Dare</span></div>
       <div class="util-chip" data-cmd="/wyr"><span class="uc-icon">&#129300;</span><span class="uc-name">Would You Rather</span></div>
       <div class="util-chip" data-cmd="/roast"><span class="uc-icon">&#128520;</span><span class="uc-name">Roast</span></div>
+    </div>
+
+    <!-- ===== CODE COMPILER ===== -->
+    <div class="section-header fade-in stagger-5">
+      <div class="section-title">
+        <div class="st-icon" style="background:rgba(139,92,246,0.12);">&#128187;</div>
+        Code Compiler
+      </div>
+      <div class="section-badge">80+ langs</div>
+    </div>
+
+    <div class="compiler-section fade-in stagger-5" id="compilerSection">
+      <div class="compiler-header">
+        <div class="compiler-header-left">
+          <div class="compiler-header-icon">&#9654;&#65039;</div>
+          <div class="compiler-header-text">
+            <h3>Run Code</h3>
+            <span>Powered by Piston API</span>
+          </div>
+        </div>
+        <select class="compiler-lang-select" id="compilerLang">
+          <option value="python">Python</option>
+          <option value="javascript">JavaScript</option>
+          <option value="typescript">TypeScript</option>
+          <option value="java">Java</option>
+          <option value="c">C</option>
+          <option value="c++">C++</option>
+          <option value="csharp.net">C#</option>
+          <option value="go">Go</option>
+          <option value="rust">Rust</option>
+          <option value="ruby">Ruby</option>
+          <option value="php">PHP</option>
+          <option value="swift">Swift</option>
+          <option value="kotlin">Kotlin</option>
+          <option value="dart">Dart</option>
+          <option value="scala">Scala</option>
+          <option value="bash">Bash</option>
+          <option value="lua">Lua</option>
+          <option value="perl">Perl</option>
+          <option value="haskell">Haskell</option>
+          <option value="elixir">Elixir</option>
+          <option value="clojure">Clojure</option>
+          <option value="sqlite3">SQL</option>
+          <option value="rscript">R</option>
+          <option value="nim">Nim</option>
+          <option value="zig">Zig</option>
+          <option value="vlang">V</option>
+          <option value="crystal">Crystal</option>
+          <option value="fortran">Fortran</option>
+          <option value="pascal">Pascal</option>
+          <option value="d">D</option>
+          <option value="ocaml">OCaml</option>
+          <option value="erlang">Erlang</option>
+          <option value="racket">Racket</option>
+          <option value="prolog">Prolog</option>
+          <option value="coffeescript">CoffeeScript</option>
+          <option value="powershell">PowerShell</option>
+          <option value="freebasic">FreeBASIC</option>
+          <option value="nasm">Assembly</option>
+          <option value="brainfuck">Brainfuck</option>
+        </select>
+      </div>
+
+      <div class="compiler-editor">
+        <textarea class="compiler-textarea" id="compilerCode" placeholder="Write your code here...&#10;&#10;# Python example:&#10;print('Hello, World!')" spellcheck="false"></textarea>
+      </div>
+
+      <label class="compiler-stdin-toggle">
+        <input type="checkbox" id="stdinToggle" /> Enable stdin input
+      </label>
+      <textarea class="compiler-stdin" id="compilerStdin" placeholder="Standard input (stdin)..." spellcheck="false"></textarea>
+
+      <div class="compiler-actions">
+        <button class="compiler-run-btn" id="compilerRunBtn">
+          <div class="spinner"></div>
+          <span class="btn-text">&#9654; Run Code</span>
+        </button>
+        <button class="compiler-clear-btn" id="compilerClearBtn">Clear</button>
+      </div>
+
+      <div class="compiler-output" id="compilerOutput">
+        <div class="compiler-output-header">
+          <div class="compiler-output-status" id="compilerStatus"></div>
+          <div class="compiler-output-meta" id="compilerMeta"></div>
+        </div>
+        <div class="compiler-output-content" id="compilerOutputContent"></div>
+      </div>
+
+      <div class="compiler-history" id="compilerHistory" style="display:none;"></div>
     </div>
 
     <!-- ===== NEVERMORE GATEWAY ===== -->
@@ -1817,6 +2057,182 @@
         if (!submitBtn.disabled) sendAIQuery();
       }
     });
+
+    // =====================
+    // CODE COMPILER
+    // =====================
+    (function() {
+      const langSelect = document.getElementById('compilerLang');
+      const codeArea = document.getElementById('compilerCode');
+      const stdinToggle = document.getElementById('stdinToggle');
+      const stdinArea = document.getElementById('compilerStdin');
+      const runBtn = document.getElementById('compilerRunBtn');
+      const clearBtn = document.getElementById('compilerClearBtn');
+      const outputPanel = document.getElementById('compilerOutput');
+      const statusEl = document.getElementById('compilerStatus');
+      const metaEl = document.getElementById('compilerMeta');
+      const outputContent = document.getElementById('compilerOutputContent');
+      const historyBar = document.getElementById('compilerHistory');
+
+      let compilerHistory = [];
+      let isRunning = false;
+
+      // Tab key inserts spaces in textarea
+      codeArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const start = codeArea.selectionStart;
+          const end = codeArea.selectionEnd;
+          codeArea.value = codeArea.value.substring(0, start) + '  ' + codeArea.value.substring(end);
+          codeArea.selectionStart = codeArea.selectionEnd = start + 2;
+        }
+        // Ctrl/Cmd + Enter to run
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          runCode();
+        }
+      });
+
+      // Stdin toggle
+      stdinToggle.addEventListener('change', () => {
+        stdinArea.classList.toggle('visible', stdinToggle.checked);
+      });
+
+      // Run button
+      runBtn.addEventListener('click', runCode);
+
+      // Clear button
+      clearBtn.addEventListener('click', () => {
+        codeArea.value = '';
+        stdinArea.value = '';
+        outputPanel.classList.remove('visible');
+        codeArea.focus();
+      });
+
+      // Boilerplate templates per language
+      const templates = {
+        'python': 'print("Hello, World!")',
+        'javascript': 'console.log("Hello, World!");',
+        'typescript': 'console.log("Hello, World!");',
+        'java': 'public class Main {\n  public static void main(String[] args) {\n    System.out.println("Hello, World!");\n  }\n}',
+        'c': '#include <stdio.h>\nint main() {\n  printf("Hello, World!\\n");\n  return 0;\n}',
+        'c++': '#include <iostream>\nusing namespace std;\nint main() {\n  cout << "Hello, World!" << endl;\n  return 0;\n}',
+        'csharp.net': 'using System;\nclass Program {\n  static void Main() {\n    Console.WriteLine("Hello, World!");\n  }\n}',
+        'go': 'package main\nimport "fmt"\nfunc main() {\n  fmt.Println("Hello, World!")\n}',
+        'rust': 'fn main() {\n  println!("Hello, World!");\n}',
+        'ruby': 'puts "Hello, World!"',
+        'php': '<?php\necho "Hello, World!\\n";',
+        'swift': 'print("Hello, World!")',
+        'kotlin': 'fun main() {\n  println("Hello, World!")\n}',
+        'bash': 'echo "Hello, World!"',
+        'lua': 'print("Hello, World!")',
+        'haskell': 'main = putStrLn "Hello, World!"',
+        'scala': 'object Main extends App {\n  println("Hello, World!")\n}',
+        'dart': 'void main() {\n  print(\'Hello, World!\');\n}',
+        'perl': 'print "Hello, World!\\n";',
+        'elixir': 'IO.puts "Hello, World!"',
+        'nim': 'echo "Hello, World!"',
+        'zig': 'const std = @import("std");\npub fn main() !void {\n  const stdout = std.io.getStdOut().writer();\n  try stdout.print("Hello, World!\\n", .{});\n}',
+      };
+
+      // Auto-fill template when language changes (if code is empty or is a template)
+      langSelect.addEventListener('change', () => {
+        const lang = langSelect.value;
+        const currentCode = codeArea.value.trim();
+        const isTemplate = Object.values(templates).some(t => t.trim() === currentCode);
+        if (!currentCode || isTemplate) {
+          codeArea.value = templates[lang] || '';
+        }
+      });
+
+      async function runCode() {
+        if (isRunning) return;
+        const code = codeArea.value.trim();
+        if (!code) {
+          showToast('Write some code first!');
+          codeArea.focus();
+          return;
+        }
+
+        const language = langSelect.value;
+        const stdin = stdinToggle.checked ? stdinArea.value : '';
+
+        isRunning = true;
+        runBtn.classList.add('loading');
+        runBtn.disabled = true;
+        outputPanel.classList.add('visible');
+        statusEl.className = 'compiler-output-status';
+        statusEl.textContent = '\u23f3 Running...';
+        metaEl.textContent = '';
+        outputContent.textContent = '';
+
+        const startTime = Date.now();
+
+        try {
+          const res = await fetch(`${API_BASE}/api/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ language, code, stdin })
+          });
+
+          const result = await res.json();
+          const elapsed = Date.now() - startTime;
+
+          if (!result.success) {
+            statusEl.className = 'compiler-output-status error';
+            statusEl.innerHTML = '\u274c Error';
+            outputContent.textContent = result.error || 'Execution failed';
+            metaEl.textContent = `${elapsed}ms`;
+          } else {
+            const isError = result.exitCode !== 0 || result.compileError;
+            statusEl.className = `compiler-output-status ${isError ? 'error' : 'success'}`;
+            statusEl.innerHTML = isError
+              ? `\u274c ${result.compileError ? 'Compile Error' : 'Runtime Error'}`
+              : '\u2705 Success';
+            metaEl.textContent = `${result.language} v${result.version} \u2022 ${elapsed}ms \u2022 exit ${result.exitCode}`;
+
+            let outputText = '';
+            if (result.output) outputText += result.output;
+            if (result.stderr) {
+              if (outputText) outputText += '\n';
+              outputText += '\n--- stderr ---\n' + result.stderr;
+            }
+            if (!outputText) outputText = '(no output)';
+            outputContent.textContent = outputText;
+
+            // Add to history
+            compilerHistory.push({
+              lang: result.language,
+              code: code.slice(0, 50),
+              success: !isError,
+              time: new Date().toLocaleTimeString()
+            });
+            updateHistory();
+          }
+        } catch (err) {
+          statusEl.className = 'compiler-output-status error';
+          statusEl.innerHTML = '\u274c Network Error';
+          outputContent.textContent = err.message || 'Failed to connect to server';
+        } finally {
+          isRunning = false;
+          runBtn.classList.remove('loading');
+          runBtn.disabled = false;
+        }
+      }
+
+      function updateHistory() {
+        if (compilerHistory.length === 0) {
+          historyBar.style.display = 'none';
+          return;
+        }
+        historyBar.style.display = 'flex';
+        historyBar.innerHTML = compilerHistory.slice(-10).map((h, i) =>
+          `<div class="history-chip ${h.success ? 'success' : 'error'}" title="${h.time}">
+            ${h.lang} #${i + 1} ${h.success ? '\u2705' : '\u274c'}
+          </div>`
+        ).join('');
+      }
+    })();
   </script>
 </body>
 </html>

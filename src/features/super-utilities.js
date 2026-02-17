@@ -1569,65 +1569,115 @@ async function getWouldYouRather() {
 /**
  * Run code using Piston API
  */
-async function runCode(language, code) {
+// Cache runtimes so we don't fetch every call
+let _runtimesCache = null;
+let _runtimesCacheTime = 0;
+const RUNTIMES_CACHE_TTL = 1000 * 60 * 30; // 30 min
+
+async function getRuntimes() {
+  if (_runtimesCache && Date.now() - _runtimesCacheTime < RUNTIMES_CACHE_TTL) return _runtimesCache;
+  const res = await fetch(`${CONFIG.piston.api}/runtimes`);
+  _runtimesCache = await res.json();
+  _runtimesCacheTime = Date.now();
+  return _runtimesCache;
+}
+
+/**
+ * Resolve a language string to a Piston runtime.
+ * Matches by language name, aliases, or common abbreviations.
+ */
+async function resolveRuntime(input) {
+  const runtimes = await getRuntimes();
+  const q = input.toLowerCase().trim();
+  // Direct language match
+  let rt = runtimes.find(r => r.language === q);
+  if (rt) return rt;
+  // Alias match
+  rt = runtimes.find(r => (r.aliases || []).includes(q));
+  if (rt) return rt;
+  // Extra shorthand map for common aliases not in Piston
+  const extra = {
+    'py': 'python', 'py3': 'python', 'python3': 'python',
+    'js': 'javascript', 'node': 'javascript',
+    'ts': 'typescript', 'deno': 'typescript',
+    'cpp': 'c++', 'c++': 'c++', 'cc': 'c++',
+    'cs': 'csharp.net', 'csharp': 'csharp.net', 'c#': 'csharp.net',
+    'rb': 'ruby', 'rs': 'rust',
+    'sh': 'bash', 'shell': 'bash',
+    'pl': 'perl', 'kt': 'kotlin',
+    'hs': 'haskell', 'ex': 'elixir', 'exs': 'elixir',
+    'r': 'rscript', 'sql': 'sqlite3',
+    'asm': 'nasm', 'vb': 'basic.net', 'ps': 'powershell',
+    'pwsh': 'powershell', 'ps1': 'powershell',
+    'f#': 'fsharp.net', 'fs': 'fsharp.net',
+    'sc': 'scala', 'ml': 'ocaml',
+    'pas': 'pascal', 'bf': 'brainfuck'
+  };
+  if (extra[q]) {
+    rt = runtimes.find(r => r.language === extra[q]);
+    if (rt) return rt;
+  }
+  // Partial match
+  rt = runtimes.find(r => r.language.startsWith(q));
+  return rt || null;
+}
+
+async function runCode(language, code, options = {}) {
   try {
-    const languageMap = {
-      'js': 'javascript',
-      'javascript': 'javascript',
-      'py': 'python',
-      'python': 'python',
-      'java': 'java',
-      'cpp': 'c++',
-      'c++': 'c++',
-      'c': 'c',
-      'go': 'go',
-      'rust': 'rust',
-      'ruby': 'ruby',
-      'php': 'php',
-      'swift': 'swift',
-      'kotlin': 'kotlin',
-      'ts': 'typescript',
-      'typescript': 'typescript'
-    };
-    
-    const lang = languageMap[language.toLowerCase()];
-    if (!lang) {
-      return { success: false, error: 'Unsupported language' };
-    }
-    
-    // Get runtime info
-    const runtimesResponse = await fetch(`${CONFIG.piston.api}/runtimes`);
-    const runtimes = await runtimesResponse.json();
-    
-    const runtime = runtimes.find(r => r.language === lang);
+    const runtime = await resolveRuntime(language);
     if (!runtime) {
-      return { success: false, error: `Runtime for ${lang} not found` };
+      // Build suggestion list
+      const runtimes = await getRuntimes();
+      const langs = [...new Set(runtimes.map(r => r.language))].sort();
+      return {
+        success: false,
+        error: `Language "${language}" not found.\n\nSupported (${langs.length}): ${langs.join(', ')}`
+      };
     }
-    
-    // Execute code
+
+    const payload = {
+      language: runtime.language,
+      version: runtime.version,
+      files: [{ name: options.filename || 'main', content: code }]
+    };
+    if (options.stdin) payload.stdin = options.stdin;
+    if (options.args) payload.args = options.args;
+    payload.compile_timeout = 15000;
+    payload.run_timeout = 10000;
+    payload.compile_memory_limit = -1;
+    payload.run_memory_limit = -1;
+
     const response = await fetch(`${CONFIG.piston.api}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json();
+
+    if (result.compile && result.compile.code !== 0) {
+      return {
+        success: true,
         language: runtime.language,
         version: runtime.version,
-        files: [{ content: code }]
-      })
-    });
-    
-    const result = await response.json();
-    
+        output: '',
+        stderr: result.compile.stderr || result.compile.output || 'Compilation failed',
+        exitCode: result.compile.code,
+        compileError: true
+      };
+    }
+
     if (result.run) {
       return {
         success: true,
         language: runtime.language,
         version: runtime.version,
-        output: result.run.stdout || '',
+        output: result.run.stdout || result.run.output || '',
         stderr: result.run.stderr || '',
         exitCode: result.run.code
       };
     }
-    
+
     return { success: false, error: result.message || 'Execution failed' };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1746,6 +1796,7 @@ export {
   
   // Dev Tools
   runCode,
+  resolveRuntime,
   getSupportedLanguages,
   
   // Media
