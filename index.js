@@ -1626,29 +1626,35 @@ function getProviderForModel(model) {
 
 // Clean response from thinking tokens and artifacts
 // Properly handles thinking models by extracting actual response content
+// Returns { thinking: string | null, response: string }
 function cleanLLMResponse(text) {
-  if (!text) return '';
+  if (!text) return { thinking: null, response: '' };
   
   let cleaned = text;
+  let thinkingContent = null;
   
   // Handle thinking models that wrap entire response in thinking tags
   // Extract content AFTER the thinking block, or content OUTSIDE thinking blocks
   
   // Pattern 1: <think>...</think> followed by actual response
-  const thinkMatch = cleaned.match(/<think>[\s\S]*?<\/think>([\s\S]*)/i);
-  if (thinkMatch && thinkMatch[1]?.trim()) {
-    cleaned = thinkMatch[1];
+  const thinkMatch = cleaned.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/i);
+  if (thinkMatch) {
+    thinkingContent = thinkMatch[1]?.trim() || null;
+    cleaned = thinkMatch[2]?.trim() || cleaned;
   } else {
     // Just remove thinking blocks if there's content outside them
     cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
   }
   
   // Pattern 2: <thinking>...</thinking> followed by actual response
-  const thinkingMatch = cleaned.match(/<thinking>[\s\S]*?<\/thinking>([\s\S]*)/i);
-  if (thinkingMatch && thinkingMatch[1]?.trim()) {
-    cleaned = thinkingMatch[1];
-  } else {
-    cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  if (!thinkingContent) {
+    const thinkingMatch = cleaned.match(/<thinking>([\s\S]*?)<\/thinking>([\s\S]*)/i);
+    if (thinkingMatch) {
+      thinkingContent = thinkingMatch[1]?.trim() || null;
+      cleaned = thinkingMatch[2]?.trim() || cleaned;
+    } else {
+      cleaned = cleaned.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+    }
   }
   
   // Pattern 3: Some models use **Thinking:** or similar headers
@@ -1680,7 +1686,24 @@ function cleanLLMResponse(text) {
   // Clean up multiple newlines
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   
-  return cleaned.trim();
+  return { thinking: thinkingContent, response: cleaned.trim() };
+}
+
+// Format thinking content for Telegram display
+function formatThinkingForTelegram(thinking) {
+  if (!thinking) return '';
+  
+  // Telegram spoiler format: ||hidden text||
+  // For long thinking, use blockquote instead
+  const lines = thinking.split('\n');
+  
+  if (lines.length > 10 || thinking.length > 500) {
+    // Use blockquote for long thinking
+    return `\n\n<blockquote expandable>💭 <b>Thinking Process</b>\n${escapeHTML(thinking)}</blockquote>\n`;
+  } else {
+    // Use spoiler for short thinking
+    return `\n\n<span class="tg-spoiler">💭 ${escapeHTML(thinking)}</span>\n`;
+  }
 }
 
 // GitHub Models API call
@@ -1718,7 +1741,14 @@ async function callGitHubModels({ model, messages, temperature = 0.7, max_tokens
     throw new Error('No content in GitHub Models response');
   }
 
-  return cleanLLMResponse(content.trim());
+  const { thinking, response: cleanedResponse } = cleanLLMResponse(content.trim());
+  
+  // Combine thinking and response with Telegram formatting
+  if (thinking) {
+    return formatThinkingForTelegram(thinking) + cleanedResponse;
+  }
+  
+  return cleanedResponse;
 }
 
 // MegaLLM API call (wrapper for existing openai client)
@@ -1736,15 +1766,20 @@ async function callMegaLLM({ model, messages, temperature = 0.7, max_tokens = 35
     console.log(`[LLM DEBUG] Raw response (first 500 chars): ${rawContent.slice(0, 500)}`);
   }
   
-  const cleaned = cleanLLMResponse(rawContent);
+  const { thinking, response: cleanedResponse } = cleanLLMResponse(rawContent);
   
   // Debug: Log if cleaning resulted in empty output
-  if (rawContent && !cleaned) {
+  if (rawContent && !cleanedResponse) {
     console.log(`[LLM DEBUG] Cleaning removed all content! Raw length: ${rawContent.length}`);
     console.log(`[LLM DEBUG] Raw content: ${rawContent.slice(0, 1000)}`);
   }
   
-  return cleaned;
+  // Combine thinking and response with Telegram formatting
+  if (thinking) {
+    return formatThinkingForTelegram(thinking) + cleanedResponse;
+  }
+  
+  return cleanedResponse;
 }
 
 // Provider call wrapper with timeout
