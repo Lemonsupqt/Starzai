@@ -17802,34 +17802,51 @@ bot.on("message:web_app_data", async (ctx) => {
       // If we have args (user typed input in the modal), simulate the full command
       if (args || isExecute) {
         const fullText = args ? `${cmd} ${args}` : cmd;
-        // Create a fake message-like context to re-route through the bot's command handlers
-        // We do this by sending the command text as a reply from the bot, then the user can see the result
         try {
-          // Simulate the command by sending it as if the user typed it
-          // The simplest approach: just send the command text to the chat and let the bot process it
-          await ctx.reply(`\u2705 *Sent from WebApp:* \`${fullText}\`\n\n_Processing..._`, { parse_mode: 'Markdown' });
-          
-          // Now actually invoke the command by creating a synthetic message event
-          // We use bot.api.sendMessage to trigger the command processing
-          // But the cleanest way is to just call bot.handleUpdate with a fake update
+          // Build a complete fake Telegram update that grammY can process
           const fakeUpdate = {
-            update_id: Date.now(),
+            update_id: Math.floor(Math.random() * 1000000000),
             message: {
-              message_id: ctx.message.message_id + 1,
-              from: ctx.from,
-              chat: ctx.chat,
+              message_id: Math.floor(Math.random() * 1000000000),
+              from: {
+                id: ctx.from.id,
+                is_bot: false,
+                first_name: ctx.from.first_name || 'User',
+                last_name: ctx.from.last_name || '',
+                username: ctx.from.username || '',
+                language_code: ctx.from.language_code || 'en'
+              },
+              chat: {
+                id: ctx.chat.id,
+                type: ctx.chat.type || 'private',
+                first_name: ctx.chat.first_name || ctx.from.first_name || 'User',
+                last_name: ctx.chat.last_name || '',
+                username: ctx.chat.username || ''
+              },
               date: Math.floor(Date.now() / 1000),
               text: fullText,
               entities: [{ offset: 0, length: cmd.length, type: 'bot_command' }]
             }
           };
-          // Process the fake update through the bot's middleware stack
-          bot.handleUpdate(fakeUpdate).catch(err => {
-            console.error('[WebApp] Fake update error:', err.message);
+          
+          console.log(`[WebApp] Dispatching fake update for: ${fullText}`);
+          
+          // Process through grammY's full middleware stack
+          // Use setImmediate to avoid blocking the current response
+          setImmediate(async () => {
+            try {
+              await bot.handleUpdate(fakeUpdate);
+              console.log(`[WebApp] Successfully processed: ${fullText}`);
+            } catch (err) {
+              console.error(`[WebApp] handleUpdate error for '${fullText}':`, err?.message || err);
+              // Try to notify user of the error
+              try {
+                await bot.api.sendMessage(ctx.chat.id, `\u274c WebApp command failed: ${err?.message || 'Unknown error'}`);
+              } catch (e) { /* ignore */ }
+            }
           });
         } catch (err) {
-          console.error('[WebApp] Command execution error:', err.message);
-          await ctx.reply(`\u274c Error processing \`${cmd}\`: ${err.message}`, { parse_mode: 'Markdown' });
+          console.error('[WebApp] Command setup error:', err.message);
         }
         return;
       }

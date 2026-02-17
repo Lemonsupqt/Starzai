@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "canvas": "^3.2.1",
-    "grammy": "^1.35.0",
+    "grammy": "^1.40.0",
     "jsqr": "^1.4.0",
     "node-fetch": "^2.7.0",
     "openai": "^4.60.0",
