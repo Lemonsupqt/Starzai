@@ -26919,8 +26919,254 @@ http
       return;
     }
     
-    // CORS preflight for /api/chat
-    if (req.method === "OPTIONS" && req.url === "/api/chat") {
+    // ===== WEBAPP FEATURE API (all features in-app) =====
+    if (req.method === "POST" && req.url === "/api/feature") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      
+      try {
+        const body = await new Promise((resolve, reject) => {
+          let data = '';
+          req.on('data', chunk => { data += chunk; });
+          req.on('end', () => { try { resolve(JSON.parse(data)); } catch(e) { reject(e); } });
+          req.on('error', reject);
+        });
+        
+        const { feature, query, args } = body;
+        console.log(`[WebApp Feature API] ${feature}: ${query || '(no query)'}`);
+        
+        let result;
+        
+        switch (feature) {
+          // ── Music ──
+          case 'music_search': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a song name' })); return; }
+            result = await searchMusic(query, 7);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'music_results', songs: result.songs, query }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'No songs found' }));
+            }
+            return;
+          }
+          case 'music_download': {
+            const songId = query || args?.songId;
+            if (!songId) { res.end(JSON.stringify({ error: 'No song selected' })); return; }
+            const songResult = await getSongById(songId);
+            if (songResult.success && songResult.song?.downloadUrl) {
+              res.end(JSON.stringify({ type: 'music_download', song: songResult.song }));
+            } else {
+              res.end(JSON.stringify({ error: 'Download not available for this song' }));
+            }
+            return;
+          }
+          
+          // ── Lyrics ──
+          case 'lyrics': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a song name' })); return; }
+            const lyricsResult = await getLyrics(query);
+            if (lyricsResult.success) {
+              res.end(JSON.stringify({ type: 'lyrics', ...lyricsResult }));
+            } else {
+              // Try LRCLIB fallback
+              const lrcResult = await searchLyricsLRCLIB(query);
+              if (lrcResult.success) {
+                res.end(JSON.stringify({ type: 'lyrics', ...lrcResult }));
+              } else {
+                res.end(JSON.stringify({ error: 'Lyrics not found' }));
+              }
+            }
+            return;
+          }
+          
+          // ── Weather ──
+          case 'weather': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a city name' })); return; }
+            result = await getWeather(query);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'weather', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Weather data not found' }));
+            }
+            return;
+          }
+          
+          // ── Translate ──
+          case 'translate': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter text to translate' })); return; }
+            const toLang = args?.to || 'en';
+            const fromLang = args?.from || 'auto';
+            result = await translateText(query, fromLang, toLang);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'translate', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Translation failed' }));
+            }
+            return;
+          }
+          
+          // ── Currency ──
+          case 'currency': {
+            if (!query) { res.end(JSON.stringify({ error: 'e.g. 100 USD to EUR' })); return; }
+            const currMatch = query.match(/(\d+\.?\d*)\s*(\w{3})\s*(?:to|in)\s*(\w{3})/i);
+            if (!currMatch) { res.end(JSON.stringify({ error: 'Format: 100 USD to EUR' })); return; }
+            result = await convertCurrency(parseFloat(currMatch[1]), currMatch[2].toUpperCase(), currMatch[3].toUpperCase());
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'currency', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Conversion failed' }));
+            }
+            return;
+          }
+          
+          // ── Wikipedia ──
+          case 'wiki': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a topic' })); return; }
+            result = await getWikipedia(query);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'wiki', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Article not found' }));
+            }
+            return;
+          }
+          
+          // ── Dictionary ──
+          case 'define': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a word' })); return; }
+            result = await getDefinition(query);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'define', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Word not found' }));
+            }
+            return;
+          }
+          
+          // ── QR Code ──
+          case 'qr': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter text or URL' })); return; }
+            result = await generateQR(query, { size: 512, errorCorrection: 'M' });
+            if (result.success) {
+              // Convert buffer to base64 data URL
+              const b64 = result.buffer.toString('base64');
+              res.end(JSON.stringify({ type: 'qr', dataUrl: `data:image/png;base64,${b64}`, text: query }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'QR generation failed' }));
+            }
+            return;
+          }
+          
+          // ── URL Shortener ──
+          case 'shorten': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a URL' })); return; }
+            result = await shortenURL(query);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'shorten', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Shortening failed' }));
+            }
+            return;
+          }
+          
+          // ── Random Fact ──
+          case 'fact': {
+            result = await getRandomFact();
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'fact', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: 'Could not fetch fact' }));
+            }
+            return;
+          }
+          
+          // ── Random Quote ──
+          case 'quote': {
+            result = await getRandomQuote();
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'quote', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: 'Could not fetch quote' }));
+            }
+            return;
+          }
+          
+          // ── This Day in History ──
+          case 'today': {
+            result = await getThisDayInHistory();
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'today', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: 'Could not fetch history' }));
+            }
+            return;
+          }
+          
+          // ── Wallpapers ──
+          case 'wallpaper': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a keyword' })); return; }
+            result = await searchWallpapers(query);
+            if (result.success && result.wallpapers?.length) {
+              res.end(JSON.stringify({ type: 'wallpaper', wallpapers: result.wallpapers.slice(0, 12), query }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'No wallpapers found' }));
+            }
+            return;
+          }
+          
+          // ── Movie Search ──
+          case 'movie': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a movie title' })); return; }
+            result = await searchMedia(query, 'movie');
+            if (result.success && result.results?.length) {
+              res.end(JSON.stringify({ type: 'movie', results: result.results.slice(0, 8), query }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'No movies found' }));
+            }
+            return;
+          }
+          
+          // ── TV Search ──
+          case 'tv': {
+            if (!query) { res.end(JSON.stringify({ error: 'Please enter a TV show title' })); return; }
+            result = await searchMedia(query, 'tv');
+            if (result.success && result.results?.length) {
+              res.end(JSON.stringify({ type: 'tv', results: result.results.slice(0, 8), query }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'No TV shows found' }));
+            }
+            return;
+          }
+          
+          // ── Unit Converter ──
+          case 'convert': {
+            if (!query) { res.end(JSON.stringify({ error: 'e.g. 100 km to miles' })); return; }
+            result = await convertUnit(query);
+            if (result.success) {
+              res.end(JSON.stringify({ type: 'convert', ...result }));
+            } else {
+              res.end(JSON.stringify({ error: result.error || 'Conversion failed' }));
+            }
+            return;
+          }
+          
+          default:
+            res.end(JSON.stringify({ error: `Unknown feature: ${feature}` }));
+            return;
+        }
+        
+      } catch (e) {
+        console.error('[WebApp Feature API] Error:', e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: e.message || 'Internal server error' }));
+      }
+      return;
+    }
+    
+    // CORS preflight for /api/*
+    if (req.method === "OPTIONS" && req.url?.startsWith("/api/")) {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");

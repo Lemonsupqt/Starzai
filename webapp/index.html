@@ -520,6 +520,175 @@
     .cmd-modal-sent .sent-text { font-size: 14px; font-weight: 600; color: var(--text); }
     .cmd-modal-sent .sent-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
+    /* ===== RESULT PANELS (in-modal) ===== */
+    .result-loading {
+      text-align: center; padding: 32px 0;
+    }
+    .result-loading .rl-spinner {
+      width: 32px; height: 32px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .result-loading .rl-text { font-size: 13px; color: var(--text-muted); }
+
+    .result-error {
+      text-align: center; padding: 24px 0;
+      color: var(--red); font-size: 14px;
+    }
+
+    /* Song results */
+    .song-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
+    .song-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s;
+    }
+    .song-item:hover { background: var(--bg-card-hover); border-color: rgba(52,211,153,0.2); }
+    .song-item:active { transform: scale(0.98); }
+    .song-art {
+      width: 48px; height: 48px; border-radius: 10px; object-fit: cover;
+      background: var(--bg-card); flex-shrink: 0;
+    }
+    .song-info { flex: 1; min-width: 0; }
+    .song-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .song-artist { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+    .song-meta { font-size: 10px; color: var(--text-muted); margin-top: 2px; display: flex; gap: 8px; }
+    .song-dl {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      background: linear-gradient(135deg, #34d399, #059669); border: none;
+      color: #fff; font-size: 16px; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; transition: transform 0.2s;
+    }
+    .song-dl:hover { transform: scale(1.1); }
+
+    /* Weather result */
+    .weather-result { text-align: center; padding: 16px 0; }
+    .weather-icon { font-size: 48px; margin-bottom: 8px; }
+    .weather-temp { font-size: 36px; font-weight: 800; color: var(--text); }
+    .weather-condition { font-size: 14px; color: var(--text-dim); margin-top: 4px; }
+    .weather-location { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+    .weather-details {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+      margin-top: 16px;
+    }
+    .weather-detail {
+      padding: 10px; background: var(--bg-surface); border-radius: var(--radius-xs);
+      text-align: center;
+    }
+    .weather-detail .wd-label { font-size: 11px; color: var(--text-muted); }
+    .weather-detail .wd-value { font-size: 14px; font-weight: 600; margin-top: 4px; }
+
+    /* Lyrics result */
+    .lyrics-result { max-height: 50vh; overflow-y: auto; }
+    .lyrics-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .lyrics-title { font-size: 16px; font-weight: 700; }
+    .lyrics-artist { font-size: 13px; color: var(--text-muted); }
+    .lyrics-text {
+      font-size: 14px; line-height: 1.8; color: var(--text-dim);
+      white-space: pre-wrap; font-style: italic;
+    }
+
+    /* Wiki result */
+    .wiki-result { max-height: 50vh; overflow-y: auto; }
+    .wiki-thumb {
+      width: 100%; max-height: 200px; object-fit: cover;
+      border-radius: var(--radius-sm); margin-bottom: 12px;
+    }
+    .wiki-title { font-size: 18px; font-weight: 800; margin-bottom: 8px; }
+    .wiki-extract { font-size: 14px; line-height: 1.7; color: var(--text-dim); }
+    .wiki-link {
+      display: inline-block; margin-top: 12px; color: var(--accent-light);
+      font-size: 13px; text-decoration: underline;
+    }
+
+    /* QR result */
+    .qr-result { text-align: center; padding: 16px 0; }
+    .qr-result img {
+      width: 200px; height: 200px; border-radius: var(--radius-sm);
+      background: #fff; padding: 12px;
+    }
+    .qr-text { font-size: 12px; color: var(--text-muted); margin-top: 10px; word-break: break-all; }
+
+    /* Translate result */
+    .translate-result { padding: 8px 0; }
+    .translate-from, .translate-to {
+      padding: 14px; border-radius: var(--radius-sm); margin-bottom: 8px;
+    }
+    .translate-from { background: var(--bg-surface); }
+    .translate-to { background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.15); }
+    .translate-label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; font-weight: 600; }
+    .translate-text { font-size: 15px; line-height: 1.5; }
+
+    /* Define result */
+    .define-result { max-height: 50vh; overflow-y: auto; }
+    .define-word { font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+    .define-phonetic { font-size: 14px; color: var(--accent-light); margin-bottom: 12px; }
+    .define-pos { font-size: 12px; font-weight: 700; color: var(--green); text-transform: uppercase; margin: 12px 0 6px; }
+    .define-def { font-size: 14px; line-height: 1.6; color: var(--text-dim); margin-bottom: 4px; padding-left: 12px; border-left: 2px solid var(--border); }
+    .define-example { font-size: 13px; color: var(--text-muted); font-style: italic; margin: 4px 0 8px 12px; }
+
+    /* Generic text result */
+    .text-result { padding: 12px 0; }
+    .text-result .tr-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .text-result .tr-body { font-size: 14px; line-height: 1.7; color: var(--text-dim); }
+    .text-result .tr-source { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+    .text-result .tr-author { color: var(--accent-light); font-weight: 600; }
+
+    /* Currency result */
+    .currency-result { text-align: center; padding: 16px 0; }
+    .currency-amount { font-size: 32px; font-weight: 800; color: var(--green); }
+    .currency-from { font-size: 14px; color: var(--text-dim); margin-top: 8px; }
+    .currency-rate { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    /* Wallpaper grid */
+    .wallpaper-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+      max-height: 50vh; overflow-y: auto;
+    }
+    .wallpaper-item {
+      aspect-ratio: 1; border-radius: var(--radius-xs); overflow: hidden; cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .wallpaper-item:hover { transform: scale(1.05); }
+    .wallpaper-item img { width: 100%; height: 100%; object-fit: cover; }
+
+    /* Movie/TV results */
+    .media-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
+    .media-item {
+      display: flex; gap: 12px; padding: 10px; background: var(--bg-surface);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+    }
+    .media-poster {
+      width: 60px; height: 90px; border-radius: 8px; object-fit: cover;
+      background: var(--bg-card); flex-shrink: 0;
+    }
+    .media-info { flex: 1; min-width: 0; }
+    .media-title { font-size: 14px; font-weight: 700; }
+    .media-year { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .media-rating { font-size: 12px; color: var(--orange); margin-top: 4px; }
+    .media-overview { font-size: 12px; color: var(--text-dim); margin-top: 4px; line-height: 1.4;
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* History events */
+    .history-list { display: flex; flex-direction: column; gap: 10px; }
+    .history-item { padding: 10px 12px; background: var(--bg-surface); border-radius: var(--radius-xs); }
+    .history-year { font-size: 13px; font-weight: 700; color: var(--accent-light); }
+    .history-text { font-size: 13px; color: var(--text-dim); margin-top: 4px; line-height: 1.5; }
+
+    /* Shorten result */
+    .shorten-result { text-align: center; padding: 16px 0; }
+    .shorten-url {
+      font-size: 16px; font-weight: 700; color: var(--accent-light);
+      word-break: break-all; cursor: pointer;
+    }
+    .shorten-original { font-size: 12px; color: var(--text-muted); margin-top: 8px; word-break: break-all; }
+    .shorten-copy {
+      margin-top: 12px; padding: 10px 24px; border: none; border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--accent), #7c3aed); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+
     /* ===== TOAST NOTIFICATION ===== */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -1230,10 +1399,47 @@
       currentCmd = null;
     }
 
+    // Map commands to feature API names
+    const cmdToFeature = {
+      '/m': 'music_search', '/lyrics': 'lyrics', '/weather': 'weather',
+      '/translate': 'translate', '/currency': 'currency', '/wiki': 'wiki',
+      '/define': 'define', '/qr': 'qr', '/short': 'shorten',
+      '/fact': 'fact', '/quote': 'quote', '/today': 'today',
+      '/convert': 'convert', '/wallpaper': 'wallpaper', '/movie': 'movie', '/tv': 'tv'
+    };
+
+    // Commands that must go through bot chat (images, downloads, code, etc.)
+    const botOnlyCommands = ['/a', '/img', '/img2', '/imagine', '/up', '/imgset', '/dl', '/run', '/search',
+      '/todo', '/stats', '/truth', '/dare', '/wyr', '/roast'];
+
     function sendCommandToBot(cmd, args) {
+      const feature = cmdToFeature[cmd];
+      // If it's a feature we can handle in-app, call the API
+      if (feature) {
+        callFeatureAPI(feature, args, cmd);
+        return;
+      }
+      // For instant bot-only commands (no args needed)
+      if (botOnlyCommands.includes(cmd) && !cmdConfig[cmd]?.needsInput) {
+        try {
+          tg.sendData(JSON.stringify({ command: cmd, args: args || '', action: 'execute' }));
+          cmdModalBody.innerHTML = `
+            <div class="cmd-modal-sent">
+              <div class="sent-icon">\u2705</div>
+              <div class="sent-text">Sent to StarzAI!</div>
+              <div class="sent-sub">Check your chat for the result</div>
+            </div>
+          `;
+          setTimeout(() => closeCmdModal(), 1500);
+        } catch(e) {
+          showToast(`Use ${cmd}${args ? ' ' + args : ''} in chat`, 3000);
+          closeCmdModal();
+        }
+        return;
+      }
+      // Bot-only commands with args
       try {
-        tg.sendData(JSON.stringify({ command: cmd, args: args, action: 'execute' }));
-        // Show sent confirmation
+        tg.sendData(JSON.stringify({ command: cmd, args: args || '', action: 'execute' }));
         cmdModalBody.innerHTML = `
           <div class="cmd-modal-sent">
             <div class="sent-icon">\u2705</div>
@@ -1242,10 +1448,292 @@
           </div>
         `;
         setTimeout(() => closeCmdModal(), 1500);
-      } catch (e) {
-        const fullCmd = args ? `${cmd} ${args}` : cmd;
-        showToast(`Use ${fullCmd} in chat`, 3000);
+      } catch(e) {
+        showToast(`Use ${cmd} ${args} in chat`, 3000);
         closeCmdModal();
+      }
+    }
+
+    async function callFeatureAPI(feature, query, cmd) {
+      // Show loading in modal body
+      cmdModalBody.innerHTML = `
+        <div class="result-loading">
+          <div class="rl-spinner"></div>
+          <div class="rl-text">Loading...</div>
+        </div>
+      `;
+
+      try {
+        const resp = await fetch(`${API_BASE}/api/feature`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ feature, query, args: {} })
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+          cmdModalBody.innerHTML = `<div class="result-error">\u274c ${escapeHTML(data.error)}</div>`;
+          return;
+        }
+
+        // Render result based on type
+        cmdModalBody.innerHTML = renderResult(data);
+
+        // Wire up any interactive elements in results
+        wireResultActions(data);
+
+      } catch (err) {
+        cmdModalBody.innerHTML = `<div class="result-error">\u274c ${escapeHTML(err.message || 'Request failed')}</div>`;
+      }
+    }
+
+    function renderResult(data) {
+      switch (data.type) {
+        case 'music_results': return renderMusicResults(data);
+        case 'music_download': return renderMusicDownload(data);
+        case 'weather': return renderWeather(data);
+        case 'lyrics': return renderLyrics(data);
+        case 'translate': return renderTranslate(data);
+        case 'currency': return renderCurrency(data);
+        case 'wiki': return renderWiki(data);
+        case 'define': return renderDefine(data);
+        case 'qr': return renderQR(data);
+        case 'shorten': return renderShorten(data);
+        case 'fact': return renderFact(data);
+        case 'quote': return renderQuote(data);
+        case 'today': return renderToday(data);
+        case 'convert': return renderConvert(data);
+        case 'wallpaper': return renderWallpapers(data);
+        case 'movie': case 'tv': return renderMedia(data);
+        default: return `<div class="result-error">Unknown result type</div>`;
+      }
+    }
+
+    // ===== RESULT RENDERERS =====
+
+    function renderMusicResults(data) {
+      if (!data.songs?.length) return `<div class="result-error">No songs found</div>`;
+      return `<div class="song-list">${data.songs.map(s => `
+        <div class="song-item" data-song-id="${s.id}" data-dl-url="${s.downloadUrl || ''}">
+          <img class="song-art" src="${s.image || ''}" alt="" onerror="this.style.background='var(--bg-card)'">
+          <div class="song-info">
+            <div class="song-name">${escapeHTML(s.name)}</div>
+            <div class="song-artist">${escapeHTML(s.artist)}</div>
+            <div class="song-meta"><span>${s.duration || ''}</span><span>${s.quality || ''}</span></div>
+          </div>
+          ${s.downloadUrl ? '<button class="song-dl" title="Download">\u25b6</button>' : ''}
+        </div>
+      `).join('')}</div>`;
+    }
+
+    function renderMusicDownload(data) {
+      const s = data.song;
+      return `
+        <div style="text-align:center;padding:16px 0">
+          <img class="song-art" src="${s.image || ''}" style="width:120px;height:120px;margin:0 auto 12px;display:block" onerror="this.style.display='none'">
+          <div class="song-name" style="font-size:16px;margin-bottom:4px">${escapeHTML(s.name)}</div>
+          <div class="song-artist">${escapeHTML(s.artist)}</div>
+          <a href="${s.downloadUrl}" target="_blank" style="display:inline-block;margin-top:16px;padding:12px 32px;
+            background:linear-gradient(135deg,#34d399,#059669);color:#fff;border-radius:12px;
+            font-weight:700;font-size:14px;text-decoration:none">\u2b07 Download ${s.quality || '320kbps'}</a>
+        </div>`;
+    }
+
+    function renderWeather(data) {
+      const wIcons = { 'Clear': '\u2600\ufe0f', 'Sunny': '\u2600\ufe0f', 'Partly cloudy': '\u26c5', 'Cloudy': '\u2601\ufe0f',
+        'Overcast': '\u2601\ufe0f', 'Rain': '\ud83c\udf27\ufe0f', 'Light rain': '\ud83c\udf26\ufe0f', 'Heavy rain': '\ud83c\udf27\ufe0f',
+        'Snow': '\u2744\ufe0f', 'Thunderstorm': '\u26c8\ufe0f', 'Fog': '\ud83c\udf2b\ufe0f', 'Mist': '\ud83c\udf2b\ufe0f' };
+      const icon = wIcons[data.condition] || '\ud83c\udf24\ufe0f';
+      return `
+        <div class="weather-result">
+          <div class="weather-icon">${icon}</div>
+          <div class="weather-temp">${data.temperature?.celsius || '?'}\u00b0C</div>
+          <div class="weather-condition">${escapeHTML(data.condition || '')}</div>
+          <div class="weather-location">${escapeHTML(data.location || '')}${data.country ? ', ' + escapeHTML(data.country) : ''}</div>
+          <div class="weather-details">
+            <div class="weather-detail"><div class="wd-label">Feels Like</div><div class="wd-value">${data.feelsLike?.celsius || '?'}\u00b0C</div></div>
+            <div class="weather-detail"><div class="wd-label">Humidity</div><div class="wd-value">${data.humidity || '?'}%</div></div>
+            <div class="weather-detail"><div class="wd-label">Wind</div><div class="wd-value">${data.windSpeed || '?'} km/h</div></div>
+            <div class="weather-detail"><div class="wd-label">UV Index</div><div class="wd-value">${data.uvIndex || '?'}</div></div>
+          </div>
+        </div>`;
+    }
+
+    function renderLyrics(data) {
+      return `
+        <div class="lyrics-result">
+          <div class="lyrics-header">
+            <div>
+              <div class="lyrics-title">${escapeHTML(data.title || data.trackName || 'Lyrics')}</div>
+              <div class="lyrics-artist">${escapeHTML(data.artist || data.artistName || '')}</div>
+            </div>
+          </div>
+          <div class="lyrics-text">${escapeHTML(data.lyrics || data.plainLyrics || 'No lyrics available')}</div>
+        </div>`;
+    }
+
+    function renderTranslate(data) {
+      return `
+        <div class="translate-result">
+          <div class="translate-from">
+            <div class="translate-label">Original</div>
+            <div class="translate-text">${escapeHTML(data.original || '')}</div>
+          </div>
+          <div style="text-align:center;font-size:20px;color:var(--text-muted)">\u2193</div>
+          <div class="translate-to">
+            <div class="translate-label">Translated (${data.to || 'en'})</div>
+            <div class="translate-text">${escapeHTML(data.translated || '')}</div>
+          </div>
+        </div>`;
+    }
+
+    function renderCurrency(data) {
+      return `
+        <div class="currency-result">
+          <div class="currency-from">${escapeHTML(String(data.amount || ''))} ${escapeHTML(data.from || '')}</div>
+          <div style="font-size:24px;color:var(--text-muted);margin:8px 0">=</div>
+          <div class="currency-amount">${typeof data.result === 'number' ? data.result.toFixed(2) : data.result || '?'} ${escapeHTML(data.to || '')}</div>
+          ${data.rate ? `<div class="currency-rate">Rate: 1 ${escapeHTML(data.from || '')} = ${data.rate} ${escapeHTML(data.to || '')}</div>` : ''}
+        </div>`;
+    }
+
+    function renderWiki(data) {
+      return `
+        <div class="wiki-result">
+          ${data.thumbnail ? `<img class="wiki-thumb" src="${data.thumbnail}" alt="" onerror="this.style.display='none'">` : ''}
+          <div class="wiki-title">${escapeHTML(data.title || '')}</div>
+          <div class="wiki-extract">${escapeHTML(data.extract || '')}</div>
+          ${data.url ? `<a class="wiki-link" href="${data.url}" target="_blank">Read full article \u2192</a>` : ''}
+        </div>`;
+    }
+
+    function renderDefine(data) {
+      let html = `<div class="define-result">
+        <div class="define-word">${escapeHTML(data.word || '')}</div>
+        ${data.phonetic ? `<div class="define-phonetic">${escapeHTML(data.phonetic)}</div>` : ''}`;
+      if (data.meanings) {
+        data.meanings.forEach(m => {
+          html += `<div class="define-pos">${escapeHTML(m.partOfSpeech || '')}</div>`;
+          (m.definitions || []).forEach(d => {
+            html += `<div class="define-def">${escapeHTML(d.definition || '')}</div>`;
+            if (d.example) html += `<div class="define-example">"${escapeHTML(d.example)}"</div>`;
+          });
+        });
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function renderQR(data) {
+      return `
+        <div class="qr-result">
+          <img src="${data.dataUrl}" alt="QR Code">
+          <div class="qr-text">${escapeHTML(data.text || '')}</div>
+        </div>`;
+    }
+
+    function renderShorten(data) {
+      const shortUrl = data.shortUrl || data.short || '';
+      return `
+        <div class="shorten-result">
+          <div class="shorten-url" id="shortenUrl">${escapeHTML(shortUrl)}</div>
+          <div class="shorten-original">${escapeHTML(data.originalUrl || data.original || '')}</div>
+          <button class="shorten-copy" onclick="navigator.clipboard.writeText('${shortUrl}');this.textContent='Copied!'">Copy Link</button>
+        </div>`;
+    }
+
+    function renderFact(data) {
+      return `
+        <div class="text-result">
+          <div class="tr-title">\ud83d\udca1 Random Fact</div>
+          <div class="tr-body">${escapeHTML(data.fact || '')}</div>
+          ${data.source ? `<div class="tr-source">Source: ${escapeHTML(data.source)}</div>` : ''}
+        </div>`;
+    }
+
+    function renderQuote(data) {
+      return `
+        <div class="text-result">
+          <div class="tr-body" style="font-size:16px;font-style:italic;line-height:1.8">"${escapeHTML(data.quote || '')}"</div>
+          <div class="tr-author" style="margin-top:12px;color:var(--accent-light);font-weight:600">\u2014 ${escapeHTML(data.author || 'Unknown')}</div>
+        </div>`;
+    }
+
+    function renderToday(data) {
+      if (!data.events?.length) return `<div class="result-error">No events found</div>`;
+      return `
+        <div class="text-result">
+          <div class="tr-title">\ud83d\udcc5 This Day in History (${data.date || ''})</div>
+          <div class="history-list">
+            ${data.events.map(e => `
+              <div class="history-item">
+                <div class="history-year">${e.year || ''}</div>
+                <div class="history-text">${escapeHTML(e.text || '')}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>`;
+    }
+
+    function renderConvert(data) {
+      return `
+        <div class="currency-result">
+          <div class="currency-from">${escapeHTML(String(data.input || data.value || ''))} ${escapeHTML(data.fromUnit || '')}</div>
+          <div style="font-size:24px;color:var(--text-muted);margin:8px 0">=</div>
+          <div class="currency-amount">${escapeHTML(String(data.result || data.output || '?'))} ${escapeHTML(data.toUnit || '')}</div>
+        </div>`;
+    }
+
+    function renderWallpapers(data) {
+      if (!data.wallpapers?.length) return `<div class="result-error">No wallpapers found</div>`;
+      return `<div class="wallpaper-grid">
+        ${data.wallpapers.map(w => {
+          const url = typeof w === 'string' ? w : (w.url || w.src || w.thumb || '');
+          return `<div class="wallpaper-item"><a href="${url}" target="_blank"><img src="${url}" alt="" loading="lazy" onerror="this.parentElement.parentElement.style.display='none'"></a></div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    function renderMedia(data) {
+      if (!data.results?.length) return `<div class="result-error">No results found</div>`;
+      return `<div class="media-list">
+        ${data.results.map(m => {
+          const poster = m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : '';
+          const title = m.title || m.name || '';
+          const year = (m.release_date || m.first_air_date || '').substring(0, 4);
+          const rating = m.vote_average ? `\u2b50 ${m.vote_average.toFixed(1)}` : '';
+          return `
+            <div class="media-item">
+              ${poster ? `<img class="media-poster" src="${poster}" alt="" onerror="this.style.display='none'">` : ''}
+              <div class="media-info">
+                <div class="media-title">${escapeHTML(title)}</div>
+                ${year ? `<div class="media-year">${year}</div>` : ''}
+                ${rating ? `<div class="media-rating">${rating}</div>` : ''}
+                ${m.overview ? `<div class="media-overview">${escapeHTML(m.overview)}</div>` : ''}
+              </div>
+            </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    // Wire up interactive elements in results
+    function wireResultActions(data) {
+      if (data.type === 'music_results') {
+        document.querySelectorAll('.song-item').forEach(item => {
+          const dlBtn = item.querySelector('.song-dl');
+          const dlUrl = item.dataset.dlUrl;
+          if (dlBtn && dlUrl) {
+            dlBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              window.open(dlUrl, '_blank');
+            });
+          }
+          // Tap song to get download
+          item.addEventListener('click', () => {
+            const songId = item.dataset.songId;
+            if (songId) callFeatureAPI('music_download', songId, '/m');
+          });
+        });
       }
     }
 
