@@ -5079,8 +5079,10 @@ function mainMenuKeyboard(userId) {
     .text(webSearchIcon, "toggle_websearch")
     .switchInline("⚡ Try Inline", "");
 
-  // Nevermore Games webapp
-  kb.row().text("🏰 Nevermore Games", "open_nevermore");
+  // Web App button (opens StarzAI homepage webapp)
+  if (PUBLIC_URL) {
+    kb.row().webApp("🌐 Web App", `${PUBLIC_URL.replace(/\/$/, '')}/webapp`);
+  }
 
   if (FEEDBACK_CHAT_ID) {
     kb.row().text("💡 Feedback", "menu_feedback");
