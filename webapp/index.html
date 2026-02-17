@@ -451,6 +451,75 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
 
+    /* ===== COMMAND INPUT MODAL ===== */
+    .cmd-modal-overlay {
+      position: fixed; inset: 0; z-index: 300;
+      background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
+      display: none; align-items: flex-end; justify-content: center;
+      animation: fadeIn 0.2s ease;
+    }
+    .cmd-modal-overlay.active { display: flex; }
+    .cmd-modal {
+      width: 100%; max-width: 480px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px; padding-bottom: max(20px, env(safe-area-inset-bottom));
+      animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes slideUp {
+      from { transform: translateY(100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .cmd-modal-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
+    }
+    .cmd-modal-title {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .cmd-modal-icon {
+      width: 40px; height: 40px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center; font-size: 20px;
+    }
+    .cmd-modal-name { font-size: 16px; font-weight: 700; }
+    .cmd-modal-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .cmd-modal-close {
+      width: 32px; height: 32px; border-radius: 10px;
+      background: rgba(255,255,255,0.06); border: none; color: var(--text-muted);
+      font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .cmd-modal-close:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+    .cmd-modal-input {
+      width: 100%; padding: 14px 16px;
+      background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text);
+      font-size: 15px; font-family: inherit; outline: none;
+      transition: border-color 0.2s;
+    }
+    .cmd-modal-input:focus { border-color: var(--border-accent); }
+    .cmd-modal-input::placeholder { color: var(--text-muted); }
+    .cmd-modal-hint {
+      font-size: 11px; color: var(--text-muted); margin-top: 8px;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .cmd-modal-send {
+      width: 100%; margin-top: 14px; padding: 14px;
+      border: none; border-radius: var(--radius-sm);
+      font-size: 15px; font-weight: 700; font-family: inherit; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), #7c3aed);
+      color: #fff; box-shadow: 0 4px 16px var(--accent-glow);
+      transition: all 0.2s;
+    }
+    .cmd-modal-send:hover { transform: translateY(-1px); }
+    .cmd-modal-send:active { transform: scale(0.98); }
+    .cmd-modal-send:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .cmd-modal-sent {
+      text-align: center; padding: 24px 0;
+      animation: fadeIn 0.3s ease;
+    }
+    .cmd-modal-sent .sent-icon { font-size: 40px; margin-bottom: 8px; }
+    .cmd-modal-sent .sent-text { font-size: 14px; font-weight: 600; color: var(--text); }
+    .cmd-modal-sent .sent-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
     /* ===== TOAST NOTIFICATION ===== */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -755,6 +824,27 @@
     <button id="submitBtn" disabled>Select a mode to begin</button>
   </div>
 
+  <!-- COMMAND INPUT MODAL -->
+  <div class="cmd-modal-overlay" id="cmdModal">
+    <div class="cmd-modal">
+      <div class="cmd-modal-header">
+        <div class="cmd-modal-title">
+          <div class="cmd-modal-icon" id="cmdModalIcon"></div>
+          <div>
+            <div class="cmd-modal-name" id="cmdModalName"></div>
+            <div class="cmd-modal-desc" id="cmdModalDesc"></div>
+          </div>
+        </div>
+        <button class="cmd-modal-close" id="cmdModalClose">&times;</button>
+      </div>
+      <div id="cmdModalBody">
+        <input type="text" class="cmd-modal-input" id="cmdModalInput" autocomplete="off" />
+        <div class="cmd-modal-hint" id="cmdModalHint"></div>
+        <button class="cmd-modal-send" id="cmdModalSend">Send</button>
+      </div>
+    </div>
+  </div>
+
   <!-- TOAST -->
   <div class="toast" id="toast"></div>
 
@@ -1000,11 +1090,11 @@
         if (action === 'ask') {
           document.querySelector('.ai-mode[data-mode="q:"]')?.click();
         } else if (action === 'image') {
-          sendCommand('/a');
+          openCmdModal('/a');
         } else if (action === 'music') {
-          sendCommand('/m');
+          openCmdModal('/m');
         } else if (action === 'download') {
-          sendCommand('/dl');
+          openCmdModal('/dl');
         } else if (action === 'nevermore') {
           openNevermore();
         }
@@ -1012,25 +1102,171 @@
     });
 
     // =====================
-    // FEATURE CARDS & ITEMS -> COMMAND DISPATCH
+    // COMMAND CONFIG (defines input requirements for each feature)
+    // =====================
+    const cmdConfig = {
+      // Image Studio
+      '/a':       { name: 'Art Studio', icon: '\ud83c\udfa8', desc: 'SeedDream 4.5', placeholder: 'Describe your image...', hint: 'e.g. a cute cat in space, cyberpunk style', color: '#ec4899', needsInput: true },
+      '/img':     { name: 'Turbo Gen', icon: '\u26a1', desc: 'Fast image generation', placeholder: 'Describe your image...', hint: 'e.g. sunset over mountains, oil painting', color: '#8b5cf6', needsInput: true },
+      '/img2':    { name: 'Flux', icon: '\u2728', desc: 'Alternative style engine', placeholder: 'Describe your image...', hint: 'e.g. portrait of a warrior, anime style', color: '#6366f1', needsInput: true },
+      '/imagine': { name: 'Imagine', icon: '\ud83d\uddbc\ufe0f', desc: 'Free alternative', placeholder: 'Describe your image...', hint: 'e.g. dragon flying over a castle', color: '#a78bfa', needsInput: true },
+      '/up':      { name: 'Upscaler', icon: '\ud83d\udd0d', desc: 'Reply to a photo in chat with /up', placeholder: '', hint: '', color: '#34d399', needsInput: false, instantMsg: 'Reply to any photo in chat with /up to upscale it!' },
+      '/imgset':  { name: 'Image Settings', icon: '\u2699\ufe0f', desc: 'Opens settings in chat', placeholder: '', hint: '', color: '#71717a', needsInput: false },
+      // Music & Media
+      '/m':       { name: 'Music Search', icon: '\ud83c\udfb5', desc: 'Download in 320kbps', placeholder: 'Enter song name or artist...', hint: 'e.g. Shape of You, Bohemian Rhapsody', color: '#34d399', needsInput: true },
+      '/lyrics':  { name: 'Lyrics', icon: '\ud83c\udfa4', desc: 'Synced lyrics', placeholder: 'Enter song name...', hint: 'e.g. Ed Sheeran - Shape of You', color: '#a78bfa', needsInput: true },
+      '/dl':      { name: 'Media Downloader', icon: '\ud83d\udce5', desc: 'YouTube, TikTok, Instagram & more', placeholder: 'Paste URL here...', hint: 'Supports YouTube, TikTok, Instagram, Twitter & 20+ sites', color: '#22d3ee', needsInput: true },
+      '/movie':   { name: 'Movie Search', icon: '\ud83c\udfac', desc: 'Browse movies', placeholder: 'Enter movie title...', hint: 'e.g. Inception, The Dark Knight', color: '#fb923c', needsInput: true },
+      '/tv':      { name: 'TV Show Search', icon: '\ud83d\udcfa', desc: 'Browse TV shows', placeholder: 'Enter TV show title...', hint: 'e.g. Breaking Bad, Wednesday', color: '#fb923c', needsInput: true },
+      '/wallpaper': { name: 'Wallpapers', icon: '\ud83d\uddbc\ufe0f', desc: 'HD wallpaper search', placeholder: 'Search wallpapers...', hint: 'e.g. nature, anime, dark aesthetic', color: '#f472b6', needsInput: true },
+      // Utilities with input
+      '/qr':       { name: 'QR Code', icon: '\u25ab\ufe0f', desc: 'Generate QR codes', placeholder: 'Enter text or URL...', hint: 'e.g. https://example.com', color: '#8b5cf6', needsInput: true },
+      '/weather':  { name: 'Weather', icon: '\u26c5', desc: 'Weather forecast', placeholder: 'Enter city name...', hint: 'e.g. Tokyo, London, New York', color: '#22d3ee', needsInput: true },
+      '/translate':{ name: 'Translate', icon: '\ud83c\udf10', desc: 'Translate text', placeholder: 'Enter text to translate...', hint: 'Format: to:es Hello world (language code)', color: '#34d399', needsInput: true },
+      '/currency': { name: 'Currency', icon: '\ud83d\udcb1', desc: 'Convert currencies', placeholder: 'e.g. 100 USD EUR', hint: 'Format: amount FROM TO', color: '#fb923c', needsInput: true },
+      '/run':      { name: 'Run Code', icon: '\u25b6\ufe0f', desc: 'Execute code', placeholder: 'Enter code to run...', hint: 'Format: language\ncode (e.g. python\nprint("hello"))', color: '#22d3ee', needsInput: true, useTextarea: true },
+      '/wiki':     { name: 'Wikipedia', icon: '\ud83d\udcd6', desc: 'Search Wikipedia', placeholder: 'Search topic...', hint: 'e.g. quantum physics, Albert Einstein', color: '#a78bfa', needsInput: true },
+      '/define':   { name: 'Dictionary', icon: '\ud83d\udcda', desc: 'Word definitions', placeholder: 'Enter a word...', hint: 'e.g. serendipity, ephemeral', color: '#6366f1', needsInput: true },
+      '/search':   { name: 'Web Search', icon: '\ud83d\udd0e', desc: 'Search the web', placeholder: 'What are you looking for?', hint: 'Uses your daily web search quota', color: '#8b5cf6', needsInput: true },
+      '/short':    { name: 'URL Shortener', icon: '\ud83d\udd17', desc: 'Shorten links', placeholder: 'Paste URL to shorten...', hint: 'e.g. https://very-long-url.com/path', color: '#34d399', needsInput: true },
+      '/convert':  { name: 'Unit Converter', icon: '\ud83d\udd03', desc: 'Convert units', placeholder: 'e.g. 10 kg lbs', hint: 'Format: value FROM TO', color: '#22d3ee', needsInput: true },
+      // Instant commands (no input needed)
+      '/todo':   { name: 'Tasks', icon: '\ud83d\udccb', desc: 'View your task list', needsInput: false },
+      '/stats':  { name: 'Stats', icon: '\ud83d\udcca', desc: 'Your usage statistics', needsInput: false },
+      '/fact':   { name: 'Random Fact', icon: '\ud83d\udca1', desc: 'Get a fun fact', needsInput: false },
+      '/quote':  { name: 'Quote', icon: '\ud83d\udcac', desc: 'Inspirational quote', needsInput: false },
+      '/today':  { name: 'This Day', icon: '\ud83d\udcc5', desc: 'Today in history', needsInput: false },
+      '/truth':  { name: 'Truth', icon: '\ud83d\udc40', desc: 'Truth question', needsInput: false },
+      '/dare':   { name: 'Dare', icon: '\ud83d\udd25', desc: 'Dare challenge', needsInput: false },
+      '/wyr':    { name: 'Would You Rather', icon: '\ud83e\udd14', desc: 'WYR question', needsInput: false },
+      '/roast':  { name: 'Roast', icon: '\ud83d\ude08', desc: 'Get roasted', needsInput: false },
+    };
+
+    // =====================
+    // COMMAND MODAL LOGIC
+    // =====================
+    const cmdModal = document.getElementById('cmdModal');
+    const cmdModalIcon = document.getElementById('cmdModalIcon');
+    const cmdModalName = document.getElementById('cmdModalName');
+    const cmdModalDesc = document.getElementById('cmdModalDesc');
+    const cmdModalBody = document.getElementById('cmdModalBody');
+    const cmdModalInput = document.getElementById('cmdModalInput');
+    const cmdModalHint = document.getElementById('cmdModalHint');
+    const cmdModalSend = document.getElementById('cmdModalSend');
+    const cmdModalClose = document.getElementById('cmdModalClose');
+    let currentCmd = null;
+
+    function openCmdModal(cmd) {
+      const cfg = cmdConfig[cmd];
+      if (!cfg) return;
+      currentCmd = cmd;
+
+      // If no input needed, send immediately
+      if (!cfg.needsInput) {
+        if (cfg.instantMsg) {
+          showToast(cfg.instantMsg, 3000);
+          return;
+        }
+        sendCommandToBot(cmd, '');
+        return;
+      }
+
+      // Configure modal
+      cmdModalIcon.textContent = cfg.icon;
+      cmdModalIcon.style.background = `color-mix(in srgb, ${cfg.color || 'var(--accent)'} 15%, transparent)`;
+      cmdModalName.textContent = cfg.name;
+      cmdModalDesc.textContent = cfg.desc;
+      cmdModalInput.placeholder = cfg.placeholder || 'Enter your input...';
+      cmdModalHint.textContent = cfg.hint || '';
+      cmdModalSend.textContent = `Send to ${cfg.name}`;
+      cmdModalSend.disabled = true;
+      cmdModalInput.value = '';
+
+      // Reset body to input mode
+      cmdModalBody.innerHTML = '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'cmd-modal-input';
+      input.id = 'cmdModalInput';
+      input.autocomplete = 'off';
+      input.placeholder = cfg.placeholder || 'Enter your input...';
+      cmdModalBody.appendChild(input);
+
+      if (cfg.hint) {
+        const hint = document.createElement('div');
+        hint.className = 'cmd-modal-hint';
+        hint.textContent = cfg.hint;
+        cmdModalBody.appendChild(hint);
+      }
+
+      const sendBtn = document.createElement('button');
+      sendBtn.className = 'cmd-modal-send';
+      sendBtn.id = 'cmdModalSend';
+      sendBtn.textContent = `Send to ${cfg.name}`;
+      sendBtn.disabled = true;
+      cmdModalBody.appendChild(sendBtn);
+
+      // Wire up events
+      input.addEventListener('input', () => {
+        sendBtn.disabled = !input.value.trim();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && input.value.trim()) {
+          sendBtn.click();
+        }
+      });
+      sendBtn.addEventListener('click', () => {
+        if (!input.value.trim()) return;
+        sendCommandToBot(currentCmd, input.value.trim());
+      });
+
+      // Show modal
+      cmdModal.classList.add('active');
+      setTimeout(() => input.focus(), 100);
+    }
+
+    function closeCmdModal() {
+      cmdModal.classList.remove('active');
+      currentCmd = null;
+    }
+
+    function sendCommandToBot(cmd, args) {
+      try {
+        tg.sendData(JSON.stringify({ command: cmd, args: args, action: 'execute' }));
+        // Show sent confirmation
+        cmdModalBody.innerHTML = `
+          <div class="cmd-modal-sent">
+            <div class="sent-icon">\u2705</div>
+            <div class="sent-text">Sent to StarzAI!</div>
+            <div class="sent-sub">Check your chat for the result</div>
+          </div>
+        `;
+        setTimeout(() => closeCmdModal(), 1500);
+      } catch (e) {
+        const fullCmd = args ? `${cmd} ${args}` : cmd;
+        showToast(`Use ${fullCmd} in chat`, 3000);
+        closeCmdModal();
+      }
+    }
+
+    // Close modal on overlay click or close button
+    cmdModalClose.addEventListener('click', closeCmdModal);
+    cmdModal.addEventListener('click', (e) => {
+      if (e.target === cmdModal) closeCmdModal();
+    });
+
+    // =====================
+    // FEATURE CARDS & ITEMS -> COMMAND MODAL
     // =====================
     document.querySelectorAll('.feature-card, .feature-item, .util-chip').forEach(el => {
       el.addEventListener('click', () => {
         const cmd = el.dataset.cmd;
-        if (cmd) {
-          sendCommand(cmd);
-        }
+        if (cmd) openCmdModal(cmd);
       });
     });
 
     function sendCommand(cmd) {
-      // Send command to bot via tg.sendData
-      try {
-        tg.sendData(JSON.stringify({ command: cmd, action: 'open_feature' }));
-      } catch (e) {
-        // If tg.sendData fails (e.g., not in webapp context), show toast
-        showToast(`Use ${cmd} in the bot chat`, 3000);
-      }
+      openCmdModal(cmd);
     }
 
     // =====================

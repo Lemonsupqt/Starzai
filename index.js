@@ -17795,41 +17795,78 @@ bot.on("message:web_app_data", async (ctx) => {
     // ===== COMMAND DISPATCH (non-AI features from webapp) =====
     if (data.command) {
       const cmd = data.command;
-      console.log(`[WebApp] Command dispatch from ${userId}: ${cmd}`);
+      const args = (data.args || '').trim();
+      const isExecute = data.action === 'execute';
+      console.log(`[WebApp] Command dispatch from ${userId}: ${cmd} ${args ? '(args: ' + args.slice(0, 50) + ')' : '(no args)'}`);
       
-      // Map of commands to helpful instructions (sent in chat)
+      // If we have args (user typed input in the modal), simulate the full command
+      if (args || isExecute) {
+        const fullText = args ? `${cmd} ${args}` : cmd;
+        // Create a fake message-like context to re-route through the bot's command handlers
+        // We do this by sending the command text as a reply from the bot, then the user can see the result
+        try {
+          // Simulate the command by sending it as if the user typed it
+          // The simplest approach: just send the command text to the chat and let the bot process it
+          await ctx.reply(`\u2705 *Sent from WebApp:* \`${fullText}\`\n\n_Processing..._`, { parse_mode: 'Markdown' });
+          
+          // Now actually invoke the command by creating a synthetic message event
+          // We use bot.api.sendMessage to trigger the command processing
+          // But the cleanest way is to just call bot.handleUpdate with a fake update
+          const fakeUpdate = {
+            update_id: Date.now(),
+            message: {
+              message_id: ctx.message.message_id + 1,
+              from: ctx.from,
+              chat: ctx.chat,
+              date: Math.floor(Date.now() / 1000),
+              text: fullText,
+              entities: [{ offset: 0, length: cmd.length, type: 'bot_command' }]
+            }
+          };
+          // Process the fake update through the bot's middleware stack
+          bot.handleUpdate(fakeUpdate).catch(err => {
+            console.error('[WebApp] Fake update error:', err.message);
+          });
+        } catch (err) {
+          console.error('[WebApp] Command execution error:', err.message);
+          await ctx.reply(`\u274c Error processing \`${cmd}\`: ${err.message}`, { parse_mode: 'Markdown' });
+        }
+        return;
+      }
+      
+      // No args and not execute action — show help text (legacy fallback)
       const cmdHelp = {
-        '/a': '🎨 Use `/a your prompt` to generate art',
-        '/img': '⚡ Use `/img your prompt` to generate an image',
-        '/img2': '✨ Use `/img2 your prompt` for Flux style',
-        '/imagine': '🖼 Use `/imagine your prompt` for free generation',
-        '/up': '📈 Reply to any photo with `/up` to upscale it',
-        '/imgset': '⚙️ Use `/imgset` to configure image settings',
-        '/m': '🎵 Use `/m song name` to search & download music',
-        '/lyrics': '🎤 Use `/lyrics song name` to get lyrics',
-        '/dl': '📥 Use `/dl URL` to download media from any platform',
-        '/movie': '🎬 Use `/movie title` to search movies',
-        '/tv': '📺 Use `/tv title` to search TV shows',
-        '/wallpaper': '🖼 Use `/wallpaper keyword` to find wallpapers',
-        '/qr': '▪️ Use `/qr text or URL` to generate a QR code',
-        '/weather': '⛅ Use `/weather city` to check weather',
-        '/translate': '🌐 Use `/translate [to:lang] text` to translate',
-        '/currency': '💱 Use `/currency 100 USD to EUR` to convert',
-        '/run': '▶️ Use `/run language\ncode` to run code',
-        '/wiki': '📖 Use `/wiki topic` to search Wikipedia',
-        '/define': '📚 Use `/define word` to look up definitions',
-        '/search': '🔎 Use `/search query` to search the web',
-        '/short': '🔗 Use `/short URL` to shorten a link',
-        '/convert': '🔃 Use `/convert value from to` to convert units',
-        '/todo': '📋 Use `/todo` to view tasks or `/todo add task` to add one',
-        '/stats': '📊 Use `/stats` to view your usage statistics',
-        '/fact': '💡 Use `/fact` to get a random fact',
-        '/quote': '💬 Use `/quote` to get a random quote',
-        '/today': '📅 Use `/today` to see this day in history',
-        '/truth': '👀 Use `/truth` to get a truth question',
-        '/dare': '🔥 Use `/dare` to get a dare challenge',
-        '/wyr': '🤔 Use `/wyr` to get a would-you-rather question',
-        '/roast': '😈 Use `/roast` to get roasted',
+        '/a': '\ud83c\udfa8 Use `/a your prompt` to generate art',
+        '/img': '\u26a1 Use `/img your prompt` to generate an image',
+        '/img2': '\u2728 Use `/img2 your prompt` for Flux style',
+        '/imagine': '\ud83d\uddbc Use `/imagine your prompt` for free generation',
+        '/up': '\ud83d\udcc8 Reply to any photo with `/up` to upscale it',
+        '/imgset': '\u2699\ufe0f Use `/imgset` to configure image settings',
+        '/m': '\ud83c\udfb5 Use `/m song name` to search & download music',
+        '/lyrics': '\ud83c\udfa4 Use `/lyrics song name` to get lyrics',
+        '/dl': '\ud83d\udce5 Use `/dl URL` to download media from any platform',
+        '/movie': '\ud83c\udfac Use `/movie title` to search movies',
+        '/tv': '\ud83d\udcfa Use `/tv title` to search TV shows',
+        '/wallpaper': '\ud83d\uddbc Use `/wallpaper keyword` to find wallpapers',
+        '/qr': '\u25aa\ufe0f Use `/qr text or URL` to generate a QR code',
+        '/weather': '\u26c5 Use `/weather city` to check weather',
+        '/translate': '\ud83c\udf10 Use `/translate [to:lang] text` to translate',
+        '/currency': '\ud83d\udcb1 Use `/currency 100 USD to EUR` to convert',
+        '/run': '\u25b6\ufe0f Use `/run language\ncode` to run code',
+        '/wiki': '\ud83d\udcd6 Use `/wiki topic` to search Wikipedia',
+        '/define': '\ud83d\udcda Use `/define word` to look up definitions',
+        '/search': '\ud83d\udd0e Use `/search query` to search the web',
+        '/short': '\ud83d\udd17 Use `/short URL` to shorten a link',
+        '/convert': '\ud83d\udd03 Use `/convert value from to` to convert units',
+        '/todo': '\ud83d\udccb Use `/todo` to view tasks or `/todo add task` to add one',
+        '/stats': '\ud83d\udcca Use `/stats` to view your usage statistics',
+        '/fact': '\ud83d\udca1 Use `/fact` to get a random fact',
+        '/quote': '\ud83d\udcac Use `/quote` to get a random quote',
+        '/today': '\ud83d\udcc5 Use `/today` to see this day in history',
+        '/truth': '\ud83d\udc40 Use `/truth` to get a truth question',
+        '/dare': '\ud83d\udd25 Use `/dare` to get a dare challenge',
+        '/wyr': '\ud83e\udd14 Use `/wyr` to get a would-you-rather question',
+        '/roast': '\ud83d\ude08 Use `/roast` to get roasted',
       };
       
       const helpText = cmdHelp[cmd] || `Use \`${cmd}\` in chat to use this feature`;
