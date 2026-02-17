@@ -5062,9 +5062,10 @@ function buildMainMenuMessage(userId) {
 }
 
 // Main menu keyboard
-function mainMenuKeyboard(userId) {
+function mainMenuKeyboard(userId, chatType) {
   const user = getUserRecord(userId);
   const webSearchIcon = user?.webSearch ? "🌐 Web: ON" : "🔍 Web: OFF";
+  const isPrivate = !chatType || chatType === 'private';
   
   const kb = new InlineKeyboard()
     .text("🌟 Features", "menu_features")
@@ -5079,8 +5080,8 @@ function mainMenuKeyboard(userId) {
     .text(webSearchIcon, "toggle_websearch")
     .switchInline("⚡ Try Inline", "");
 
-  // Web App button (opens StarzAI homepage webapp)
-  if (PUBLIC_URL) {
+  // Web App button — only in private chats (Telegram doesn't allow webApp buttons in groups)
+  if (PUBLIC_URL && isPrivate) {
     const baseUrl = PUBLIC_URL.replace(/\/$/, '');
     const webappUrl = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
     kb.row().webApp("🌐 Web App", `${webappUrl}/webapp`);
@@ -5615,7 +5616,7 @@ bot.command("start", async (ctx) => {
 
   await ctx.reply(buildMainMenuMessage(ctx.from.id), {
     parse_mode: "Markdown",
-    reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_markup: mainMenuKeyboard(ctx.from.id, ctx.chat?.type),
     reply_to_message_id: ctx.message?.message_id,
   });
 });
@@ -5627,7 +5628,7 @@ bot.command("help", async (ctx) => {
   
   await ctx.reply(buildMainMenuMessage(ctx.from.id), {
     parse_mode: "Markdown",
-    reply_markup: mainMenuKeyboard(ctx.from.id),
+    reply_markup: mainMenuKeyboard(ctx.from.id, ctx.chat?.type),
     reply_to_message_id: ctx.message?.message_id,
   });
 });
@@ -16514,7 +16515,7 @@ bot.callbackQuery("menu_back", async (ctx) => {
   try {
     await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
       parse_mode: "Markdown",
-      reply_markup: mainMenuKeyboard(ctx.from.id)
+      reply_markup: mainMenuKeyboard(ctx.from.id, ctx.chat?.type)
     });
   } catch (e) {
     // If edit fails (message unchanged), ignore
@@ -17009,7 +17010,7 @@ bot.callbackQuery("menu_register", async (ctx) => {
   try {
     await ctx.editMessageText(buildMainMenuMessage(ctx.from.id), {
       parse_mode: "Markdown",
-      reply_markup: mainMenuKeyboard(ctx.from.id)
+      reply_markup: mainMenuKeyboard(ctx.from.id, ctx.chat?.type)
     });
   } catch (e) {
     // If edit fails, ignore
@@ -17041,7 +17042,7 @@ bot.callbackQuery("toggle_websearch", async (ctx) => {
   try {
     await ctx.editMessageText(buildMainMenuMessage(userId), {
       parse_mode: "Markdown",
-      reply_markup: mainMenuKeyboard(userId)
+      reply_markup: mainMenuKeyboard(userId, ctx.chat?.type)
     });
   } catch (e) {
     // If edit fails, ignore
