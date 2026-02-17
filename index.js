@@ -4707,6 +4707,19 @@ function convertToTelegramHTML(text) {
 
   let result = String(text);
 
+  // Step 0: Protect thinking HTML tags (spoiler and blockquote)
+  const thinkingBlocks = [];
+  // Protect spoiler tags: <span class="tg-spoiler">...</span>
+  result = result.replace(/<span class="tg-spoiler">([\s\S]*?)<\/span>/g, (match) => {
+    thinkingBlocks.push(match);
+    return `@@THINKING_${thinkingBlocks.length - 1}@@`;
+  });
+  // Protect blockquote tags: <blockquote expandable>...</blockquote>
+  result = result.replace(/<blockquote expandable>([\s\S]*?)<\/blockquote>/g, (match) => {
+    thinkingBlocks.push(match);
+    return `@@THINKING_${thinkingBlocks.length - 1}@@`;
+  });
+
   // Step 1: Protect and convert code blocks with language (```python ... ```)
   const codeBlocksWithLang = [];
   result = result.replace(/```(\w+)\n([\s\S]*?)```/g, (match, lang, code) => {
@@ -4790,6 +4803,11 @@ function convertToTelegramHTML(text) {
 
   codeBlocksWithLang.forEach((code, i) => {
     result = result.replace(`@@CODEBLOCK_LANG_${i}@@`, code);
+  });
+
+  // Step 7: Restore thinking blocks
+  thinkingBlocks.forEach((block, i) => {
+    result = result.replace(`@@THINKING_${i}@@`, block);
   });
 
   return result;
