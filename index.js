@@ -257,7 +257,7 @@ const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
 // Bug #14: Startup warnings for missing optional environment variables
 if (!GITHUB_PAT) console.warn("[Config] GITHUB_PAT not set — GitHub Models provider disabled");
 if (!SUPABASE_URL || !SUPABASE_KEY) console.warn("[Config] SUPABASE_URL/SUPABASE_KEY not set — Persistent cloud storage disabled");
-if (!PARALLEL_API_KEY) console.warn("[Config] PARALLEL_API_KEY not set — Web search functionality disabled");
+if (!PARALLEL_API_KEY) console.warn("[Config] PARALLEL_API_KEY not set — Parallel.ai web search integration disabled (fallback search still available)");
 if (!STORAGE_CHANNEL_ID) console.warn("[Config] STORAGE_CHANNEL_ID not set — Telegram backup storage disabled");
 
 const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
@@ -1876,7 +1876,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     } catch (error) {
       providerStats[provider.key].failures++;
       lastError = error;
-      errorMessages.push(error.message); // Bug #10
+      errorMessages.push(`${provider.name}(attempt ${attempt + 1}): ${error.message}`); // Bug #10
       console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
       
       // Only retry on timeout errors within the same provider
@@ -1917,12 +1917,15 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
       return { content: result, provider: 'megallm', fallback: true, fallbackModel };
     } catch (fallbackError) {
       providerStats.megallm.failures++;
+      errorMessages.push(`MegaLLM(${fallbackModel}): ${fallbackError.message}`);
       console.error(`[LLM] ❌ MegaLLM fallback also failed:`, fallbackError.message);
     }
   }
 
   // All providers failed
-  throw new Error(`All providers failed:\n${errorMessages.join("\n")}`);
+  const err = new Error(`All providers failed for ${model}:\n${errorMessages.join("\n")}`);
+  if (lastError) err.cause = lastError;
+  throw err;
 }
 
 // =====================
@@ -1978,7 +1981,8 @@ async function supabaseGet(key) {
     const data = await res.json();
     return data.length > 0 ? data[0].value : null;
   } catch (e) {
-    console.error(`Supabase GET ${key} error:`, e.message.replace(SUPABASE_KEY, "[REDACTED]"));
+    const msg = String(e?.message || e);
+    console.error(`Supabase GET ${key} error:`, SUPABASE_KEY ? msg.replace(SUPABASE_KEY, "[REDACTED]") : msg);
     return null;
   }
 }
@@ -2002,7 +2006,8 @@ async function supabaseSet(key, value) {
     });
     return res.ok;
   } catch (e) {
-    console.error(`Supabase SET ${key} error:`, e.message.replace(SUPABASE_KEY, "[REDACTED]"));
+    const msg = String(e?.message || e);
+    console.error(`Supabase SET ${key} error:`, SUPABASE_KEY ? msg.replace(SUPABASE_KEY, "[REDACTED]") : msg);
     return false;
   }
 }
@@ -2114,25 +2119,35 @@ function scheduleSave(dataType, priority = 'normal') {
 
 async function flushSaves() {
   if (pendingSaves.size === 0) return;
+  // Bug #7: Snapshot the current set and remove only the snapshotted items.
+  // If scheduleSave() re-adds a dataType during the async save loop,
+  // it won't be deleted because we only delete items we snapshotted.
   const toSave = [...pendingSaves];
-  // pendingSaves.clear(); // Bug #7 fix: delete individually after save
+  for (const dataType of toSave) {
+    pendingSaves.delete(dataType); // remove before save — if re-added during save, it stays
+  }
   
   for (const dataType of toSave) {
-    // Try Supabase first (permanent), then Telegram as backup
-    const supabaseOk = await saveToSupabase(dataType);
-    if (!supabaseOk) {
-      // Fall back to Telegram channel storage
-      await saveToTelegram(dataType);
-    } else {
-      // Also save locally as backup
-      if (dataType === "users") writeJson(USERS_FILE, usersDb);
-      if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
-      if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
-      if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
-      if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
-      if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
+    try {
+      // Try Supabase first (permanent), then Telegram as backup
+      const supabaseOk = await saveToSupabase(dataType);
+      if (!supabaseOk) {
+        // Fall back to Telegram channel storage
+        await saveToTelegram(dataType);
+      } else {
+        // Also save locally as backup
+        if (dataType === "users") writeJson(USERS_FILE, usersDb);
+        if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
+        if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+        if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+        if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+        if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
+      }
+    } catch (saveErr) {
+      // Re-add on failure so it retries next flush
+      pendingSaves.add(dataType);
+      console.error(`[Save] Failed to save ${dataType}, will retry:`, saveErr.message);
     }
-    pendingSaves.delete(dataType); // Bug #7: delete after save completes
   }
 }
 
@@ -2145,6 +2160,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
     if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
+    if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
     return;
   }
   
@@ -21345,6 +21361,7 @@ bot.on("message:photo", async (ctx) => {
     return;
   }
 
+  let typingInterval = null;
   try {
     // Send initial processing status for images
     const statusText = isCharacterMode 
@@ -21353,7 +21370,7 @@ bot.on("message:photo", async (ctx) => {
     statusMsg = await ctx.reply(statusText, { parse_mode: "HTML" });
 
     // Keep typing indicator active
-    const typingInterval = setInterval(() => {
+    typingInterval = setInterval(() => {
       ctx.replyWithChatAction("typing").catch(() => {});
     }, 4000);
     await ctx.replyWithChatAction("typing");
@@ -21435,7 +21452,7 @@ bot.on("message:photo", async (ctx) => {
       await ctx.reply(response, { parse_mode: "HTML" });
     }
   } catch (e) {
-    clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
+    if (typingInterval) clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
     console.error("Vision error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
@@ -21494,6 +21511,7 @@ bot.on("message:video", async (ctx) => {
   const startTime = Date.now();
   let statusMsg = null;
   let tempDir = null;
+  let typingInterval = null;
 
   try {
     // Check video size (limit to 20MB)
@@ -21505,7 +21523,7 @@ bot.on("message:video", async (ctx) => {
     statusMsg = await ctx.reply(`🎬 <b>Processing video...</b>\n\n⏳ Downloading...`, { parse_mode: "HTML" });
 
     // Keep typing indicator active
-    const typingInterval = setInterval(() => {
+    typingInterval = setInterval(() => {
       ctx.replyWithChatAction("typing").catch(() => {});
     }, 4000);
     await ctx.replyWithChatAction("typing");
@@ -21633,7 +21651,7 @@ bot.on("message:video", async (ctx) => {
     await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
 
   } catch (e) {
-    clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
+    if (typingInterval) clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
     console.error("Video processing error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
