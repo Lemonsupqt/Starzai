@@ -1882,7 +1882,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
       providerStats[provider.key].failures++;
       lastError = error;
       errorMessages.push(`${provider.name}(attempt ${attempt + 1}): ${formatError(error)}`); // Bug #10
-      console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
+      console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, formatError(error));
       
       // Only retry on timeout errors within the same provider
       if (!error.message?.includes('timed out') && !error.message?.includes('timeout')) {
