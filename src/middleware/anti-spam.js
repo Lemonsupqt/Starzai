@@ -181,18 +181,27 @@ function calculateSimilarity(str1, str2) {
   
   if (s1 === s2) return 1;
   
-  // Simple character-based similarity
-  const longer = s1.length > s2.length ? s1 : s2;
-  const shorter = s1.length > s2.length ? s2 : s1;
+  const len1 = s1.length;
+  const len2 = s2.length;
   
-  if (longer.length === 0) return 1;
-  
-  let matches = 0;
-  for (let i = 0; i < shorter.length; i++) {
-    if (longer.includes(shorter[i])) matches++;
+  if (len1 === 0 || len2 === 0) return 0;
+
+  // Levenshtein distance
+  const dp = Array.from({ length: len1 + 1 }, (_, i) => i);
+  for (let j = 1; j <= len2; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= len1; i++) {
+      const temp = dp[i];
+      dp[i] = s1[i - 1] === s2[j - 1]
+        ? prev
+        : 1 + Math.min(prev, dp[i], dp[i - 1]);
+      prev = temp;
+    }
   }
-  
-  return matches / longer.length;
+
+  const distance = dp[len1];
+  return 1 - distance / Math.max(len1, len2);
 }
 
 function detectSpam(userId, messageText) {

@@ -154,10 +154,17 @@ async function duckDuckGoSearch(query) {
   try {
     // DDG Instant Answer API - gives quick facts
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'StarzAI-Bot/1.0' },
-      timeout: 8000
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { 'User-Agent': 'StarzAI-Bot/1.0' },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     
     if (!response.ok) return null;
     
@@ -207,12 +214,19 @@ async function duckDuckGoSearch(query) {
 async function duckDuckGoScrape(query, numResults = 5) {
   try {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      },
-      timeout: 10000
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     
     if (!response.ok) return null;
     
@@ -260,13 +274,20 @@ async function searxngSearch(query, numResults = 5) {
   for (const instance of shuffled) {
     try {
       const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json&engines=google,bing,duckduckgo`;
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json'
-        },
-        timeout: 8000
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      let response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
+          },
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       
       if (!response.ok) {
         errors.push(`${instance}: HTTP ${response.status}`);
