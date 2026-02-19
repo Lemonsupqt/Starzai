@@ -1970,6 +1970,15 @@ let partnersDb = readJson(PARTNERS_FILE, { partners: {} });
 let todosDb = readJson(TODOS_FILE, { todos: {} });
 let collabTodosDb = readJson(COLLAB_TODOS_FILE, { lists: {}, userLists: {} });
 
+// Load imageStats from local file and restore to deapiKeyManager
+// This ensures stats persist across restarts even without Supabase
+const imageStatsFile = path.join(DATA_DIR, "imageStats.json");
+const savedImageStats = readJson(imageStatsFile, {});
+if (Object.keys(savedImageStats).length > 0) {
+  deapiKeyManager.loadStats(savedImageStats);
+  console.log("Loaded imageStats from local storage");
+}
+
 // =====================
 // SUPABASE STORAGE (Primary - permanent persistence)
 // =====================
