@@ -254,6 +254,12 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 // Optional: Parallel AI Search / Extract API key for web search integration
 const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
 
+// Bug #14: Startup warnings for missing optional environment variables
+if (!GITHUB_PAT) console.warn("[Config] GITHUB_PAT not set — GitHub Models provider disabled");
+if (!SUPABASE_URL || !SUPABASE_KEY) console.warn("[Config] SUPABASE_URL/SUPABASE_KEY not set — Persistent cloud storage disabled");
+if (!PARALLEL_API_KEY) console.warn("[Config] PARALLEL_API_KEY not set — Web search functionality disabled");
+if (!STORAGE_CHANNEL_ID) console.warn("[Config] STORAGE_CHANNEL_ID not set — Telegram backup storage disabled");
+
 const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 
 // DeAPI for image generation (ZImageTurbo)
@@ -2112,7 +2118,6 @@ async function flushSaves() {
   // pendingSaves.clear(); // Bug #7 fix: delete individually after save
   
   for (const dataType of toSave) {
-    pendingSaves.delete(dataType); // Bug #7: delete after processing to avoid race
     // Try Supabase first (permanent), then Telegram as backup
     const supabaseOk = await saveToSupabase(dataType);
     if (!supabaseOk) {
@@ -2127,6 +2132,7 @@ async function flushSaves() {
       if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
       if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
     }
+    pendingSaves.delete(dataType); // Bug #7: delete after save completes
   }
 }
 
@@ -25662,7 +25668,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Persist searchResult so future parts can reuse the same sources list
         searchResult: searchResult || null,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
@@ -25826,7 +25831,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Carry forward any searchResult from the base item so final part can show sources
         searchResult: baseItem.searchResult || null,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
@@ -26738,7 +26742,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         part,
         completed,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
