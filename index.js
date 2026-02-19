@@ -1982,7 +1982,7 @@ async function supabaseGet(key) {
     return data.length > 0 ? data[0].value : null;
   } catch (e) {
     const msg = String(e?.message || e);
-    console.error(`Supabase GET ${key} error:`, SUPABASE_KEY ? msg.replace(SUPABASE_KEY, "[REDACTED]") : msg);
+    console.error(`Supabase GET ${key} error:`, SUPABASE_KEY ? msg.replaceAll(SUPABASE_KEY, "[REDACTED]") : msg);
     return null;
   }
 }
@@ -2007,7 +2007,7 @@ async function supabaseSet(key, value) {
     return res.ok;
   } catch (e) {
     const msg = String(e?.message || e);
-    console.error(`Supabase SET ${key} error:`, SUPABASE_KEY ? msg.replace(SUPABASE_KEY, "[REDACTED]") : msg);
+    console.error(`Supabase SET ${key} error:`, SUPABASE_KEY ? msg.replaceAll(SUPABASE_KEY, "[REDACTED]") : msg);
     return false;
   }
 }
@@ -4595,7 +4595,7 @@ function getTimeResponse(text, messageDate) {
       location: locationName
     };
   } catch (e) {
-    console.warn("[Time] Invalid timezone fallback to UTC:", e.message); // Bug #11
+    console.warn("[Time] Invalid timezone fallback to UTC:", "timezone:", timezone, "input:", text?.slice(0, 80), "error:", e.message); // Bug #11
     return {
       isTimeQuery: true,
       response: `🕐 Current UTC time: ${now.toUTCString()}`,
