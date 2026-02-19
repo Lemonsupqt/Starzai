@@ -2124,10 +2124,20 @@ function scheduleSave(dataType, priority = 'normal') {
 
 async function flushSaves() {
   if (pendingSaves.size === 0) return;
-  // Bug #7: Snapshot the current set and remove only the snapshotted items.
-  // If scheduleSave() re-adds a dataType during the async save loop,
-  // it won't be deleted because we only delete items we snapshotted.
+  
+  // Bug #7: Claim ownership of pending saves BEFORE any async operations.
+  // This prevents concurrent scheduleSave() calls from being lost.
   const toSave = [...pendingSaves];
+  
+  // Remove all snapshotted items from pendingSaves immediately.
+  // If scheduleSave() is called during the async save, it will re-add the key,
+  // and that new save will be processed in the next flush cycle.
+  for (const dataType of toSave) {
+    pendingSaves.delete(dataType);
+  }
+  
+  // Now process the saves - any concurrent scheduleSave() calls will safely
+  // add to the now-empty pendingSaves without being deleted by this flush.
   for (const dataType of toSave) {
     try {
       // Try Supabase first (permanent), then Telegram as backup
@@ -2144,8 +2154,7 @@ async function flushSaves() {
         if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
         if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
       }
-      // Bug #7: Only delete after successful save
-      pendingSaves.delete(dataType);
+      // Success - key stays deleted
     } catch (saveErr) {
       // Re-add on failure so it retries next flush
       pendingSaves.add(dataType);
