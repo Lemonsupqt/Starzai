@@ -2103,6 +2103,9 @@ function saveStorageIds() {
 let saveTimeout = null;
 let pendingSaves = new Set();
 
+// Lock to prevent concurrent flushSaves() executions
+let flushInProgress = null;
+
 function scheduleSave(dataType, priority = 'normal') {
   pendingSaves.add(dataType);
   if (saveTimeout) clearTimeout(saveTimeout);
@@ -2123,42 +2126,70 @@ function scheduleSave(dataType, priority = 'normal') {
 }
 
 async function flushSaves() {
-  if (pendingSaves.size === 0) return;
-  
-  // Bug #7: Claim ownership of pending saves BEFORE any async operations.
-  // This prevents concurrent scheduleSave() calls from being lost.
-  const toSave = [...pendingSaves];
-  
-  // Remove all snapshotted items from pendingSaves immediately.
-  // If scheduleSave() is called during the async save, it will re-add the key,
-  // and that new save will be processed in the next flush cycle.
-  for (const dataType of toSave) {
-    pendingSaves.delete(dataType);
+  // If a flush is already in progress, wait for it to complete
+  if (flushInProgress) {
+    await flushInProgress;
+    // After the previous flush completes, check if there are new pending saves
+    // If so, start a new flush (but only if no other flush started in the meantime)
+    if (pendingSaves.size > 0 && !flushInProgress) {
+      return flushSaves();
+    }
+    return;
   }
   
-  // Now process the saves - any concurrent scheduleSave() calls will safely
-  // add to the now-empty pendingSaves without being deleted by this flush.
-  for (const dataType of toSave) {
-    try {
-      // Try Supabase first (permanent), then Telegram as backup
-      const supabaseOk = await saveToSupabase(dataType);
-      if (!supabaseOk) {
-        // Fall back to Telegram channel storage
-        await saveToTelegram(dataType);
-      } else {
-        // Also save locally as backup
-        if (dataType === "users") writeJson(USERS_FILE, usersDb);
-        if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
-        if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
-        if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
-        if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
-        if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
+  if (pendingSaves.size === 0) return;
+  
+  // Create a promise to track this flush operation
+  let resolveFlush;
+  flushInProgress = new Promise(resolve => { resolveFlush = resolve; });
+  
+  try {
+    // Bug #7: Claim ownership of pending saves BEFORE any async operations.
+    // This prevents concurrent scheduleSave() calls from being lost.
+    const toSave = [...pendingSaves];
+    
+    // Remove all snapshotted items from pendingSaves immediately.
+    // If scheduleSave() is called during the async save, it will re-add the key,
+    // and that new save will be processed in the next flush cycle.
+    for (const dataType of toSave) {
+      pendingSaves.delete(dataType);
+    }
+    
+    // Now process the saves - any concurrent scheduleSave() calls will safely
+    // add to the now-empty pendingSaves without being deleted by this flush.
+    for (const dataType of toSave) {
+      try {
+        // Try Supabase first (permanent), then Telegram as backup
+        const supabaseOk = await saveToSupabase(dataType);
+        if (!supabaseOk) {
+          // Fall back to Telegram channel storage
+          await saveToTelegram(dataType);
+        } else {
+          // Also save locally as backup
+          if (dataType === "users") writeJson(USERS_FILE, usersDb);
+          if (dataType === "prefs") writeJson(PREFS_FILE, prefsDb);
+          if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
+          if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
+          if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+          if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
+        }
+        // Success - key stays deleted
+      } catch (saveErr) {
+        // Re-add on failure so it retries next flush
+        pendingSaves.add(dataType);
+        console.error(`[Save] Failed to save ${dataType}, will retry:`, saveErr.message);
       }
-      // Success - key stays deleted
-    } catch (saveErr) {
-      // Re-add on failure so it retries next flush
-      pendingSaves.add(dataType);
-      console.error(`[Save] Failed to save ${dataType}, will retry:`, saveErr.message);
+    }
+  } finally {
+    // Release the lock
+    flushInProgress = null;
+    resolveFlush();
+    
+    // If new saves were added during this flush, schedule another flush
+    if (pendingSaves.size > 0) {
+      setTimeout(() => flushSaves().catch(err => {
+        console.error("❌ Follow-up flush error:", err);
+      }), 100);
     }
   }
 }
