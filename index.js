@@ -2123,10 +2123,6 @@ async function flushSaves() {
   // it won't be deleted because we only delete items we snapshotted.
   const toSave = [...pendingSaves];
   for (const dataType of toSave) {
-    pendingSaves.delete(dataType); // remove before save — if re-added during save, it stays
-  }
-  
-  for (const dataType of toSave) {
     try {
       // Try Supabase first (permanent), then Telegram as backup
       const supabaseOk = await saveToSupabase(dataType);
@@ -2142,6 +2138,8 @@ async function flushSaves() {
         if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
         if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
       }
+      // Bug #7: Only delete after successful save
+      pendingSaves.delete(dataType);
     } catch (saveErr) {
       // Re-add on failure so it retries next flush
       pendingSaves.add(dataType);
