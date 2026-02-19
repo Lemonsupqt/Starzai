@@ -1849,6 +1849,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
 
   // Try the intended provider with retries
   let lastError = null;
+  const errorMessages = []; // Bug #10: collect all error messages
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     providerStats[provider.key].calls++;
@@ -1869,6 +1870,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     } catch (error) {
       providerStats[provider.key].failures++;
       lastError = error;
+      errorMessages.push(error.message); // Bug #10
       console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
       
       // Only retry on timeout errors within the same provider
@@ -1914,7 +1916,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
   }
 
   // All providers failed
-  throw lastError || new Error(`All providers failed for model: ${model}`);
+  throw new Error(`All providers failed:\n${errorMessages.join("\n")}`);
 }
 
 // =====================
@@ -1970,7 +1972,7 @@ async function supabaseGet(key) {
     const data = await res.json();
     return data.length > 0 ? data[0].value : null;
   } catch (e) {
-    console.error(`Supabase GET ${key} error:`, e.message);
+    console.error(`Supabase GET ${key} error:`, e.message.replace(SUPABASE_KEY, "[REDACTED]"));
     return null;
   }
 }
@@ -1994,7 +1996,7 @@ async function supabaseSet(key, value) {
     });
     return res.ok;
   } catch (e) {
-    console.error(`Supabase SET ${key} error:`, e.message);
+    console.error(`Supabase SET ${key} error:`, e.message.replace(SUPABASE_KEY, "[REDACTED]"));
     return false;
   }
 }
@@ -2107,9 +2109,10 @@ function scheduleSave(dataType, priority = 'normal') {
 async function flushSaves() {
   if (pendingSaves.size === 0) return;
   const toSave = [...pendingSaves];
-  pendingSaves.clear();
+  // pendingSaves.clear(); // Bug #7 fix: delete individually after save
   
   for (const dataType of toSave) {
+    pendingSaves.delete(dataType); // Bug #7: delete after processing to avoid race
     // Try Supabase first (permanent), then Telegram as backup
     const supabaseOk = await saveToSupabase(dataType);
     if (!supabaseOk) {
@@ -2122,6 +2125,7 @@ async function flushSaves() {
       if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
       if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
       if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+      if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
     }
   }
 }
@@ -2155,6 +2159,9 @@ async function saveToTelegram(dataType) {
     } else if (dataType === "todos") {
       data = todosDb;
       label = "📋 TODOS_DATA";
+    } else if (dataType === "imageStats") {
+      data = deapiKeyManager.getPersistentStats();
+      label = "📊 IMAGE_STATS";
     } else if (dataType === "collabTodos") {
       data = collabTodosDb;
       label = "👥 COLLAB_TODOS_DATA";
@@ -2190,6 +2197,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
     if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
     
   } catch (e) {
@@ -2200,6 +2208,7 @@ async function saveToTelegram(dataType) {
     if (dataType === "inlineSessions") writeJson(INLINE_SESSIONS_FILE, inlineSessionsDb);
     if (dataType === "partners") writeJson(PARTNERS_FILE, partnersDb);
     if (dataType === "todos") writeJson(TODOS_FILE, todosDb);
+    if (dataType === "imageStats") writeJson(path.join(DATA_DIR, "imageStats.json"), deapiKeyManager.getPersistentStats());
     if (dataType === "collabTodos") writeJson(COLLAB_TODOS_FILE, collabTodosDb);
   }
 }
@@ -4564,6 +4573,7 @@ function getTimeResponse(text, messageDate) {
       location: locationName
     };
   } catch (e) {
+    console.warn("[Time] Invalid timezone fallback to UTC:", e.message); // Bug #11
     return {
       isTimeQuery: true,
       response: `🕐 Current UTC time: ${now.toUTCString()}`,
@@ -15089,7 +15099,15 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
             `❌ Lyrics not found for "${escapeHTML(song.name)}"\n\nTry /lyrics ${escapeHTML(song.name)}`,
             { parse_mode: 'HTML', reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
         return;
       }
     }
@@ -15101,7 +15119,15 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
           `🎵 ${escapeHTML(song.artist)} — ${escapeHTML(song.name)}\n\n🎶 This is an instrumental track (no lyrics).`,
           { reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       return;
     }
 
@@ -15150,7 +15176,15 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
           reply_markup: buttons.length ? { inline_keyboard: [buttons] } : undefined
         }
       );
-    } catch {}
+    } catch (e) {
+
+      if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+        console.warn('[TG]', e.message);
+
+      }
+
+    }
 
     // Update inline message button to show lyrics were sent
     try {
@@ -15160,7 +15194,15 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
           .row()
           .switchInlineCurrent("🔍 Search More", "m: "),
       });
-    } catch {}
+    } catch (e) {
+
+      if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+        console.warn('[TG]', e.message);
+
+      }
+
+    }
   } catch (error) {
     console.error('[Music Inline Lyrics] Error:', error);
     try {
@@ -15169,7 +15211,15 @@ bot.callbackQuery(/^milyrics:/, async (ctx) => {
         `❌ Failed to fetch lyrics\n\nTry /lyrics ${escapeHTML(song.name)}`,
         { parse_mode: 'HTML', reply_parameters: dmAudioMessageId ? { message_id: dmAudioMessageId } : undefined }
       );
-    } catch {}
+    } catch (e) {
+
+      if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+        console.warn('[TG]', e.message);
+
+      }
+
+    }
   }
 });
 
@@ -17352,7 +17402,7 @@ bot.callbackQuery("menu_stats", async (ctx) => {
   }
   
   const userStats = user.stats || { totalMessages: 0, totalInlineQueries: 0, lastActive: null };
-  const shortModel = (user.model || ensureChosenModelValid(u.id)).split("/").pop();
+  const shortModel = ((user.model || ensureChosenModelValid(u.id)) || DEFAULT_FREE_MODEL).split("/").pop() || "unknown"; // Bug #9: null model fallback
   
   // Calculate days since registration
   const regDate = new Date(user.registeredAt || Date.now());
@@ -21379,6 +21429,7 @@ bot.on("message:photo", async (ctx) => {
       await ctx.reply(response, { parse_mode: "HTML" });
     }
   } catch (e) {
+    clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
     console.error("Vision error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
@@ -21576,6 +21627,7 @@ bot.on("message:video", async (ctx) => {
     await ctx.api.editMessageText(chat.id, statusMsg.message_id, response, { parse_mode: "HTML" });
 
   } catch (e) {
+    clearInterval(typingInterval); // Bug #5: prevent typing indicator leak
     console.error("Video processing error:", e.message);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     
@@ -22690,6 +22742,7 @@ bot.on("inline_query", async (ctx) => {
         userId: String(userId),
         taskText,
         timestamp: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
       
@@ -22940,6 +22993,7 @@ bot.on("inline_query", async (ctx) => {
         userId: String(userId),
         taskText,
         timestamp: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(`tadd_pending_${addKey}`), 5 * 60 * 1000);
       
@@ -23025,6 +23079,7 @@ bot.on("inline_query", async (ctx) => {
         taskId,
         newText,
         timestamp: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(`tedit_pending_${editKey}`), 5 * 60 * 1000);
       
@@ -24912,7 +24967,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           "👥 *Yap shared chat mode has been removed.*\n\nUse other inline modes instead:\n\n• `q:`  – Quark (quick answers)\n• `b:`  – Blackhole (deep research)\n• `code:` – Programming help\n• `e:`  – Explain (ELI5)\n• `sum:` – Summarize\n• `p:`  – Partner chat",
           { parse_mode: "Markdown" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     return;
   }
@@ -24926,7 +24989,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           "👥 *Yap shared chat mode has been removed.*",
           { parse_mode: "Markdown" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     return;
   }
@@ -24945,7 +25016,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             "❌ Song request expired. Search again with <code>m: song name</code>",
             { parse_mode: "HTML" }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
       return;
     }
@@ -24981,7 +25060,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🎵 <b>${escapeHTML(fullSong.name)}</b>\n🎤 <i>${escapeHTML(fullSong.artist)}</i>\n\n📥 <b>Downloading ${quality}...</b>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
 
       // Download audio buffer
       const audioRes = await fetch(downloadUrl);
@@ -25008,7 +25095,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             const thumbBuf = Buffer.from(await thumbRes.arrayBuffer());
             thumbInput = new InputFile(thumbBuf, 'thumb.jpg');
           }
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
 
       // Parse duration string "m:ss" to seconds for Telegram API
@@ -25050,7 +25145,7 @@ bot.on("chosen_inline_result", async (ctx) => {
 
       // Store song info for lyrics callback (include DM audio message ID for reply)
       const inlineLyricsKey = `mily_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      inlineCache.set(inlineLyricsKey, { song: fullSong, userId: ownerId, dmAudioMessageId: dmAudioMsgId });
+      inlineCache.set(inlineLyricsKey, { song: fullSong, userId: ownerId, dmAudioMessageId: dmAudioMsgId, createdAt: Date.now() });
       setTimeout(() => inlineCache.delete(inlineLyricsKey), 10 * 60 * 1000);
 
       // Build inline keyboard — 2 rows for clean layout
@@ -25089,7 +25184,15 @@ bot.on("chosen_inline_result", async (ctx) => {
               `<i>via StarzAI Music</i>`,
               { parse_mode: "HTML", reply_markup: inlineKb }
             );
-          } catch {}
+          } catch (e) {
+
+            if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+              console.warn('[TG]', e.message);
+
+            }
+
+          }
         }
       } else {
         // No file_id available, just update text
@@ -25105,7 +25208,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             `<i>Use /m in bot DM for direct download.</i>`,
             { parse_mode: "HTML", reply_markup: inlineKb }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
 
     } catch (err) {
@@ -25119,7 +25230,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             reply_markup: new InlineKeyboard().switchInlineCurrent("🔍 Try Again", "m: "),
           }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
 
     inlineCache.delete(`m_pending_${mKey}`);
@@ -25141,7 +25260,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             "❌ Download request expired. Please try again.",
             { parse_mode: "HTML" }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
       return;
     }
@@ -25209,7 +25336,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             `❌ <b>Download failed</b>\n\n${escapeHTML(e.message)}\n\n<i>Try using /dl command instead</i>`,
             { parse_mode: "HTML" }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
     }
     
@@ -25287,6 +25422,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         mode: "chat",
         history: newHistory,
         timestamp: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       
       // Schedule cleanup
@@ -25316,7 +25452,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             `❓ *${userMessage}*\n\n⚠️ _Error getting response. Try again!_\n\n_via StarzAI_`,
             { parse_mode: "Markdown" }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
     }
     
@@ -25392,7 +25536,15 @@ bot.on("chosen_inline_result", async (ctx) => {
             `❓ *${prompt}*\n\n⚠️ _Error getting response. Try again!_\n\n_via StarzAI_`,
             { parse_mode: "Markdown" }
           );
-        } catch {}
+        } catch (e) {
+
+          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+            console.warn('[TG]', e.message);
+
+          }
+
+        }
       }
     }
     
@@ -25510,6 +25662,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Persist searchResult so future parts can reuse the same sources list
         searchResult: searchResult || null,
         createdAt: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
@@ -25546,7 +25699,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🗿🔬 <b>Blackhole Analysis: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     // Clean up pending
@@ -25574,7 +25735,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Session expired. Start a new Blackhole analysis.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       return;
     }
 
@@ -25586,7 +25755,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Only the original requester can continue this analysis.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       return;
     }
 
@@ -25649,6 +25826,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Carry forward any searchResult from the base item so final part can show sources
         searchResult: baseItem.searchResult || null,
         createdAt: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
@@ -25683,7 +25861,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🗿🔬 <b>Blackhole Analysis (cont.)</b>\n\n⚠️ <i>Error getting continuation. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
 
     inlineCache.delete(`bh_cont_pending_${contId}`);
@@ -25710,7 +25896,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>This feature is only available for Ultra users.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       inlineCache.delete(`ultrasum_pending_${sumId}`);
       return;
     }
@@ -25724,7 +25918,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Session expired. Run the answer again.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       return;
     }
 
@@ -25736,7 +25938,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Only the original requester can summarize this answer.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       return;
     }
 
@@ -25748,7 +25958,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Answer is too short to summarize.</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
       inlineCache.delete(`ultrasum_pending_${sumId}`);
       return;
     }
@@ -25857,7 +26075,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧾 <b>Ultra Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
 
     inlineCache.delete(`ultrasum_pending_${sumId}`);
@@ -25874,6 +26100,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       inlineCache.set(`char_msg_${charKey}`, {
         ...cached,
         inlineMessageId,
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       console.log(`Stored character intro inlineMessageId for key=${charKey}, character=${cached.character}`);
     }
@@ -25946,7 +26173,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🔍 <b>Research</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>\\n\\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`r_pending_${rKey}`);
@@ -26116,7 +26351,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🌐 <b>Websearch</b>\\n\\n⚠️ <i>Error getting response. Try again!</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`w_pending_${wKey}`);
@@ -26272,7 +26515,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `⭐ <b>${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`q_pending_${qKey}`);
@@ -26398,7 +26649,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `💻 <b>Code: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`code_pending_${codeKey}`);
@@ -26479,6 +26738,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         part,
         completed,
         createdAt: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
@@ -26507,7 +26767,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🧠 <b>Explain: ${escapedPrompt}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`e_pending_${eKey}`);
@@ -26573,7 +26841,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `📝 <b>Summary</b>\n\n⚠️ <i>Error summarizing. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`sum_pending_${sumKey}`);
@@ -26651,7 +26927,15 @@ bot.on("chosen_inline_result", async (ctx) => {
           `🤝🏻 <b>${escapedPartnerName}</b>\n\n⚠️ <i>Error getting response. Try again!</i>\n\n<i>via StarzAI</i>`,
           { parse_mode: "HTML" }
         );
-      } catch {}
+      } catch (e) {
+
+        if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
+
+          console.warn('[TG]', e.message);
+
+        }
+
+      }
     }
     
     inlineCache.delete(`p_pending_${pKey}`);
@@ -26668,6 +26952,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       inlineCache.set(`sc_msg_${userId}`, {
         inlineMessageId,
         timestamp: Date.now(),
+      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       console.log(`Stored Starz Check inlineMessageId for user ${userId}`);
     }
