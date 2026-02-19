@@ -1854,6 +1854,12 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
 
   // Try the intended provider with retries
   let lastError = null;
+  // Helper to safely stringify errors with code/status if available
+  const formatError = (err) => {
+    const msg = String(err?.message || err);
+    const code = err?.code || err?.status || err?.statusCode;
+    return code ? `${msg} (code: ${code})` : msg;
+  };
   const errorMessages = []; // Bug #10: collect all error messages
   
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1875,7 +1881,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
     } catch (error) {
       providerStats[provider.key].failures++;
       lastError = error;
-      errorMessages.push(`${provider.name}(attempt ${attempt + 1}): ${error.message}`); // Bug #10
+      errorMessages.push(`${provider.name}(attempt ${attempt + 1}): ${formatError(error)}`); // Bug #10
       console.error(`[LLM] ❌ ${provider.name} attempt ${attempt + 1} failed:`, error.message);
       
       // Only retry on timeout errors within the same provider
@@ -1916,7 +1922,7 @@ async function llmWithProviders({ model, messages, temperature = 0.7, max_tokens
       return { content: result, provider: 'megallm', fallback: true, fallbackModel };
     } catch (fallbackError) {
       providerStats.megallm.failures++;
-      errorMessages.push(`MegaLLM(${fallbackModel}): ${fallbackError.message}`);
+      errorMessages.push(`MegaLLM(${fallbackModel}): ${formatError(fallbackError)}`);
       console.error(`[LLM] ❌ MegaLLM fallback also failed:`, fallbackError.message);
     }
   }
