@@ -25662,7 +25662,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Persist searchResult so future parts can reuse the same sources list
         searchResult: searchResult || null,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
@@ -25826,7 +25825,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         // Carry forward any searchResult from the base item so final part can show sources
         searchResult: baseItem.searchResult || null,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
 
@@ -26738,7 +26736,6 @@ bot.on("chosen_inline_result", async (ctx) => {
         part,
         completed,
         createdAt: Date.now(),
-      createdAt: Date.now(), // Bug #4: TTL cleanup fix
       });
       setTimeout(() => inlineCache.delete(newKey), 30 * 60 * 1000);
       
