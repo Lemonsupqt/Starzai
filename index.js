@@ -255,7 +255,6 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
 const PARALLEL_API_KEY = process.env.PARALLEL_API_KEY || "";
 
 // Bug #14: Startup warnings for missing optional environment variables
-if (!GITHUB_PAT) console.warn("[Config] GITHUB_PAT not set — GitHub Models provider disabled");
 if (!SUPABASE_URL || !SUPABASE_KEY) console.warn("[Config] SUPABASE_URL/SUPABASE_KEY not set — Persistent cloud storage disabled");
 if (!PARALLEL_API_KEY) console.warn("[Config] PARALLEL_API_KEY not set — Parallel.ai web search integration disabled (fallback search still available)");
 if (!STORAGE_CHANNEL_ID) console.warn("[Config] STORAGE_CHANNEL_ID not set — Telegram backup storage disabled");
