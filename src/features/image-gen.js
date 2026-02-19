@@ -69,13 +69,20 @@ bot.command("imagine", async (ctx) => {
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
     
     // Fetch the image
-    const response = await fetch(imageUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'StarzAI-Bot/1.0'
-      },
-      timeout: 60000 // 60 second timeout
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    let response;
+    try {
+      response = await fetch(imageUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'StarzAI-Bot/1.0'
+        },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
