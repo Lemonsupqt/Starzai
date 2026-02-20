@@ -14431,15 +14431,18 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
   } catch (e) { /* ignore */ }
   
   try {
-    const result = await downloadWithCobalt(url, {
+    // Try Cobalt first
+    let result = await downloadWithCobalt(url, {
       audioOnly: isAudio,
       quality: isAudio ? undefined : quality,
       audioFormat: 'mp3',
     });
     
+    // If Cobalt fails, fall back to VKR/downloadMedia
     if (!result.success) {
-      let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
       if (result.tooLarge) {
+        // File too large - offer lower qualities, don't fallback
+        let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
         const lowerQualities = ['360', '480', '720'].filter(q => parseInt(q) < parseInt(quality));
         if (lowerQualities.length > 0) {
           const retryKb = new InlineKeyboard();
@@ -14454,8 +14457,27 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
           return;
         }
       }
-      await ctx.editMessageText(errorMsg, { parse_mode: 'HTML' });
-      return;
+      
+      // Cobalt failed (not too-large) - try VKR/downloadMedia fallback
+      console.log(`[DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
+      try {
+        await ctx.editMessageText(
+          `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
+          `⏳ Trying alternate server...\n` +
+          `<i>This may take up to 2 minutes</i>`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (e) { /* ignore */ }
+      
+      result = await downloadMedia(url, isAudio);
+      
+      if (!result.success) {
+        await ctx.editMessageText(
+          `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
     }
     
     const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
@@ -25493,24 +25515,48 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch (e) { /* ignore */ }
       }
       
-      // Step 2: Download with Cobalt API (returns Buffer)
-      const result = await downloadWithCobalt(url, {
+      // Step 2: Download with Cobalt API (returns Buffer), fallback to VKR
+      let result = await downloadWithCobalt(url, {
         audioOnly: isAudioOnly,
         quality: isAudioOnly ? undefined : selectedQuality,
         audioFormat: 'mp3',
       });
       
       if (!result.success) {
-        if (inlineMessageId) {
-          let errorMsg = `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}`;
-          if (result.tooLarge) {
-            errorMsg += '\n\n\ud83d\udca1 <i>Try a lower quality with /dl command</i>';
+        if (result.tooLarge) {
+          // File too large - no fallback will help
+          if (inlineMessageId) {
+            try {
+              await bot.api.editMessageTextInline(inlineMessageId,
+                `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error)}\n\n\ud83d\udca1 <i>Try a lower quality with /dl command</i>`,
+                { parse_mode: "HTML" });
+            } catch (e) { /* ignore */ }
           }
+          return;
+        }
+        
+        // Cobalt failed - try VKR/downloadMedia fallback
+        console.log(`[Inline DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
+        if (inlineMessageId) {
           try {
-            await bot.api.editMessageTextInline(inlineMessageId, errorMsg, { parse_mode: "HTML" });
+            await bot.api.editMessageTextInline(inlineMessageId,
+              `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n\u23f3 Trying alternate server...\n<i>This may take up to 2 minutes</i>`,
+              { parse_mode: "HTML" });
           } catch (e) { /* ignore */ }
         }
-        return;
+        
+        result = await downloadMedia(url, isAudioOnly);
+        
+        if (!result.success) {
+          if (inlineMessageId) {
+            try {
+              await bot.api.editMessageTextInline(inlineMessageId,
+                `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
+                { parse_mode: "HTML" });
+            } catch (e) { /* ignore */ }
+          }
+          return;
+        }
       }
       
       // Step 3: Update message to show upload progress
@@ -25534,11 +25580,17 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       let mediaFileId = null;
       
-      if (result.buffer) {
-        const inputFile = new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'));
+      // Handle both Cobalt (buffer) and VKR (url) results
+      const hasBuffer = !!result.buffer;
+      const hasUrl = !!result.url;
+      
+      if (hasBuffer || hasUrl) {
+        const mediaSource = hasBuffer
+          ? new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'))
+          : result.url;
         try {
           if (isAudioOnly) {
-            const dmMsg = await bot.api.sendAudio(ownerId, inputFile, {
+            const dmMsg = await bot.api.sendAudio(ownerId, mediaSource, {
               caption, parse_mode: 'HTML',
               title: result.title || 'Audio',
             });
@@ -25546,7 +25598,7 @@ bot.on("chosen_inline_result", async (ctx) => {
               mediaFileId = dmMsg.audio.file_id;
             }
           } else {
-            const dmMsg = await bot.api.sendVideo(ownerId, inputFile, {
+            const dmMsg = await bot.api.sendVideo(ownerId, mediaSource, {
               caption, parse_mode: 'HTML',
               supports_streaming: true,
             });
