@@ -25585,12 +25585,14 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch (e) { /* ignore */ }
       }
       
-      // Step 4: Send file to DM to get file_id, then replace inline message with actual media
+      // Step 4: Send file to bot DM (hidden) to get file_id, then replace inline message
+      // The DM message is deleted immediately — only the inline chat gets the video
       const caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n` +
         `\ud83d\udcca ${result.quality || qualityLabel} \u2022 ${sizeMB}MB\n` +
         `\n<i>Downloaded via StarzAI \u26a1</i>`;
       
       let mediaFileId = null;
+      let dmMsgId = null;
       
       // Handle both Cobalt (buffer) and VKR (url) results
       const hasBuffer = !!result.buffer;
@@ -25606,21 +25608,18 @@ bot.on("chosen_inline_result", async (ctx) => {
               caption, parse_mode: 'HTML',
               title: result.title || 'Audio',
             });
-            if (dmMsg.audio?.file_id) {
-              mediaFileId = dmMsg.audio.file_id;
-            }
+            mediaFileId = dmMsg.audio?.file_id || null;
+            dmMsgId = dmMsg.message_id;
           } else {
             const dmMsg = await bot.api.sendVideo(ownerId, mediaSource, {
               caption, parse_mode: 'HTML',
               supports_streaming: true,
             });
-            if (dmMsg.video?.file_id) {
-              mediaFileId = dmMsg.video.file_id;
-            }
+            mediaFileId = dmMsg.video?.file_id || null;
+            dmMsgId = dmMsg.message_id;
           }
         } catch (sendErr) {
           console.error('[Inline DL] DM send failed:', sendErr.message);
-          // If DM fails, try to at least inform the user
           if (inlineMessageId) {
             try {
               await bot.api.editMessageTextInline(
@@ -25653,9 +25652,16 @@ bot.on("chosen_inline_result", async (ctx) => {
             mediaObj,
           );
           console.log(`[Inline DL] Successfully replaced inline message with ${mediaType}`);
+          
+          // Delete the hidden DM message — the inline chat now has the video
+          if (dmMsgId) {
+            try {
+              await bot.api.deleteMessage(ownerId, dmMsgId);
+            } catch (e) { /* ignore - user may have deleted it */ }
+          }
         } catch (editErr) {
           console.error('[Inline DL] editMessageMediaInline failed:', editErr.message);
-          // Fallback: update text to show it was sent to DM
+          // Fallback: keep the DM message and update inline text
           try {
             await bot.api.editMessageTextInline(
               inlineMessageId,
@@ -25668,7 +25674,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           } catch (e) { /* ignore */ }
         }
       } else if (inlineMessageId) {
-        // No file_id obtained, just update text
+        // No file_id obtained, keep DM message as fallback
         try {
           await bot.api.editMessageTextInline(
             inlineMessageId,
