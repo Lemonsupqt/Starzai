@@ -25460,7 +25460,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         try {
           await bot.api.editMessageTextInline(
             inlineMessageId,
-            "❌ Download request expired. Please try again.",
+            "\u274c Download request expired. Please try again.",
             { parse_mode: "HTML" }
           );
         } catch (e) {
@@ -25473,8 +25473,9 @@ bot.on("chosen_inline_result", async (ctx) => {
     }
     
     const { url, platform, userId: ownerId } = pending;
-    const platformEmojis = { youtube: '🎬', tiktok: '🎵', instagram: '📸', twitter: '🐦', facebook: '📘', spotify: '🎧' };
-    const emoji = platformEmojis[platform] || '📥';
+    const platformEmojis = { youtube: '\ud83c\udfac', tiktok: '\ud83c\udfb5', instagram: '\ud83d\udcf8', twitter: '\ud83d\udc26', facebook: '\ud83d\udcd8', spotify: '\ud83c\udfa7' };
+    const emoji = platformEmojis[platform] || '\ud83d\udce5';
+    const platformName = platform ? platform.charAt(0).toUpperCase() + platform.slice(1) : 'Media';
     
     console.log(`[Inline DL] Processing: ${url} (quality: ${qualityLabel}, platform: ${platform})`);
     
@@ -25485,7 +25486,7 @@ bot.on("chosen_inline_result", async (ctx) => {
           await bot.api.editMessageTextInline(
             inlineMessageId,
             `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
-            `⏳ Fetching from server...\n` +
+            `\u23f3 Fetching from server...\n` +
             `<i>This may take up to 2 minutes</i>`,
             { parse_mode: "HTML" }
           );
@@ -25501,9 +25502,9 @@ bot.on("chosen_inline_result", async (ctx) => {
       
       if (!result.success) {
         if (inlineMessageId) {
-          let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}`;
+          let errorMsg = `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}`;
           if (result.tooLarge) {
-            errorMsg += '\n\n💡 <i>Try a lower quality with /dl command</i>';
+            errorMsg += '\n\n\ud83d\udca1 <i>Try a lower quality with /dl command</i>';
           }
           try {
             await bot.api.editMessageTextInline(inlineMessageId, errorMsg, { parse_mode: "HTML" });
@@ -25519,39 +25520,48 @@ bot.on("chosen_inline_result", async (ctx) => {
           await bot.api.editMessageTextInline(
             inlineMessageId,
             `${emoji} <b>Uploading to Telegram...</b>\n\n` +
-            `📊 ${sizeMB}MB • ${qualityLabel}\n` +
+            `\ud83d\udcca ${sizeMB}MB \u2022 ${qualityLabel}\n` +
             `<i>Almost there...</i>`,
             { parse_mode: "HTML" }
           );
         } catch (e) { /* ignore */ }
       }
       
-      // Step 4: Send the file as Buffer to the user's DM
+      // Step 4: Send file to DM to get file_id, then replace inline message with actual media
       const caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n` +
-        `📊 ${result.quality || qualityLabel} • ${sizeMB}MB\n` +
-        `\n<i>Downloaded via StarzAI ⚡</i>`;
+        `\ud83d\udcca ${result.quality || qualityLabel} \u2022 ${sizeMB}MB\n` +
+        `\n<i>Downloaded via StarzAI \u26a1</i>`;
+      
+      let mediaFileId = null;
       
       if (result.buffer) {
         const inputFile = new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'));
         try {
           if (isAudioOnly) {
-            await bot.api.sendAudio(ownerId, inputFile, {
+            const dmMsg = await bot.api.sendAudio(ownerId, inputFile, {
               caption, parse_mode: 'HTML',
               title: result.title || 'Audio',
             });
+            if (dmMsg.audio?.file_id) {
+              mediaFileId = dmMsg.audio.file_id;
+            }
           } else {
-            await bot.api.sendVideo(ownerId, inputFile, {
+            const dmMsg = await bot.api.sendVideo(ownerId, inputFile, {
               caption, parse_mode: 'HTML',
               supports_streaming: true,
             });
+            if (dmMsg.video?.file_id) {
+              mediaFileId = dmMsg.video.file_id;
+            }
           }
         } catch (sendErr) {
-          console.error('[Inline DL] Failed to send file to user DM:', sendErr.message);
+          console.error('[Inline DL] DM send failed:', sendErr.message);
+          // If DM fails, try to at least inform the user
           if (inlineMessageId) {
             try {
               await bot.api.editMessageTextInline(
                 inlineMessageId,
-                `❌ <b>Could not send file</b>\n\nPlease start the bot first by sending /start in DM, then try again.\n\n💡 Or use: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`,
+                `\u274c <b>Could not send file</b>\n\nPlease start the bot first by sending /start in DM, then try again.\n\n\ud83d\udca1 Or use: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`,
                 { parse_mode: "HTML" }
               );
             } catch (e) { /* ignore */ }
@@ -25560,15 +25570,48 @@ bot.on("chosen_inline_result", async (ctx) => {
         }
       }
       
-      // Step 5: Update inline message with success
-      if (inlineMessageId) {
+      // Step 5: Replace inline message with actual media using editMessageMediaInline
+      if (mediaFileId && inlineMessageId) {
+        try {
+          const mediaType = isAudioOnly ? 'audio' : 'video';
+          const mediaObj = {
+            type: mediaType,
+            media: mediaFileId,
+            caption,
+            parse_mode: 'HTML',
+          };
+          if (!isAudioOnly) {
+            mediaObj.supports_streaming = true;
+          }
+          
+          await bot.api.editMessageMediaInline(
+            inlineMessageId,
+            mediaObj,
+          );
+          console.log(`[Inline DL] Successfully replaced inline message with ${mediaType}`);
+        } catch (editErr) {
+          console.error('[Inline DL] editMessageMediaInline failed:', editErr.message);
+          // Fallback: update text to show it was sent to DM
+          try {
+            await bot.api.editMessageTextInline(
+              inlineMessageId,
+              `${emoji} <b>${escapeHTML(result.title || 'Media Downloaded')}</b>\n\n` +
+              `\ud83d\udcca ${result.quality || qualityLabel} \u2022 ${sizeMB}MB\n` +
+              `\u2705 <b>Sent to your DM!</b>\n\n` +
+              `<i>Downloaded via StarzAI \u26a1</i>`,
+              { parse_mode: "HTML" }
+            );
+          } catch (e) { /* ignore */ }
+        }
+      } else if (inlineMessageId) {
+        // No file_id obtained, just update text
         try {
           await bot.api.editMessageTextInline(
             inlineMessageId,
             `${emoji} <b>${escapeHTML(result.title || 'Media Downloaded')}</b>\n\n` +
-            `📊 ${result.quality || qualityLabel} • ${sizeMB}MB\n` +
-            `✅ <b>Sent to your DM!</b>\n\n` +
-            `<i>Downloaded via StarzAI ⚡</i>`,
+            `\ud83d\udcca ${result.quality || qualityLabel} \u2022 ${sizeMB}MB\n` +
+            `\u2705 <b>Sent to your DM!</b>\n\n` +
+            `<i>Downloaded via StarzAI \u26a1</i>`,
             { parse_mode: "HTML" }
           );
         } catch (e) { /* ignore */ }
@@ -25580,7 +25623,7 @@ bot.on("chosen_inline_result", async (ctx) => {
         try {
           await bot.api.editMessageTextInline(
             inlineMessageId,
-            `❌ <b>Download failed</b>\n\n${escapeHTML(e.message)}\n\n<i>Try using /dl command instead</i>`,
+            `\u274c <b>Download failed</b>\n\n${escapeHTML(e.message)}\n\n<i>Try using /dl command instead</i>`,
             { parse_mode: "HTML" }
           );
         } catch (err) {
@@ -25601,7 +25644,7 @@ bot.on("chosen_inline_result", async (ctx) => {
     const pending = inlineCache.get(`dl_pending_${dlKey}`);
     if (!pending) {
       if (inlineMessageId) {
-        try { await bot.api.editMessageTextInline(inlineMessageId, "❌ Download request expired.", { parse_mode: "HTML" }); } catch (e) { /* ignore */ }
+        try { await bot.api.editMessageTextInline(inlineMessageId, "\u274c Download request expired.", { parse_mode: "HTML" }); } catch (e) { /* ignore */ }
       }
       return;
     }
@@ -25609,7 +25652,7 @@ bot.on("chosen_inline_result", async (ctx) => {
       try {
         await bot.api.editMessageTextInline(
           inlineMessageId,
-          `📥 <b>Use the updated download!</b>\n\nPaste the URL again in inline mode to see quality options.\n\nOr use: <code>/dl ${escapeHTML(pending.url.slice(0, 40))}</code>`,
+          `\ud83d\udce5 <b>Use the updated download!</b>\n\nPaste the URL again in inline mode to see quality options.\n\nOr use: <code>/dl ${escapeHTML(pending.url.slice(0, 40))}</code>`,
           { parse_mode: "HTML" }
         );
       } catch (e) { /* ignore */ }
