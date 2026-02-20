@@ -106,7 +106,6 @@ import fetch from "node-fetch";
 
 // Super Utilities Module (27 features)
 import {
-  downloadMedia,
   downloadWithCobalt,
   cleanupDownload,
   detectPlatform,
@@ -14447,10 +14446,9 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
         audioFormat: 'mp3',
       });
       
-      // If Cobalt fails, fall back to VKR/downloadMedia
       if (!result.success) {
         if (result.tooLarge) {
-          let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
+          let errorMsg = `❌ <b>File Too Large</b>\n\n${escapeHTML(result.error)}`;
           const lowerQualities = ['360', '480', '720'].filter(q => parseInt(q) < parseInt(quality));
           if (lowerQualities.length > 0) {
             const retryKb = new InlineKeyboard();
@@ -14466,25 +14464,14 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
           }
         }
         
-        console.log(`[DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
-        try {
-          await api.editMessageText(chatId, messageId,
-            `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
-            `⏳ Trying alternate server...\n` +
-            `<i>This may take up to 2 minutes</i>`,
-            { parse_mode: 'HTML' }
-          );
-        } catch (e) { /* ignore */ }
-        
-        result = await downloadMedia(url, isAudio);
-        
-        if (!result.success) {
-          await api.editMessageText(chatId, messageId,
-            `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
-            { parse_mode: 'HTML' }
-          );
-          return;
+        // Cobalt failed — show error with helpful message
+        const errorCode = result.error || 'Unknown error';
+        let userMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(errorCode)}`;
+        if (errorCode.includes('fetch.empty')) {
+          userMsg += '\n\n💡 <i>This content may be private, age-restricted, or region-locked.</i>';
         }
+        await api.editMessageText(chatId, messageId, userMsg, { parse_mode: 'HTML' });
+        return;
       }
       
       const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
@@ -14501,34 +14488,19 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
       if (result.quality) caption += `📊 ${result.quality} • ${sizeMB}MB\n`;
       caption += `\n<i>Downloaded via StarzAI ⚡</i>`;
       
-      if (result.buffer) {
-        const inputFile = new InputFile(result.buffer, result.filename || (isAudio ? 'audio.mp3' : 'video.mp4'));
-        if (isAudio) {
-          await api.sendAudio(chatId, inputFile, {
-            caption, parse_mode: 'HTML',
-            title: result.title || 'Audio',
-            reply_to_message_id: pending.messageId,
-          });
-        } else {
-          await api.sendVideo(chatId, inputFile, {
-            caption, parse_mode: 'HTML',
-            supports_streaming: true,
-            reply_to_message_id: pending.messageId,
-          });
-        }
-      } else if (result.url) {
-        if (isAudio) {
-          await api.sendAudio(chatId, result.url, {
-            caption, parse_mode: 'HTML',
-            reply_to_message_id: pending.messageId,
-          });
-        } else {
-          await api.sendVideo(chatId, result.url, {
-            caption, parse_mode: 'HTML',
-            supports_streaming: true,
-            reply_to_message_id: pending.messageId,
-          });
-        }
+      const inputFile = new InputFile(result.buffer, result.filename || (isAudio ? 'audio.mp3' : 'video.mp4'));
+      if (isAudio) {
+        await api.sendAudio(chatId, inputFile, {
+          caption, parse_mode: 'HTML',
+          title: result.title || 'Audio',
+          reply_to_message_id: pending.messageId,
+        });
+      } else {
+        await api.sendVideo(chatId, inputFile, {
+          caption, parse_mode: 'HTML',
+          supports_streaming: true,
+          reply_to_message_id: pending.messageId,
+        });
       }
       
       try {
@@ -17259,67 +17231,47 @@ bot.callbackQuery(/^adl:/, async (ctx) => {
   (async () => {
     try {
       await api.editMessageText(chatId, messageId,
-        `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\nThis may take a moment...`,
+        `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\n⏳ Fetching from server...`,
         { parse_mode: 'HTML' }
       );
       
-      const result = await downloadMedia(url, audioOnly);
+      const result = await downloadWithCobalt(url, {
+        audioOnly,
+        quality: '720',
+        audioFormat: 'mp3',
+      });
       
       if (!result.success) {
-        await api.editMessageText(chatId, messageId,
-          `❌ Download failed: ${escapeHTML(result.error)}`,
-          { parse_mode: 'HTML' }
-        );
+        const errorCode = result.error || 'Unknown error';
+        let userMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(errorCode)}`;
+        if (errorCode.includes('fetch.empty')) {
+          userMsg += '\n\n💡 <i>This content may be private, age-restricted, or region-locked.</i>';
+        }
+        await api.editMessageText(chatId, messageId, userMsg, { parse_mode: 'HTML' });
         return;
       }
       
+      const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
       await api.editMessageText(chatId, messageId,
-        `${emoji} <b>Sending to Telegram...</b>`,
+        `${emoji} <b>Uploading to Telegram...</b>\n\n📊 ${sizeMB}MB\n<i>Almost there...</i>`,
         { parse_mode: 'HTML' }
       );
       
-      // Build caption
       let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
-      if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
-      if (result.album) caption += `\n💿 ${escapeHTML(result.album)}`;
-      if (result.quality) caption += `\n🎵 ${result.quality}`;
-      caption += `\n\n<i>Downloaded via StarzAI</i>`;
+      if (result.quality) caption += `\n📊 ${result.quality} • ${sizeMB}MB`;
+      caption += `\n\n<i>Downloaded via StarzAI ⚡</i>`;
       
-      if (result.url) {
-        if (audioOnly || result.type === 'audio' || result.isMusic) {
-          await api.sendAudio(chatId, result.url, {
-            caption, parse_mode: 'HTML',
-            title: result.title,
-            performer: result.author
-          });
-        } else if (result.type === 'slideshow' && result.images) {
-          const mediaGroup = result.images.slice(0, 10).map((img, i) => ({
-            type: 'photo',
-            media: img,
-            caption: i === 0 ? caption : undefined,
-            parse_mode: i === 0 ? 'HTML' : undefined
-          }));
-          await api.sendMediaGroup(chatId, mediaGroup);
-          if (result.music) {
-            await api.sendAudio(chatId, result.music, { caption: '🎵 Audio' });
-          }
-        } else {
-          await api.sendVideo(chatId, result.url, {
-            caption, parse_mode: 'HTML',
-            supports_streaming: true
-          });
-        }
-      } else if (result.filePath) {
-        const fs = await import('fs');
-        const fileBuffer = fs.default.readFileSync(result.filePath);
-        const inputFile = new InputFile(fileBuffer, result.filename);
-        
-        if (audioOnly) {
-          await api.sendAudio(chatId, inputFile, { caption, parse_mode: 'HTML' });
-        } else {
-          await api.sendVideo(chatId, inputFile, { caption, parse_mode: 'HTML' });
-        }
-        cleanupDownload(result.filePath);
+      const inputFile = new InputFile(result.buffer, result.filename || (audioOnly ? 'audio.mp3' : 'video.mp4'));
+      if (audioOnly) {
+        await api.sendAudio(chatId, inputFile, {
+          caption, parse_mode: 'HTML',
+          title: result.title || 'Audio',
+        });
+      } else {
+        await api.sendVideo(chatId, inputFile, {
+          caption, parse_mode: 'HTML',
+          supports_streaming: true,
+        });
       }
       
       try {
@@ -25527,48 +25479,27 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch (e) { /* ignore */ }
       }
       
-      // Step 2: Download with Cobalt API (returns Buffer), fallback to VKR
-      let result = await downloadWithCobalt(url, {
+      // Step 2: Download with Cobalt API (returns Buffer)
+      const result = await downloadWithCobalt(url, {
         audioOnly: isAudioOnly,
         quality: isAudioOnly ? undefined : selectedQuality,
         audioFormat: 'mp3',
       });
       
       if (!result.success) {
+        const errorCode = result.error || 'Unknown error';
+        let userMsg = `\u274c <b>Download Failed</b>\n\n${escapeHTML(errorCode)}`;
         if (result.tooLarge) {
-          // File too large - no fallback will help
-          if (inlineMessageId) {
-            try {
-              await bot.api.editMessageTextInline(inlineMessageId,
-                `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error)}\n\n\ud83d\udca1 <i>Try a lower quality with /dl command</i>`,
-                { parse_mode: "HTML" });
-            } catch (e) { /* ignore */ }
-          }
-          return;
+          userMsg += '\n\n\ud83d\udca1 <i>Try a lower quality with /dl command</i>';
+        } else if (errorCode.includes('fetch.empty')) {
+          userMsg += '\n\n\ud83d\udca1 <i>This content may be private, age-restricted, or region-locked.</i>';
         }
-        
-        // Cobalt failed - try VKR/downloadMedia fallback
-        console.log(`[Inline DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
         if (inlineMessageId) {
           try {
-            await bot.api.editMessageTextInline(inlineMessageId,
-              `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n\u23f3 Trying alternate server...\n<i>This may take up to 2 minutes</i>`,
-              { parse_mode: "HTML" });
+            await bot.api.editMessageTextInline(inlineMessageId, userMsg, { parse_mode: "HTML" });
           } catch (e) { /* ignore */ }
         }
-        
-        result = await downloadMedia(url, isAudioOnly);
-        
-        if (!result.success) {
-          if (inlineMessageId) {
-            try {
-              await bot.api.editMessageTextInline(inlineMessageId,
-                `\u274c <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
-                { parse_mode: "HTML" });
-            } catch (e) { /* ignore */ }
-          }
-          return;
-        }
+        return;
       }
       
       // Step 3: Update message to show upload progress
@@ -25594,14 +25525,8 @@ bot.on("chosen_inline_result", async (ctx) => {
       let mediaFileId = null;
       let dmMsgId = null;
       
-      // Handle both Cobalt (buffer) and VKR (url) results
-      const hasBuffer = !!result.buffer;
-      const hasUrl = !!result.url;
-      
-      if (hasBuffer || hasUrl) {
-        const mediaSource = hasBuffer
-          ? new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'))
-          : result.url;
+      if (result.buffer) {
+        const mediaSource = new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'));
         try {
           if (isAudioOnly) {
             const dmMsg = await bot.api.sendAudio(ownerId, mediaSource, {
