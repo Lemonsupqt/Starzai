@@ -601,20 +601,21 @@ async function downloadSpotify(url) {
 async function downloadWithCobalt(url, options = {}) {
   const { audioOnly = false, quality = '720', audioFormat = 'mp3' } = options;
   
-  const cobaltUrl = CONFIG.cobalt.api + '/api/json';
+  const cobaltUrl = CONFIG.cobalt.api + '/';  // Cobalt v10+ uses POST / (root)
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CONFIG.cobalt.timeout);
   
   try {
+    // Cobalt v10+ API parameters
     const body = {
       url: url.trim(),
-      vCodec: 'h264',
-      vQuality: quality,
-      aFormat: audioFormat,
-      filenamePattern: 'basic',
-      isAudioOnly: audioOnly,
-      disableMetadata: false,
+      videoQuality: quality,
+      audioFormat: audioFormat,
+      filenameStyle: 'basic',
     };
+    if (audioOnly) {
+      body.downloadMode = 'audio';
+    }
     
     const headers = {
       'Content-Type': 'application/json',
