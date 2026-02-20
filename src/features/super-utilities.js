@@ -131,6 +131,12 @@ const CONFIG = {
   wallhaven: {
     api: 'https://wallhaven.cc/api/v1/search'
   },
+  // Cobalt API for high-quality media downloads
+  cobalt: {
+    api: process.env.COBALT_API || 'https://cobalt-production-aaca.up.railway.app',
+    apiKey: process.env.COBALT_API_KEY || '',
+    timeout: 120000  // 2 minutes for large files
+  },
   // JioSaavn API for music downloads (free, 320kbps quality)
   // Multiple endpoints for fallback
   jiosaavn: {
@@ -587,6 +593,152 @@ async function downloadSpotify(url) {
 }
 
 /**
+ * Download media using Cobalt API with quality selection
+ * Returns Buffer (never exposes tunnel URLs)
+ * @param {string} url - Media URL
+ * @param {object} options - { audioOnly, quality, audioFormat }
+ */
+async function downloadWithCobalt(url, options = {}) {
+  const { audioOnly = false, quality = '720', audioFormat = 'mp3' } = options;
+  
+  const cobaltUrl = CONFIG.cobalt.api + '/';  // Cobalt v10+ uses POST / (root)
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CONFIG.cobalt.timeout);
+  
+  try {
+    // Cobalt v10+ API parameters
+    const body = {
+      url: url.trim(),
+      videoQuality: quality,
+      audioFormat: audioFormat,
+      filenameStyle: 'basic',
+    };
+    if (audioOnly) {
+      body.downloadMode = 'audio';
+    }
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': 'StarzAI-Bot/2.0',
+    };
+    if (CONFIG.cobalt.apiKey) {
+      headers['Authorization'] = `Api-Key ${CONFIG.cobalt.apiKey}`;
+    }
+
+    const response = await fetch(cobaltUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      return { success: false, error: `Cobalt API error ${response.status}: ${errText.slice(0, 200)}` };
+    }
+
+    const data = await response.json();
+
+    // Handle different Cobalt response statuses
+    if (data.status === 'error') {
+      return { success: false, error: data.error?.code || 'Cobalt returned an error' };
+    }
+
+    if (data.status === 'picker' && data.picker) {
+      // Multiple items (e.g., Instagram carousel) - download first item as buffer
+      const firstItem = data.picker[0];
+      if (firstItem && firstItem.url) {
+        const dlController = new AbortController();
+        const dlTimeout = setTimeout(() => dlController.abort(), CONFIG.cobalt.timeout);
+        const dlResponse = await fetch(firstItem.url, {
+          signal: dlController.signal,
+          headers: { 'User-Agent': 'StarzAI-Bot/2.0' },
+        });
+        clearTimeout(dlTimeout);
+        if (dlResponse.ok) {
+          const buffer = Buffer.from(await dlResponse.arrayBuffer());
+          return {
+            success: true,
+            picker: true,
+            buffer,
+            options: data.picker.map((item) => ({
+              url: item.url,
+              type: item.type || 'photo',
+              thumb: item.thumb,
+            })),
+            audio: data.audio || null,
+            type: firstItem.type === 'video' ? 'video' : 'photo',
+            source: 'cobalt',
+          };
+        }
+      }
+      return { success: false, error: 'Failed to download picker items' };
+    }
+
+    if (data.status === 'tunnel' || data.status === 'redirect') {
+      const mediaUrl = data.url;
+      const filename = data.filename || 'media';
+
+      // Download the file as Buffer (NEVER expose tunnel URLs)
+      console.log(`[Cobalt] Downloading ${audioOnly ? 'audio' : 'video'} (${quality}): ${filename}`);
+      const dlController = new AbortController();
+      const dlTimeout = setTimeout(() => dlController.abort(), CONFIG.cobalt.timeout);
+
+      const dlResponse = await fetch(mediaUrl, {
+        signal: dlController.signal,
+        headers: { 'User-Agent': 'StarzAI-Bot/2.0' },
+      });
+      clearTimeout(dlTimeout);
+
+      if (!dlResponse.ok) {
+        return { success: false, error: `Failed to download file: HTTP ${dlResponse.status}` };
+      }
+
+      const contentLength = dlResponse.headers.get('content-length');
+      const fileSizeMB = contentLength ? (parseInt(contentLength) / 1024 / 1024) : null;
+
+      // Check Telegram file size limit (50MB for bots)
+      if (fileSizeMB && fileSizeMB > 50) {
+        return {
+          success: false,
+          error: `File too large (${fileSizeMB.toFixed(1)}MB). Telegram limit is 50MB. Try a lower quality.`,
+          fileSizeMB,
+          tooLarge: true,
+        };
+      }
+
+      const buffer = Buffer.from(await dlResponse.arrayBuffer());
+
+      // Detect empty buffer (Cobalt tunnel created but server-side download failed)
+      if (buffer.length === 0) {
+        return { success: false, error: 'Server returned an empty file. This video may be unavailable or geo-restricted. Try a different quality or URL.' };
+      }
+
+      return {
+        success: true,
+        buffer,
+        filename,
+        fileSizeMB: fileSizeMB || (buffer.length / 1024 / 1024),
+        title: filename.replace(/\.[^.]+$/, ''),
+        type: audioOnly ? 'audio' : 'video',
+        quality: audioOnly ? audioFormat.toUpperCase() : `${quality}p`,
+        source: 'cobalt',
+      };
+    }
+
+    return { success: false, error: 'Unexpected Cobalt response format' };
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return { success: false, error: 'Download timed out. Try a lower quality or shorter video.' };
+    }
+    return { success: false, error: error.message || 'Cobalt download failed' };
+  }
+}
+
+/**
  * Main download function - routes to appropriate API based on platform
  */
 async function downloadMedia(url, audioOnly = false) {
@@ -608,14 +760,20 @@ async function downloadMedia(url, audioOnly = false) {
         result = await downloadSpotify(url);
         break;
       
-      // Video platforms
+      // Video platforms - try Cobalt first, fallback to VKR
       case 'youtube':
       case 'instagram':
       case 'twitter':
       case 'facebook':
       case 'soundcloud':
       default:
-        result = await downloadWithVKR(url);
+        // Try Cobalt API first (better quality, more reliable)
+        if (CONFIG.cobalt.api) {
+          result = await downloadWithCobalt(url, { audioOnly });
+          if (result.success) break;
+          console.log(`[Download] Cobalt failed: ${result.error}, falling back to VKR`);
+        }
+        result = await downloadWithVKR(url, audioOnly);
         break;
     }
     
@@ -2264,6 +2422,7 @@ async function searchWallpapers(query, options = {}) {
 export {
   // Downloads
   downloadMedia,
+  downloadWithCobalt,
   downloadWithVKR,
   downloadTikTok,
   downloadSpotify,
