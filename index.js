@@ -14421,124 +14421,132 @@ bot.callbackQuery(/^cdl:/, async (ctx) => {
   
   await ctx.answerCallbackQuery({ text: `Downloading ${qualityLabel}...` });
   
-  try {
-    await ctx.editMessageText(
-      `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
-      `⏳ Fetching from server...\n` +
-      `<i>This may take up to 2 minutes for large files</i>`,
-      { parse_mode: 'HTML' }
-    );
-  } catch (e) { /* ignore */ }
+  // Capture ctx values we need, then fire-and-forget the heavy work
+  // This lets grammY finish processing this update immediately
+  // so other users' requests aren't blocked by large downloads
+  const chatId = ctx.chat.id;
+  const messageId = ctx.callbackQuery.message.message_id;
+  const api = ctx.api;
   
-  try {
-    // Try Cobalt first
-    let result = await downloadWithCobalt(url, {
-      audioOnly: isAudio,
-      quality: isAudio ? undefined : quality,
-      audioFormat: 'mp3',
-    });
+  // Fire-and-forget: don't await the download/upload
+  (async () => {
+    try {
+      await api.editMessageText(chatId, messageId,
+        `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
+        `⏳ Fetching from server...\n` +
+        `<i>This may take up to 2 minutes for large files</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) { /* ignore */ }
     
-    // If Cobalt fails, fall back to VKR/downloadMedia
-    if (!result.success) {
-      if (result.tooLarge) {
-        // File too large - offer lower qualities, don't fallback
-        let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
-        const lowerQualities = ['360', '480', '720'].filter(q => parseInt(q) < parseInt(quality));
-        if (lowerQualities.length > 0) {
-          const retryKb = new InlineKeyboard();
-          lowerQualities.forEach(q => {
-            retryKb.text(`🎥 Try ${q}p`, `cdl:${q}:${qId}`);
-          });
-          retryKb.row().text('🎵 Audio Only', `cdl:audio:${qId}`);
-          await ctx.editMessageText(errorMsg + '\n\n<i>Try a lower quality:</i>', {
-            parse_mode: 'HTML',
-            reply_markup: retryKb,
-          });
+    try {
+      // Try Cobalt first
+      let result = await downloadWithCobalt(url, {
+        audioOnly: isAudio,
+        quality: isAudio ? undefined : quality,
+        audioFormat: 'mp3',
+      });
+      
+      // If Cobalt fails, fall back to VKR/downloadMedia
+      if (!result.success) {
+        if (result.tooLarge) {
+          let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
+          const lowerQualities = ['360', '480', '720'].filter(q => parseInt(q) < parseInt(quality));
+          if (lowerQualities.length > 0) {
+            const retryKb = new InlineKeyboard();
+            lowerQualities.forEach(q => {
+              retryKb.text(`🎥 Try ${q}p`, `cdl:${q}:${qId}`);
+            });
+            retryKb.row().text('🎵 Audio Only', `cdl:audio:${qId}`);
+            await api.editMessageText(chatId, messageId, errorMsg + '\n\n<i>Try a lower quality:</i>', {
+              parse_mode: 'HTML',
+              reply_markup: retryKb,
+            });
+            return;
+          }
+        }
+        
+        console.log(`[DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
+        try {
+          await api.editMessageText(chatId, messageId,
+            `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
+            `⏳ Trying alternate server...\n` +
+            `<i>This may take up to 2 minutes</i>`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (e) { /* ignore */ }
+        
+        result = await downloadMedia(url, isAudio);
+        
+        if (!result.success) {
+          await api.editMessageText(chatId, messageId,
+            `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
+            { parse_mode: 'HTML' }
+          );
           return;
         }
       }
       
-      // Cobalt failed (not too-large) - try VKR/downloadMedia fallback
-      console.log(`[DL] Cobalt failed: ${result.error}, trying VKR fallback...`);
+      const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
       try {
-        await ctx.editMessageText(
-          `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
-          `⏳ Trying alternate server...\n` +
-          `<i>This may take up to 2 minutes</i>`,
+        await api.editMessageText(chatId, messageId,
+          `${emoji} <b>Uploading to Telegram...</b>\n\n` +
+          `📊 ${sizeMB}MB • ${qualityLabel}\n` +
+          `<i>Almost there...</i>`,
           { parse_mode: 'HTML' }
         );
       } catch (e) { /* ignore */ }
       
-      result = await downloadMedia(url, isAudio);
+      let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n`;
+      if (result.quality) caption += `📊 ${result.quality} • ${sizeMB}MB\n`;
+      caption += `\n<i>Downloaded via StarzAI ⚡</i>`;
       
-      if (!result.success) {
-        await ctx.editMessageText(
-          `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'All download methods failed')}`,
+      if (result.buffer) {
+        const inputFile = new InputFile(result.buffer, result.filename || (isAudio ? 'audio.mp3' : 'video.mp4'));
+        if (isAudio) {
+          await api.sendAudio(chatId, inputFile, {
+            caption, parse_mode: 'HTML',
+            title: result.title || 'Audio',
+            reply_to_message_id: pending.messageId,
+          });
+        } else {
+          await api.sendVideo(chatId, inputFile, {
+            caption, parse_mode: 'HTML',
+            supports_streaming: true,
+            reply_to_message_id: pending.messageId,
+          });
+        }
+      } else if (result.url) {
+        if (isAudio) {
+          await api.sendAudio(chatId, result.url, {
+            caption, parse_mode: 'HTML',
+            reply_to_message_id: pending.messageId,
+          });
+        } else {
+          await api.sendVideo(chatId, result.url, {
+            caption, parse_mode: 'HTML',
+            supports_streaming: true,
+            reply_to_message_id: pending.messageId,
+          });
+        }
+      }
+      
+      try {
+        await api.deleteMessage(chatId, messageId);
+      } catch (e) { /* ignore */ }
+      
+      pendingQualitySelections.delete(qId);
+      
+    } catch (error) {
+      console.error('[DL] Download error:', error.message);
+      try {
+        await api.editMessageText(chatId, messageId,
+          `❌ <b>Download Error</b>\n\n${escapeHTML(error.message || 'Unknown error')}\n\n<i>Try again or use a different quality</i>`,
           { parse_mode: 'HTML' }
         );
-        return;
-      }
+      } catch (e) { /* ignore */ }
     }
-    
-    const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
-    try {
-      await ctx.editMessageText(
-        `${emoji} <b>Uploading to Telegram...</b>\n\n` +
-        `📊 ${sizeMB}MB • ${qualityLabel}\n` +
-        `<i>Almost there...</i>`,
-        { parse_mode: 'HTML' }
-      );
-    } catch (e) { /* ignore */ }
-    
-    let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n`;
-    if (result.quality) caption += `📊 ${result.quality} • ${sizeMB}MB\n`;
-    caption += `\n<i>Downloaded via StarzAI ⚡</i>`;
-    
-    if (result.buffer) {
-      const inputFile = new InputFile(result.buffer, result.filename || (isAudio ? 'audio.mp3' : 'video.mp4'));
-      if (isAudio) {
-        await ctx.replyWithAudio(inputFile, {
-          caption, parse_mode: 'HTML',
-          title: result.title || 'Audio',
-          reply_to_message_id: pending.messageId,
-        });
-      } else {
-        await ctx.replyWithVideo(inputFile, {
-          caption, parse_mode: 'HTML',
-          supports_streaming: true,
-          reply_to_message_id: pending.messageId,
-        });
-      }
-    } else if (result.url) {
-      if (isAudio) {
-        await ctx.replyWithAudio(result.url, {
-          caption, parse_mode: 'HTML',
-          reply_to_message_id: pending.messageId,
-        });
-      } else {
-        await ctx.replyWithVideo(result.url, {
-          caption, parse_mode: 'HTML',
-          supports_streaming: true,
-          reply_to_message_id: pending.messageId,
-        });
-      }
-    }
-    
-    try {
-      await ctx.api.deleteMessage(ctx.chat.id, ctx.callbackQuery.message.message_id);
-    } catch (e) { /* ignore */ }
-    
-    pendingQualitySelections.delete(qId);
-    
-  } catch (error) {
-    console.error('[DL] Download error:', error.message);
-    try {
-      await ctx.editMessageText(
-        `❌ <b>Download Error</b>\n\n${escapeHTML(error.message || 'Unknown error')}\n\n<i>Try again or use a different quality</i>`,
-        { parse_mode: 'HTML' }
-      );
-    } catch (e) { /* ignore */ }
-  }
+  })().catch(e => console.error('[DL] Background task error:', e.message));
 });
 
 // /lyrics - Get song lyrics (powered by LRCLIB + lyrics.ovh fallback)
@@ -17239,91 +17247,95 @@ bot.callbackQuery(/^adl:/, async (ctx) => {
   const audioOnly = mode === 'a';
   await ctx.answerCallbackQuery({ text: 'Starting download...' });
   
+  // Capture ctx values, then fire-and-forget for concurrency
+  const chatId = ctx.chat.id;
+  const messageId = ctx.callbackQuery.message.message_id;
+  const api = ctx.api;
+  
   const platform = detectPlatform(url);
   const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
   
-  try {
-    await ctx.editMessageText(
-      `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\nThis may take a moment...`,
-      { parse_mode: 'HTML' }
-    );
-    
-    const result = await downloadMedia(url, audioOnly);
-    
-    if (!result.success) {
-      await ctx.editMessageText(
-        `❌ Download failed: ${escapeHTML(result.error)}`,
+  // Fire-and-forget: don't await the download/upload
+  (async () => {
+    try {
+      await api.editMessageText(chatId, messageId,
+        `${emoji} <b>Downloading ${audioOnly ? 'audio' : 'video'}...</b>\n\nThis may take a moment...`,
         { parse_mode: 'HTML' }
       );
-      return;
-    }
-    
-    await ctx.editMessageText(
-      `${emoji} <b>Sending to Telegram...</b>`,
-      { parse_mode: 'HTML' }
-    );
-    
-    // Build caption
-    let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
-    if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
-    if (result.album) caption += `\n💿 ${escapeHTML(result.album)}`;
-    if (result.quality) caption += `\n🎵 ${result.quality}`;
-    caption += `\n\n<i>Downloaded via StarzAI</i>`;
-    
-    // API-based downloads return URLs directly, not file paths
-    if (result.url) {
-      // Send directly using URL
-      if (audioOnly || result.type === 'audio' || result.isMusic) {
-        // For music, send as audio with proper metadata
-        await ctx.replyWithAudio(result.url, {
-          caption: caption,
-          parse_mode: 'HTML',
-          title: result.title,
-          performer: result.author
-        });
-      } else if (result.type === 'slideshow' && result.images) {
-        // TikTok slideshow - send as media group
-        const mediaGroup = result.images.slice(0, 10).map((img, i) => ({
-          type: 'photo',
-          media: img,
-          caption: i === 0 ? caption : undefined,
-          parse_mode: i === 0 ? 'HTML' : undefined
-        }));
-        await ctx.replyWithMediaGroup(mediaGroup);
-        if (result.music) {
-          await ctx.replyWithAudio(result.music, { caption: '🎵 Audio' });
-        }
-      } else {
-        await ctx.replyWithVideo(result.url, {
-          caption: caption,
-          parse_mode: 'HTML',
-          supports_streaming: true
-        });
-      }
-    } else if (result.filePath) {
-      // Legacy file-based download (fallback)
-      const fs = await import('fs');
-      const { InputFile } = await import('grammy');
-      const fileBuffer = fs.default.readFileSync(result.filePath);
-      const inputFile = new InputFile(fileBuffer, result.filename);
       
-      if (audioOnly) {
-        await ctx.replyWithAudio(inputFile, { caption: caption, parse_mode: 'HTML' });
-      } else {
-        await ctx.replyWithVideo(inputFile, { caption: caption, parse_mode: 'HTML' });
+      const result = await downloadMedia(url, audioOnly);
+      
+      if (!result.success) {
+        await api.editMessageText(chatId, messageId,
+          `❌ Download failed: ${escapeHTML(result.error)}`,
+          { parse_mode: 'HTML' }
+        );
+        return;
       }
-      cleanupDownload(result.filePath);
+      
+      await api.editMessageText(chatId, messageId,
+        `${emoji} <b>Sending to Telegram...</b>`,
+        { parse_mode: 'HTML' }
+      );
+      
+      // Build caption
+      let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded')}</b>`;
+      if (result.author) caption += `\n👤 ${escapeHTML(result.author)}`;
+      if (result.album) caption += `\n💿 ${escapeHTML(result.album)}`;
+      if (result.quality) caption += `\n🎵 ${result.quality}`;
+      caption += `\n\n<i>Downloaded via StarzAI</i>`;
+      
+      if (result.url) {
+        if (audioOnly || result.type === 'audio' || result.isMusic) {
+          await api.sendAudio(chatId, result.url, {
+            caption, parse_mode: 'HTML',
+            title: result.title,
+            performer: result.author
+          });
+        } else if (result.type === 'slideshow' && result.images) {
+          const mediaGroup = result.images.slice(0, 10).map((img, i) => ({
+            type: 'photo',
+            media: img,
+            caption: i === 0 ? caption : undefined,
+            parse_mode: i === 0 ? 'HTML' : undefined
+          }));
+          await api.sendMediaGroup(chatId, mediaGroup);
+          if (result.music) {
+            await api.sendAudio(chatId, result.music, { caption: '🎵 Audio' });
+          }
+        } else {
+          await api.sendVideo(chatId, result.url, {
+            caption, parse_mode: 'HTML',
+            supports_streaming: true
+          });
+        }
+      } else if (result.filePath) {
+        const fs = await import('fs');
+        const fileBuffer = fs.default.readFileSync(result.filePath);
+        const inputFile = new InputFile(fileBuffer, result.filename);
+        
+        if (audioOnly) {
+          await api.sendAudio(chatId, inputFile, { caption, parse_mode: 'HTML' });
+        } else {
+          await api.sendVideo(chatId, inputFile, { caption, parse_mode: 'HTML' });
+        }
+        cleanupDownload(result.filePath);
+      }
+      
+      try {
+        await api.deleteMessage(chatId, messageId);
+      } catch (e) { /* ignore */ }
+      pendingDownloadUrls.delete(urlId);
+      
+    } catch (error) {
+      try {
+        await api.editMessageText(chatId, messageId,
+          `❌ Error: ${escapeHTML(error.message)}`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (e) { /* ignore */ }
     }
-    
-    await ctx.deleteMessage();
-    pendingDownloadUrls.delete(urlId);
-    
-  } catch (error) {
-    await ctx.editMessageText(
-      `❌ Error: ${escapeHTML(error.message)}`,
-      { parse_mode: 'HTML' }
-    );
-  }
+  })().catch(e => console.error('[ADL] Background task error:', e.message));
 });
 
 // =====================
