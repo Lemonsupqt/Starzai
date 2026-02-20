@@ -25546,12 +25546,16 @@ bot.on("chosen_inline_result", async (ctx) => {
         } catch (sendErr) {
           console.error('[Inline DL] DM send failed:', sendErr.message);
           if (inlineMessageId) {
+            let errMsg;
+            if (sendErr.message?.includes('bot was blocked') || sendErr.message?.includes('chat not found') || sendErr.message?.includes('PEER_ID_INVALID') || sendErr.message?.includes('user is deactivated')) {
+              errMsg = `\u274c <b>Could not send file</b>\n\nPlease start the bot first by sending /start in DM, then try again.\n\n\ud83d\udca1 Or use: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`;
+            } else if (sendErr.message?.includes('file must be non-empty') || sendErr.message?.includes('wrong file')) {
+              errMsg = `\u274c <b>Download Failed</b>\n\nServer returned an empty file. This video may be unavailable.\n\n\ud83d\udca1 Try: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`;
+            } else {
+              errMsg = `\u274c <b>Upload Failed</b>\n\n${escapeHTML(sendErr.message?.slice(0, 150) || 'Unknown error')}\n\n\ud83d\udca1 Try: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`;
+            }
             try {
-              await bot.api.editMessageTextInline(
-                inlineMessageId,
-                `\u274c <b>Could not send file</b>\n\nPlease start the bot first by sending /start in DM, then try again.\n\n\ud83d\udca1 Or use: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`,
-                { parse_mode: "HTML" }
-              );
+              await bot.api.editMessageTextInline(inlineMessageId, errMsg, { parse_mode: "HTML" });
             } catch (e) { /* ignore */ }
           }
           return;

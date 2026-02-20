@@ -711,6 +711,11 @@ async function downloadWithCobalt(url, options = {}) {
 
       const buffer = Buffer.from(await dlResponse.arrayBuffer());
 
+      // Detect empty buffer (Cobalt tunnel created but server-side download failed)
+      if (buffer.length === 0) {
+        return { success: false, error: 'Server returned an empty file. This video may be unavailable or geo-restricted. Try a different quality or URL.' };
+      }
+
       return {
         success: true,
         buffer,
