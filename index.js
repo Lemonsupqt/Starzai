@@ -107,6 +107,7 @@ import fetch from "node-fetch";
 // Super Utilities Module (27 features)
 import {
   downloadMedia,
+  downloadWithCobalt,
   cleanupDownload,
   detectPlatform,
   URL_PATTERNS,
@@ -14318,7 +14319,14 @@ const PLATFORM_EMOJI = {
   jiosaavn: '🎵'
 };
 
-// /download or /dl - Download media from various platforms
+// ═══════════════════════════════════════════════════════════════════════════════
+// COBALT DOWNLOAD SYSTEM - Quality Selection + Buffer Downloads
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Cache for pending quality selections (urlId -> { url, platform, userId, chatId, messageId })
+const pendingQualitySelections = new Map();
+
+// /download or /dl - Download media from various platforms with quality selection
 bot.command(["download", "dl"], async (ctx) => {
   if (!(await enforceRateLimit(ctx))) return;
   if (!(await enforceCommandCooldown(ctx))) return;
@@ -14329,14 +14337,15 @@ bot.command(["download", "dl"], async (ctx) => {
   if (!text) {
     return ctx.reply(
       '📥 <b>Media Downloader</b>\n\n' +
-      'Download videos and audio from:\n' +
-      '• YouTube, TikTok, Instagram, Twitter\n' +
-      '• Spotify, SoundCloud, Reddit\n' +
-      '• And 20+ more platforms!\n\n' +
+      'Download videos and audio from <b>20+ platforms</b>:\n' +
+      '├ 📺 YouTube, 🎵 TikTok, 📸 Instagram\n' +
+      '├ 🐦 Twitter/X, 📘 Facebook, 🎧 Spotify\n' +
+      '├ ☁️ SoundCloud, 📌 Pinterest, 🔴 Reddit\n' +
+      '└ Twitch, Vimeo, Tumblr, and more!\n\n' +
       '<b>Usage:</b>\n' +
       '<code>/dl https://youtube.com/watch?v=...</code>\n' +
       '<code>/dl https://tiktok.com/@user/video/...</code>\n\n' +
-      '<i>Or just paste a link and I\'ll detect it automatically!</i>',
+      '💡 <i>Just paste a link and I\'ll show quality options!</i>',
       { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
     );
   }
@@ -14351,66 +14360,162 @@ bot.command(["download", "dl"], async (ctx) => {
   const url = urlMatch[0];
   const platform = detectPlatform(url);
   const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
+  const platformName = platform ? platform.charAt(0).toUpperCase() + platform.slice(1) : 'Media';
   
-  const statusMsg = await ctx.reply(
-    `${emoji} <b>Downloading...</b>\n\nThis may take a moment...`,
-    { parse_mode: 'HTML', reply_to_message_id: ctx.message?.message_id }
+  // Store URL with short ID for callback data (64-byte limit)
+  const qId = `${ctx.from.id}_${Date.now()}`;
+  pendingQualitySelections.set(qId, {
+    url,
+    platform,
+    userId: String(ctx.from.id),
+    chatId: ctx.chat.id,
+    messageId: ctx.message.message_id,
+  });
+  // Clean up after 10 minutes
+  setTimeout(() => pendingQualitySelections.delete(qId), 10 * 60 * 1000);
+  
+  // Show quality selection buttons
+  const kb = new InlineKeyboard()
+    .text('🎥 360p', `cdl:360:${qId}`)
+    .text('🎥 480p', `cdl:480:${qId}`)
+    .row()
+    .text('🎥 720p', `cdl:720:${qId}`)
+    .text('🎥 1080p', `cdl:1080:${qId}`)
+    .row()
+    .text('🎵 Audio (MP3)', `cdl:audio:${qId}`)
+    .row();
+  
+  await ctx.reply(
+    `${emoji} <b>${platformName} Link Detected</b>\n\n` +
+    `🔗 <code>${escapeHTML(url.length > 50 ? url.slice(0, 50) + '...' : url)}</code>\n\n` +
+    `<b>Select download quality:</b>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: kb,
+      reply_to_message_id: ctx.message?.message_id
+    }
   );
+});
+
+// Callback handler for quality selection (cdl:QUALITY:ID)
+bot.callbackQuery(/^cdl:/, async (ctx) => {
+  const parts = ctx.callbackQuery.data.split(':');
+  const quality = parts[1];
+  const qId = parts.slice(2).join(':');
+  
+  const pending = pendingQualitySelections.get(qId);
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: '⏰ Link expired. Please send the URL again.', show_alert: true });
+    return;
+  }
+  
+  if (String(ctx.from.id) !== pending.userId) {
+    await ctx.answerCallbackQuery({ text: '🚫 Only the person who sent the link can use these buttons.', show_alert: true });
+    return;
+  }
+  
+  const { url, platform } = pending;
+  const emoji = platform ? PLATFORM_EMOJI[platform] : '📥';
+  const isAudio = quality === 'audio';
+  const qualityLabel = isAudio ? '🎵 MP3 Audio' : `🎥 ${quality}p Video`;
+  
+  await ctx.answerCallbackQuery({ text: `Downloading ${qualityLabel}...` });
   
   try {
-    const result = await downloadMedia(url, false);
+    await ctx.editMessageText(
+      `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
+      `⏳ Fetching from server...\n` +
+      `<i>This may take up to 2 minutes for large files</i>`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (e) { /* ignore */ }
+  
+  try {
+    const result = await downloadWithCobalt(url, {
+      audioOnly: isAudio,
+      quality: isAudio ? undefined : quality,
+      audioFormat: 'mp3',
+    });
     
     if (!result.success) {
-      await ctx.api.editMessageText(
-        ctx.chat.id, statusMsg.message_id,
-        `❌ Download failed: ${escapeHTML(result.error)}`,
+      let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error)}`;
+      if (result.tooLarge) {
+        const lowerQualities = ['360', '480', '720'].filter(q => parseInt(q) < parseInt(quality));
+        if (lowerQualities.length > 0) {
+          const retryKb = new InlineKeyboard();
+          lowerQualities.forEach(q => {
+            retryKb.text(`🎥 Try ${q}p`, `cdl:${q}:${qId}`);
+          });
+          retryKb.row().text('🎵 Audio Only', `cdl:audio:${qId}`);
+          await ctx.editMessageText(errorMsg + '\n\n<i>Try a lower quality:</i>', {
+            parse_mode: 'HTML',
+            reply_markup: retryKb,
+          });
+          return;
+        }
+      }
+      await ctx.editMessageText(errorMsg, { parse_mode: 'HTML' });
+      return;
+    }
+    
+    const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
+    try {
+      await ctx.editMessageText(
+        `${emoji} <b>Uploading to Telegram...</b>\n\n` +
+        `📊 ${sizeMB}MB • ${qualityLabel}\n` +
+        `<i>Almost there...</i>`,
         { parse_mode: 'HTML' }
       );
-      return;
+    } catch (e) { /* ignore */ }
+    
+    let caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n`;
+    if (result.quality) caption += `📊 ${result.quality} • ${sizeMB}MB\n`;
+    caption += `\n<i>Downloaded via StarzAI ⚡</i>`;
+    
+    if (result.buffer) {
+      const inputFile = new InputFile(result.buffer, result.filename || (isAudio ? 'audio.mp3' : 'video.mp4'));
+      if (isAudio) {
+        await ctx.replyWithAudio(inputFile, {
+          caption, parse_mode: 'HTML',
+          title: result.title || 'Audio',
+          reply_to_message_id: pending.messageId,
+        });
+      } else {
+        await ctx.replyWithVideo(inputFile, {
+          caption, parse_mode: 'HTML',
+          supports_streaming: true,
+          reply_to_message_id: pending.messageId,
+        });
+      }
+    } else if (result.url) {
+      if (isAudio) {
+        await ctx.replyWithAudio(result.url, {
+          caption, parse_mode: 'HTML',
+          reply_to_message_id: pending.messageId,
+        });
+      } else {
+        await ctx.replyWithVideo(result.url, {
+          caption, parse_mode: 'HTML',
+          supports_streaming: true,
+          reply_to_message_id: pending.messageId,
+        });
+      }
     }
     
-    if (result.picker) {
-      const kb = new InlineKeyboard();
-      result.options.slice(0, 4).forEach((opt, i) => {
-        kb.text(opt.type || `Option ${i + 1}`, `dl_pick:${i}:${encodeURIComponent(url)}`).row();
-      });
-      
-      await ctx.api.editMessageText(
-        ctx.chat.id, statusMsg.message_id,
-        `${emoji} <b>Multiple options available:</b>\n\nSelect what you want to download:`,
-        { parse_mode: 'HTML', reply_markup: kb }
-      );
-      return;
-    }
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, ctx.callbackQuery.message.message_id);
+    } catch (e) { /* ignore */ }
     
-    await ctx.api.editMessageText(
-      ctx.chat.id, statusMsg.message_id,
-      `${emoji} <b>Uploading to Telegram...</b>`,
-      { parse_mode: 'HTML' }
-    );
-    
-    const isAudio = url.includes('soundcloud') || url.includes('spotify');
-    
-    if (isAudio) {
-      await ctx.replyWithAudio(result.url, {
-        caption: `${emoji} Downloaded via StarzAI`,
-        reply_to_message_id: ctx.message?.message_id
-      });
-    } else {
-      await ctx.replyWithVideo(result.url, {
-        caption: `${emoji} Downloaded via StarzAI`,
-        reply_to_message_id: ctx.message?.message_id
-      });
-    }
-    
-    await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    pendingQualitySelections.delete(qId);
     
   } catch (error) {
-    await ctx.api.editMessageText(
-      ctx.chat.id, statusMsg.message_id,
-      `❌ Error: ${escapeHTML(error.message)}`,
-      { parse_mode: 'HTML' }
-    );
+    console.error('[DL] Download error:', error.message);
+    try {
+      await ctx.editMessageText(
+        `❌ <b>Download Error</b>\n\n${escapeHTML(error.message || 'Unknown error')}\n\n<i>Try again or use a different quality</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) { /* ignore */ }
   }
 });
 
@@ -18557,7 +18662,7 @@ bot.on("message:web_app_data", async (ctx) => {
         '/imgset': '\u2699\ufe0f Use `/imgset` to configure image settings',
         '/m': '\ud83c\udfb5 Use `/m song name` to search & download music',
         '/lyrics': '\ud83c\udfa4 Use `/lyrics song name` to get lyrics',
-        '/dl': '\ud83d\udce5 Use `/dl URL` to download media from any platform',
+        '/dl': '\ud83d\udce5 Use `/dl URL` to download media with quality selection (360p-1080p + audio)',
         '/movie': '\ud83c\udfac Use `/movie title` to search movies',
         '/tv': '\ud83d\udcfa Use `/tv title` to search TV shows',
         '/wallpaper': '\ud83d\uddbc Use `/wallpaper keyword` to find wallpapers',
@@ -20490,19 +20595,37 @@ bot.on("message:text", async (ctx) => {
     if (urlMatch) {
       const url = urlMatch[0];
       const emoji = PLATFORM_EMOJI[detectedPlatform] || '📥';
+      const platformName = detectedPlatform.charAt(0).toUpperCase() + detectedPlatform.slice(1);
       
       // Store URL in cache with short ID to avoid callback data limit (64 bytes)
-      const urlId = `${u.id}_${Date.now()}`;
-      pendingDownloadUrls.set(urlId, url);
-      // Clean up old entries after 10 minutes
-      setTimeout(() => pendingDownloadUrls.delete(urlId), 10 * 60 * 1000);
+      const qId = `${u.id}_${Date.now()}`;
+      pendingQualitySelections.set(qId, {
+        url,
+        platform: detectedPlatform,
+        userId: String(u.id),
+        chatId: chat.id,
+        messageId,
+      });
+      setTimeout(() => pendingQualitySelections.delete(qId), 10 * 60 * 1000);
+      
+      // Also keep in pendingDownloadUrls for backward compatibility
+      pendingDownloadUrls.set(qId, url);
+      setTimeout(() => pendingDownloadUrls.delete(qId), 10 * 60 * 1000);
       
       const kb = new InlineKeyboard()
-        .text(`${emoji} Download Video`, `adl:v:${urlId}`)
-        .text(`🎵 Audio Only`, `adl:a:${urlId}`);
+        .text('🎥 360p', `cdl:360:${qId}`)
+        .text('🎥 480p', `cdl:480:${qId}`)
+        .row()
+        .text('🎥 720p', `cdl:720:${qId}`)
+        .text('🎥 1080p', `cdl:1080:${qId}`)
+        .row()
+        .text('🎵 Audio (MP3)', `cdl:audio:${qId}`)
+        .row();
       
       await ctx.reply(
-        `${emoji} <b>${detectedPlatform.charAt(0).toUpperCase() + detectedPlatform.slice(1)} link detected!</b>\n\nWhat would you like to download?`,
+        `${emoji} <b>${platformName} Link Detected</b>\n\n` +
+        `🔗 <code>${escapeHTML(url.length > 50 ? url.slice(0, 50) + '...' : url)}</code>\n\n` +
+        `<b>Select download quality:</b>`,
         { parse_mode: 'HTML', reply_markup: kb, reply_to_message_id: messageId }
       );
       return;
@@ -22184,32 +22307,30 @@ bot.on("inline_query", async (ctx) => {
     });
     setTimeout(() => inlineCache.delete(`dl_pending_${dlKey}`), 5 * 60 * 1000);
     
-    return safeAnswerInline(ctx, [
-      {
-        type: "article",
-        id: `dl_start_${dlKey}`,
-        title: `${emoji} Download from ${platformName}`,
-        description: `Tap to download this ${platformName} media`,
-        thumbnail_url: "https://img.icons8.com/fluency/96/download.png",
-        input_message_content: {
-          message_text: `${emoji} <b>Downloading from ${platformName}...</b>\n\n🔗 ${escapeHTML(detectedUrl.slice(0, 50))}${detectedUrl.length > 50 ? '...' : ''}\n\n<i>⏳ Please wait...</i>`,
-          parse_mode: "HTML",
-        },
-        reply_markup: new InlineKeyboard().text("⏳ Downloading...", `dl_loading_${dlKey}`),
+    // Show quality options as inline results
+    const qualities = [
+      { id: `dl_q360_${dlKey}`, title: `${emoji} ${platformName} \u2022 360p`, desc: 'Small file, fast download', quality: '360p', qEmoji: '\ud83c\udfa5' },
+      { id: `dl_q480_${dlKey}`, title: `${emoji} ${platformName} \u2022 480p`, desc: 'Good quality, moderate size', quality: '480p', qEmoji: '\ud83c\udfa5' },
+      { id: `dl_q720_${dlKey}`, title: `${emoji} ${platformName} \u2022 720p HD`, desc: 'HD quality, recommended', quality: '720p', qEmoji: '\ud83c\udfa5' },
+      { id: `dl_q1080_${dlKey}`, title: `${emoji} ${platformName} \u2022 1080p Full HD`, desc: 'Best quality, larger file', quality: '1080p', qEmoji: '\ud83c\udfa5' },
+      { id: `dl_qaudio_${dlKey}`, title: `\ud83c\udfb5 ${platformName} \u2022 Audio MP3`, desc: 'Extract audio only', quality: 'MP3', qEmoji: '\ud83c\udfb5' },
+    ];
+    
+    const dlResults = qualities.map(q => ({
+      type: "article",
+      id: q.id,
+      title: q.title,
+      description: q.desc,
+      thumbnail_url: q.qEmoji === '\ud83c\udfb5' ? "https://img.icons8.com/fluency/96/audio-file.png" : "https://img.icons8.com/fluency/96/download.png",
+      input_message_content: {
+        message_text: `${q.qEmoji} <b>Downloading ${q.quality} from ${platformName}...</b>\n\n\ud83d\udd17 <code>${escapeHTML(detectedUrl.slice(0, 50))}${detectedUrl.length > 50 ? '...' : ''}</code>\n\n<i>\u23f3 Please wait, downloading and uploading...</i>`,
+        parse_mode: "HTML",
       },
-      {
-        type: "article",
-        id: `dl_audio_${dlKey}`,
-        title: `🎵 Download Audio Only`,
-        description: `Extract audio from this ${platformName} media`,
-        thumbnail_url: "https://img.icons8.com/fluency/96/audio-file.png",
-        input_message_content: {
-          message_text: `🎵 <b>Extracting audio from ${platformName}...</b>\n\n🔗 ${escapeHTML(detectedUrl.slice(0, 50))}${detectedUrl.length > 50 ? '...' : ''}\n\n<i>⏳ Please wait...</i>`,
-          parse_mode: "HTML",
-        },
-        reply_markup: new InlineKeyboard().text("⏳ Extracting...", `dl_audio_loading_${dlKey}`),
-      },
-    ], { cache_time: 0, is_personal: true });
+      reply_markup: new InlineKeyboard().text(`\u23f3 Downloading ${q.quality}...`, `dl_loading_${dlKey}`),
+    }));
+    
+    return safeAnswerInline(ctx, dlResults, { cache_time: 0, is_personal: true });
+
   }
   
   // =====================
@@ -25321,10 +25442,16 @@ bot.on("chosen_inline_result", async (ctx) => {
     return;
   }
 
-  // Handle inline download - dl_start_KEY or dl_audio_KEY
-  if (resultId.startsWith("dl_start_") || resultId.startsWith("dl_audio_")) {
-    const isAudioOnly = resultId.startsWith("dl_audio_");
-    const dlKey = resultId.replace("dl_start_", "").replace("dl_audio_", "");
+  // Handle inline download with quality selection - dl_q{QUALITY}_{KEY}
+  if (resultId.match(/^dl_q(360|480|720|1080|audio)_/)) {
+    const qualityMatch = resultId.match(/^dl_q(360|480|720|1080|audio)_(.+)$/);
+    if (!qualityMatch) return;
+    
+    const selectedQuality = qualityMatch[1];
+    const dlKey = qualityMatch[2];
+    const isAudioOnly = selectedQuality === 'audio';
+    const qualityLabel = isAudioOnly ? 'MP3 Audio' : `${selectedQuality}p`;
+    
     const pending = inlineCache.get(`dl_pending_${dlKey}`);
     
     if (!pending) {
@@ -25337,70 +25464,114 @@ bot.on("chosen_inline_result", async (ctx) => {
             { parse_mode: "HTML" }
           );
         } catch (e) {
-
           if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
-
             console.warn('[TG]', e.message);
-
           }
-
         }
       }
       return;
     }
     
     const { url, platform, userId: ownerId } = pending;
-    console.log(`Processing inline download: ${url} (platform: ${platform}, audioOnly: ${isAudioOnly})`);
+    const platformEmojis = { youtube: '🎬', tiktok: '🎵', instagram: '📸', twitter: '🐦', facebook: '📘', spotify: '🎧' };
+    const emoji = platformEmojis[platform] || '📥';
+    
+    console.log(`[Inline DL] Processing: ${url} (quality: ${qualityLabel}, platform: ${platform})`);
     
     try {
-      // Import the download function
-      const { downloadWithVKR } = await import('./src/features/super-utilities.js');
+      // Step 1: Update inline message to show download progress
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `${emoji} <b>Downloading ${qualityLabel}...</b>\n\n` +
+            `⏳ Fetching from server...\n` +
+            `<i>This may take up to 2 minutes</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch (e) { /* ignore */ }
+      }
       
-      // Perform the download
-      const result = await downloadWithVKR(url, isAudioOnly);
+      // Step 2: Download with Cobalt API (returns Buffer)
+      const result = await downloadWithCobalt(url, {
+        audioOnly: isAudioOnly,
+        quality: isAudioOnly ? undefined : selectedQuality,
+        audioFormat: 'mp3',
+      });
       
       if (!result.success) {
         if (inlineMessageId) {
-          await bot.api.editMessageTextInline(
-            inlineMessageId,
-            `❌ <b>Download failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}\n\n<i>Try using /dl command instead</i>`,
-            { parse_mode: "HTML" }
-          );
+          let errorMsg = `❌ <b>Download Failed</b>\n\n${escapeHTML(result.error || 'Unknown error')}`;
+          if (result.tooLarge) {
+            errorMsg += '\n\n💡 <i>Try a lower quality with /dl command</i>';
+          }
+          try {
+            await bot.api.editMessageTextInline(inlineMessageId, errorMsg, { parse_mode: "HTML" });
+          } catch (e) { /* ignore */ }
         }
         return;
       }
       
-      // Update message with success and send the file
-      const platformEmojis = { youtube: '🎬', tiktok: '🎵', instagram: '📸', twitter: '🐦', facebook: '📘', spotify: '🎧' };
-      const emoji = platformEmojis[platform] || '📥';
-      
-      // Build caption
-      let caption = `${emoji} <b>${escapeHTML(result.title || 'Media')}</b>\n`;
-      if (result.author) caption += `👤 ${escapeHTML(result.author)}\n`;
-      if (result.duration) caption += `⏱ ${result.duration}\n`;
-      caption += `\n<i>Downloaded via StarzAI</i>`;
-      
-      // Update the inline message
+      // Step 3: Update message to show upload progress
+      const sizeMB = result.fileSizeMB ? result.fileSizeMB.toFixed(1) : '?';
       if (inlineMessageId) {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `${emoji} <b>Download complete!</b>\n\n🎬 ${escapeHTML(result.title || 'Media')}\n👤 ${escapeHTML(result.author || 'Unknown')}\n\n<i>Sending file...</i>`,
-          { parse_mode: "HTML" }
-        );
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `${emoji} <b>Uploading to Telegram...</b>\n\n` +
+            `📊 ${sizeMB}MB • ${qualityLabel}\n` +
+            `<i>Almost there...</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch (e) { /* ignore */ }
       }
       
-      // Note: Inline mode can't send files directly, so we update the message with info
-      // The user can use /dl command for actual file download
-      if (inlineMessageId) {
-        await bot.api.editMessageTextInline(
-          inlineMessageId,
-          `${emoji} <b>${escapeHTML(result.title || 'Media')}</b>\n\n👤 ${escapeHTML(result.author || 'Unknown')}\n⏱ ${result.duration || 'N/A'}\n\n✅ <i>Use /dl command in chat to download this file</i>\n\n🔗 ${escapeHTML(url.slice(0, 50))}${url.length > 50 ? '...' : ''}`,
-          { 
-            parse_mode: "HTML",
-            reply_markup: new InlineKeyboard()
-              .url("📥 Open Original", url)
+      // Step 4: Send the file as Buffer to the user's DM
+      const caption = `${emoji} <b>${escapeHTML(result.title || 'Downloaded Media')}</b>\n` +
+        `📊 ${result.quality || qualityLabel} • ${sizeMB}MB\n` +
+        `\n<i>Downloaded via StarzAI ⚡</i>`;
+      
+      if (result.buffer) {
+        const inputFile = new InputFile(result.buffer, result.filename || (isAudioOnly ? 'audio.mp3' : 'video.mp4'));
+        try {
+          if (isAudioOnly) {
+            await bot.api.sendAudio(ownerId, inputFile, {
+              caption, parse_mode: 'HTML',
+              title: result.title || 'Audio',
+            });
+          } else {
+            await bot.api.sendVideo(ownerId, inputFile, {
+              caption, parse_mode: 'HTML',
+              supports_streaming: true,
+            });
           }
-        );
+        } catch (sendErr) {
+          console.error('[Inline DL] Failed to send file to user DM:', sendErr.message);
+          if (inlineMessageId) {
+            try {
+              await bot.api.editMessageTextInline(
+                inlineMessageId,
+                `❌ <b>Could not send file</b>\n\nPlease start the bot first by sending /start in DM, then try again.\n\n💡 Or use: <code>/dl ${escapeHTML(url.slice(0, 40))}</code>`,
+                { parse_mode: "HTML" }
+              );
+            } catch (e) { /* ignore */ }
+          }
+          return;
+        }
+      }
+      
+      // Step 5: Update inline message with success
+      if (inlineMessageId) {
+        try {
+          await bot.api.editMessageTextInline(
+            inlineMessageId,
+            `${emoji} <b>${escapeHTML(result.title || 'Media Downloaded')}</b>\n\n` +
+            `📊 ${result.quality || qualityLabel} • ${sizeMB}MB\n` +
+            `✅ <b>Sent to your DM!</b>\n\n` +
+            `<i>Downloaded via StarzAI ⚡</i>`,
+            { parse_mode: "HTML" }
+          );
+        } catch (e) { /* ignore */ }
       }
       
     } catch (e) {
@@ -25412,19 +25583,37 @@ bot.on("chosen_inline_result", async (ctx) => {
             `❌ <b>Download failed</b>\n\n${escapeHTML(e.message)}\n\n<i>Try using /dl command instead</i>`,
             { parse_mode: "HTML" }
           );
-        } catch (e) {
-
-          if (!e.message?.includes('message is not modified') && !e.message?.includes('query is too old')) {
-
-            console.warn('[TG]', e.message);
-
+        } catch (err) {
+          if (!err.message?.includes('message is not modified') && !err.message?.includes('query is too old')) {
+            console.warn('[TG]', err.message);
           }
-
         }
       }
     }
     
-    // Clean up pending
+    inlineCache.delete(`dl_pending_${dlKey}`);
+    return;
+  }
+  
+  // Legacy: Handle old-format inline download - dl_start_KEY or dl_audio_KEY
+  if (resultId.startsWith("dl_start_") || resultId.startsWith("dl_audio_")) {
+    const dlKey = resultId.replace("dl_start_", "").replace("dl_audio_", "");
+    const pending = inlineCache.get(`dl_pending_${dlKey}`);
+    if (!pending) {
+      if (inlineMessageId) {
+        try { await bot.api.editMessageTextInline(inlineMessageId, "❌ Download request expired.", { parse_mode: "HTML" }); } catch (e) { /* ignore */ }
+      }
+      return;
+    }
+    if (inlineMessageId) {
+      try {
+        await bot.api.editMessageTextInline(
+          inlineMessageId,
+          `📥 <b>Use the updated download!</b>\n\nPaste the URL again in inline mode to see quality options.\n\nOr use: <code>/dl ${escapeHTML(pending.url.slice(0, 40))}</code>`,
+          { parse_mode: "HTML" }
+        );
+      } catch (e) { /* ignore */ }
+    }
     inlineCache.delete(`dl_pending_${dlKey}`);
     return;
   }
