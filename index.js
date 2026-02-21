@@ -95,6 +95,10 @@
  * └─────────────────────────────────────────────────────────────────────────────────┘
  */
 
+// IMPORTANT: Sentry must be imported first to instrument all other modules
+import "./instrument.mjs";
+import * as Sentry from "@sentry/node";
+
 import { Bot, InlineKeyboard, InputFile, webhookCallback } from "grammy";
 import http from "http";
 import OpenAI from "openai";
