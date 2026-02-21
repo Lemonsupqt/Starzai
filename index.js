@@ -14470,7 +14470,7 @@ async function queryAssistant(userMessage, userId, chatId) {
     // Mention the assistant bot so it always receives the message
     // (privacy mode may not propagate immediately, but mentions always work)
     const mentionTag = ASSISTANT_BOT_USERNAME ? `@${ASSISTANT_BOT_USERNAME} ` : "";
-    const relayMessage = `${mentionTag}🔗 [${requestId}]\n👤 User ${userId}:\n\n${userMessage}`;
+    const relayMessage = `${mentionTag}🔗 [${requestId}] 👤 User ${userId}: ${userMessage}`;
     
     const sendResp = await bot.api.sendMessage(ASSISTANT_RELAY_GROUP, relayMessage);
     const relayMsgId = sendResp.message_id;
