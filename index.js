@@ -274,16 +274,18 @@ const ASSISTANT_BOT_API = () => `https://api.telegram.org/bot${ASSISTANT_BOT_TOK
 let ASSISTANT_RELAY_GROUP = process.env.ASSISTANT_RELAY_GROUP || "-1003846039567";
 // Track the assistant bot's user ID (resolved at startup)
 let ASSISTANT_BOT_ID = null;
+let ASSISTANT_BOT_USERNAME = null;
 if (ASSISTANT_BOT_TOKEN) {
   console.log(`[Assistant] Starz Assistant bridge configured (token: ${ASSISTANT_BOT_TOKEN.slice(0, 10)}...)`);
   console.log(`[Assistant] Relay group: ${ASSISTANT_RELAY_GROUP}`);
-  // Resolve assistant bot ID
+  // Resolve assistant bot ID and username
   fetch(`https://api.telegram.org/bot${ASSISTANT_BOT_TOKEN}/getMe`)
     .then(r => r.json())
     .then(data => {
       if (data.ok) {
         ASSISTANT_BOT_ID = data.result.id;
-        console.log(`[Assistant] Bot ID resolved: ${ASSISTANT_BOT_ID} (@${data.result.username})`);
+        ASSISTANT_BOT_USERNAME = data.result.username;
+        console.log(`[Assistant] Bot ID resolved: ${ASSISTANT_BOT_ID} (@${ASSISTANT_BOT_USERNAME})`);
       }
     })
     .catch(e => console.error("[Assistant] Failed to resolve bot ID:", e.message));
@@ -14465,7 +14467,10 @@ async function queryAssistant(userMessage, userId, chatId) {
   try {
     // Step 1: Send the user's message to the relay group via StarzAI's own bot token
     // We tag it with a request ID header so we can match the response
-    const relayMessage = `🔗 [${requestId}]\n👤 User ${userId}:\n\n${userMessage}`;
+    // Mention the assistant bot so it always receives the message
+    // (privacy mode may not propagate immediately, but mentions always work)
+    const mentionTag = ASSISTANT_BOT_USERNAME ? `@${ASSISTANT_BOT_USERNAME} ` : "";
+    const relayMessage = `${mentionTag}🔗 [${requestId}]\n👤 User ${userId}:\n\n${userMessage}`;
     
     const sendResp = await bot.api.sendMessage(ASSISTANT_RELAY_GROUP, relayMessage);
     const relayMsgId = sendResp.message_id;
@@ -14836,6 +14841,7 @@ bot.command("atoken", async (ctx) => {
     const botInfo = testData.result;
     ASSISTANT_BOT_TOKEN = newToken;
     ASSISTANT_BOT_ID = botInfo.id;
+    ASSISTANT_BOT_USERNAME = botInfo.username;
     
     await ctx.reply(
       `✅ *Assistant bot switched!*\n\n` +
