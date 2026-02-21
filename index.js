@@ -14523,79 +14523,17 @@ async function queryAssistant(userMessage, userId, chatId) {
   }
 }
 
-// ═══ RELAY GROUP LISTENER ═══
-// This handler watches the relay group for messages from the assistant bot.
-// When the assistant bot replies to a tagged message, we match it to a pending request.
-bot.on("message:text", async (ctx, next) => {
-  const chat = ctx.chat;
-  const msg = ctx.message;
-  const from = msg?.from;
-  
-  // Only process messages in the relay group
-  if (String(chat?.id) !== String(ASSISTANT_RELAY_GROUP)) {
-    return next();
-  }
-  
-  // Only process messages from the assistant bot
-  if (!from?.is_bot || !ASSISTANT_BOT_ID || from.id !== ASSISTANT_BOT_ID) {
-    return next();
-  }
-  
-  const text = msg.text || "";
-  const replyTo = msg.reply_to_message;
-  
-  console.log(`[Assistant Relay] Got message from assistant bot in relay group: "${text.slice(0, 80)}"`);
-  
-  // Strategy 1: The assistant bot replies to our tagged message
-  if (replyTo?.text) {
-    const tagMatch = replyTo.text.match(/🔗 \[(req_[^\]]+)\]/);
-    if (tagMatch) {
-      const requestId = tagMatch[1];
-      const pending = assistantRelayPending.get(requestId);
-      if (pending) {
-        console.log(`[Assistant Relay] Matched response to ${requestId}`);
-        pending.resolve(text);
-        return; // Don't pass to other handlers
-      }
-    }
-  }
-  
-  // Strategy 2: The assistant bot sends a message (not a reply) — match to the most recent pending request
-  // This handles cases where OpenClaw doesn't reply-to but just sends a new message
-  if (!replyTo && assistantRelayPending.size > 0) {
-    // Find the most recent pending request
-    let mostRecent = null;
-    let mostRecentTime = 0;
-    for (const [reqId, pending] of assistantRelayPending) {
-      if (pending.timestamp > mostRecentTime) {
-        mostRecentTime = pending.timestamp;
-        mostRecent = { reqId, pending };
-      }
-    }
-    if (mostRecent) {
-      console.log(`[Assistant Relay] Matched non-reply response to ${mostRecent.reqId}`);
-      mostRecent.pending.resolve(text);
-      return;
-    }
-  }
-  
-  // Strategy 3: Match by proximity — if the assistant replies to any message,
-  // check if the replied-to message is close to a pending relay message
-  if (replyTo && assistantRelayPending.size > 0) {
-    for (const [reqId, pending] of assistantRelayPending) {
-      // If the reply is to a message near our relay message (within 5 message IDs)
-      if (Math.abs(replyTo.message_id - pending.relayMsgId) <= 5) {
-        console.log(`[Assistant Relay] Proximity-matched response to ${reqId}`);
-        pending.resolve(text);
-        return;
-      }
-    }
-  }
-  
-  // Not matched to any pending request — ignore
-  console.log(`[Assistant Relay] Unmatched assistant message in relay group (no pending request)`);
-  return; // Don't pass relay group messages to the main handler
-});
+// ═══ RESPONSE CALLBACK ═══
+// Telegram bots cannot see other bots' messages (even in groups).
+// Instead, Kimi Claw uses web_fetch (GET) to call back to StarzAI's HTTP server
+// with the response. The callback endpoint is at /api/assistant-callback.
+// See the HTTP server section for the endpoint handler.
+// The flow:
+// 1. StarzAI sends @mention message to relay group with request ID
+// 2. Kimi Claw sees it, processes it, replies in Telegram
+// 3. Kimi Claw ALSO calls: GET /api/assistant-callback?req=REQUEST_ID&resp=ENCODED_RESPONSE
+// 4. The endpoint resolves the pending promise in assistantRelayPending
+// 5. queryAssistant returns the response to the /sa command handler
 
 // ─── /sa <message> — One-time request to Starz Assistant ───
 bot.command("sa", async (ctx) => {
@@ -29302,6 +29240,45 @@ http
       } catch (e) {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+    
+    // ═══ STARZ ASSISTANT CALLBACK ENDPOINT ═══
+    // Kimi Claw calls this via web_fetch (GET) after processing a request.
+    // URL format: /api/assistant-callback?req=REQUEST_ID&resp=URL_ENCODED_RESPONSE
+    if (req.method === "GET" && req.url?.startsWith("/api/assistant-callback?")) {
+      try {
+        const urlObj = new URL(req.url, `http://${req.headers.host}`);
+        const reqId = urlObj.searchParams.get("req");
+        const response = urlObj.searchParams.get("resp");
+        
+        console.log(`[Assistant Callback] Received: req=${reqId}, resp length=${response?.length || 0}`);
+        
+        if (!reqId || !response) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, error: "Missing req or resp parameter" }));
+          return;
+        }
+        
+        // Find and resolve the pending request
+        const pending = assistantRelayPending.get(reqId);
+        if (pending) {
+          console.log(`[Assistant Callback] Matched and resolving ${reqId}`);
+          pending.resolve(decodeURIComponent(response));
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true, matched: true }));
+        } else {
+          console.log(`[Assistant Callback] No pending request for ${reqId}`);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true, matched: false, reason: "No pending request with that ID" }));
+        }
+      } catch (e) {
+        console.error("[Assistant Callback] Error:", e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ ok: false, error: e.message }));
       }
       return;
     }
