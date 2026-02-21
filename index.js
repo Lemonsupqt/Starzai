@@ -2410,10 +2410,13 @@ const assistantResponseMessages = new Map();
 // Conversation history for assistant: `${userId}:${chatId}` -> [{role, content}]
 const assistantChatHistory = new Map();
 const ASSISTANT_HISTORY_MAX = 20; // max messages per conversation
-// Relay group pending: maps a unique requestId to { userId, chatId, statusMsgId, relayMsgId, timestamp, resolve }
-// When StarzAI sends a message to the relay group, it stores the context here.
-// When the assistant bot replies in the relay group, StarzAI matches it and resolves the pending promise.
+// Relay pending: maps a unique requestId to { userId, chatId, timestamp, resolve }
+// queryAssistant creates a promise and stores the resolver here.
+// The /api/assistant-callback endpoint resolves it when Kimi Claw calls back.
 const assistantRelayPending = new Map();
+// Polling queue: requests waiting for Kimi Claw to pick up via GET /api/assistant-queue
+// requestId -> { req_id, user_id, message, timestamp, status: "pending"|"processing" }
+const assistantQueue = new Map();
 // Cleanup old assistant tracking entries every 30 minutes
 setInterval(() => {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -2425,6 +2428,9 @@ setInterval(() => {
   }
   for (const [key, val] of assistantRelayPending) {
     if (val.timestamp < cutoff) assistantRelayPending.delete(key);
+  }
+  for (const [key, val] of assistantQueue) {
+    if (val.timestamp < cutoff) assistantQueue.delete(key);
   }
 }, 30 * 60 * 1000);
 
@@ -14455,44 +14461,38 @@ function checkAssistantRateLimit(userId) {
 
 // Helper: send message to relay group and wait for assistant's response
 async function queryAssistant(userMessage, userId, chatId) {
-  if (!ASSISTANT_BOT_TOKEN) {
-    return { success: false, error: "Assistant bot not configured. Set ASSISTANT_BOT_TOKEN in Railway." };
-  }
-  if (!ASSISTANT_RELAY_GROUP) {
-    return { success: false, error: "Relay group not configured. Set ASSISTANT_RELAY_GROUP in Railway." };
-  }
-  
   const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   try {
-    // Step 1: Send the user's message to the relay group via StarzAI's own bot token
-    // We tag it with a request ID header so we can match the response
-    // Mention the assistant bot so it always receives the message
-    // (privacy mode may not propagate immediately, but mentions always work)
-    const mentionTag = ASSISTANT_BOT_USERNAME ? `@${ASSISTANT_BOT_USERNAME} ` : "";
-    const relayMessage = `${mentionTag}🔗 [${requestId}] 👤 User ${userId}: ${userMessage}`;
+    // Step 1: Add request to the polling queue
+    // Kimi Claw polls GET /api/assistant-queue every 30s and picks up pending requests
+    assistantQueue.set(requestId, {
+      req_id: requestId,
+      user_id: String(userId),
+      message: userMessage,
+      timestamp: Date.now(),
+      status: "pending",
+    });
     
-    const sendResp = await bot.api.sendMessage(ASSISTANT_RELAY_GROUP, relayMessage);
-    const relayMsgId = sendResp.message_id;
+    console.log(`[Assistant] Queued request: ${requestId} from user ${userId}`);
     
-    console.log(`[Assistant] Sent to relay group: ${requestId} (msg ${relayMsgId})`);
-    
-    // Step 2: Create a promise that will be resolved when the assistant responds
-    // The grammY message handler for the relay group will resolve this
+    // Step 2: Create a promise that will be resolved when Kimi Claw calls back
+    // via GET /api/assistant-callback?req=REQUEST_ID&resp=ENCODED_RESPONSE
     const responsePromise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         assistantRelayPending.delete(requestId);
+        assistantQueue.delete(requestId);
         resolve(null); // Timeout
-      }, 90000); // 90 second timeout for complex requests
+      }, 120000); // 120 second timeout (30s poll interval + processing time)
       
       assistantRelayPending.set(requestId, {
         userId: String(userId),
         chatId,
-        relayMsgId,
         timestamp: Date.now(),
         resolve: (text) => {
           clearTimeout(timeout);
           assistantRelayPending.delete(requestId);
+          assistantQueue.delete(requestId);
           resolve(text);
         },
       });
@@ -14504,7 +14504,7 @@ async function queryAssistant(userMessage, userId, chatId) {
     if (!responseText) {
       return {
         success: false,
-        error: "Starz Assistant didn't respond in time (90s). It may be processing a complex request, or the relay group isn't set up correctly.\n\nMake sure:\n• Both bots are in the relay group\n• Privacy mode is DISABLED for both bots\n• The assistant bot is online",
+        error: "Starz Assistant didn't respond in time (120s).\n\nPossible reasons:\n• Kimi Claw's cron job may not be running\n• The assistant may be processing a complex request\n• Check /astatus for queue info",
       };
     }
     
@@ -14512,28 +14512,19 @@ async function queryAssistant(userMessage, userId, chatId) {
   } catch (err) {
     console.error("[Assistant] queryAssistant error:", err);
     assistantRelayPending.delete(requestId);
-    
-    if (err.description?.includes("chat not found") || err.description?.includes("Forbidden")) {
-      return {
-        success: false,
-        error: `StarzAI can't send to the relay group (${ASSISTANT_RELAY_GROUP}). Make sure StarzAI is a member of the group.`,
-      };
-    }
+    assistantQueue.delete(requestId);
     return { success: false, error: `Bridge error: ${err.message}` };
   }
 }
 
-// ═══ RESPONSE CALLBACK ═══
-// Telegram bots cannot see other bots' messages (even in groups).
-// Instead, Kimi Claw uses web_fetch (GET) to call back to StarzAI's HTTP server
-// with the response. The callback endpoint is at /api/assistant-callback.
-// See the HTTP server section for the endpoint handler.
-// The flow:
-// 1. StarzAI sends @mention message to relay group with request ID
-// 2. Kimi Claw sees it, processes it, replies in Telegram
-// 3. Kimi Claw ALSO calls: GET /api/assistant-callback?req=REQUEST_ID&resp=ENCODED_RESPONSE
-// 4. The endpoint resolves the pending promise in assistantRelayPending
-// 5. queryAssistant returns the response to the /sa command handler
+// ═══ POLLING BRIDGE ═══
+// Flow:
+// 1. User sends /sa → queryAssistant adds request to assistantQueue
+// 2. Kimi Claw polls GET /api/assistant-queue every 30s → picks up pending requests
+// 3. Kimi Claw processes the message
+// 4. Kimi Claw calls GET /api/assistant-callback?req=ID&resp=ENCODED_RESPONSE
+// 5. The callback endpoint resolves the pending promise in assistantRelayPending
+// 6. queryAssistant returns the response to the /sa command handler
 
 // ─── /sa <message> — One-time request to Starz Assistant ───
 bot.command("sa", async (ctx) => {
@@ -14584,7 +14575,7 @@ bot.command("sa", async (ctx) => {
   // Send processing status
   const statusMsg = await ctx.reply(
     "🤖 <b>Starz Assistant</b> is thinking...\n\n" +
-    "<i>⏳ This may take up to 90 seconds for complex requests.</i>",
+    "<i>⏳ This may take up to 2 minutes for complex requests.</i>",
     { parse_mode: "HTML", reply_to_message_id: msgId }
   );
   
@@ -14834,9 +14825,9 @@ bot.command("astatus", async (ctx) => {
       `🆔 *ID:* \`${botInfo.id}\`\n` +
       `👤 *Name:* ${botInfo.first_name}\n\n` +
       `*Agent Access:*\n${allowedList}\n\n` +
-      `*Relay Group:* \`${ASSISTANT_RELAY_GROUP}\`\n` +
       `*Rate Limit:* ${ASSISTANT_RATE_LIMIT}/min per user\n` +
-      `*Pending Relay:* ${assistantRelayPending.size}`,
+      `*Queue:* ${assistantQueue.size} pending\n` +
+      `*Awaiting Callback:* ${assistantRelayPending.size}`,
       { parse_mode: "Markdown" }
     );
   } catch (err) {
@@ -29240,6 +29231,39 @@ http
       } catch (e) {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+    
+    // ═══ STARZ ASSISTANT QUEUE ENDPOINT ═══
+    // Kimi Claw polls this every 30s to pick up pending requests.
+    // Returns JSON array of pending requests, then marks them as "processing".
+    if (req.method === "GET" && (req.url === "/api/assistant-queue" || req.url?.startsWith("/api/assistant-queue?"))) {
+      try {
+        const pending = [];
+        for (const [reqId, entry] of assistantQueue) {
+          if (entry.status === "pending") {
+            pending.push({
+              req_id: entry.req_id,
+              user_id: entry.user_id,
+              message: entry.message,
+              timestamp: entry.timestamp,
+            });
+            // Mark as processing so we don't send it again
+            entry.status = "processing";
+          }
+        }
+        
+        console.log(`[Assistant Queue] Polled: ${pending.length} pending requests`);
+        
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end(JSON.stringify({ ok: true, requests: pending }));
+      } catch (e) {
+        console.error("[Assistant Queue] Error:", e.message);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ ok: false, error: e.message }));
       }
       return;
     }
