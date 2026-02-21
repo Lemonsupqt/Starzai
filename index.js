@@ -12853,6 +12853,23 @@ bot.command("whoami", async (ctx) => {
 // OWNER COMMANDS
 // =====================
 
+// Sentry test command (owner-only)
+bot.command("sentry_test", async (ctx) => {
+  if (!isOwner(ctx)) return;
+  await ctx.reply("\u26a0\ufe0f Triggering Sentry test error...");
+  try {
+    // Intentional error to verify Sentry is working
+    Sentry.startSpan({ op: "test", name: "Sentry Test from /sentry_test" }, () => {
+      Sentry.logger.info("Owner triggered Sentry test", { userId: String(ctx.from.id) });
+      throw new Error("StarzAI Sentry Test - This is an intentional test error!");
+    });
+  } catch (e) {
+    Sentry.captureException(e);
+    await Sentry.flush(2000);
+    await ctx.reply("\u2705 Test error sent to Sentry! Check your Sentry dashboard.");
+  }
+});
+
 // Bot status command
 async function sendOwnerStatus(ctx) {
   const totalUsers = Object.keys(usersDb.users).length;
