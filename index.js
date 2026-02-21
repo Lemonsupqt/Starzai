@@ -269,8 +269,24 @@ const FEEDBACK_CHAT_ID = process.env.FEEDBACK_CHAT_ID || "";
 // Configurable assistant bot token — swap bots from Railway dashboard or at runtime via /atoken
 let ASSISTANT_BOT_TOKEN = process.env.ASSISTANT_BOT_TOKEN || "";
 const ASSISTANT_BOT_API = () => `https://api.telegram.org/bot${ASSISTANT_BOT_TOKEN}`;
+// Relay group: a private group where both StarzAI and the assistant bot are members
+// StarzAI sends messages here, OpenClaw responds here, StarzAI captures the response
+let ASSISTANT_RELAY_GROUP = process.env.ASSISTANT_RELAY_GROUP || "-1003846039567";
+// Track the assistant bot's user ID (resolved at startup)
+let ASSISTANT_BOT_ID = null;
 if (ASSISTANT_BOT_TOKEN) {
   console.log(`[Assistant] Starz Assistant bridge configured (token: ${ASSISTANT_BOT_TOKEN.slice(0, 10)}...)`);
+  console.log(`[Assistant] Relay group: ${ASSISTANT_RELAY_GROUP}`);
+  // Resolve assistant bot ID
+  fetch(`https://api.telegram.org/bot${ASSISTANT_BOT_TOKEN}/getMe`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        ASSISTANT_BOT_ID = data.result.id;
+        console.log(`[Assistant] Bot ID resolved: ${ASSISTANT_BOT_ID} (@${data.result.username})`);
+      }
+    })
+    .catch(e => console.error("[Assistant] Failed to resolve bot ID:", e.message));
 } else {
   console.log(`[Assistant] ASSISTANT_BOT_TOKEN not set — Starz Assistant bridge disabled`);
 }
@@ -2392,6 +2408,10 @@ const assistantResponseMessages = new Map();
 // Conversation history for assistant: `${userId}:${chatId}` -> [{role, content}]
 const assistantChatHistory = new Map();
 const ASSISTANT_HISTORY_MAX = 20; // max messages per conversation
+// Relay group pending: maps a unique requestId to { userId, chatId, statusMsgId, relayMsgId, timestamp, resolve }
+// When StarzAI sends a message to the relay group, it stores the context here.
+// When the assistant bot replies in the relay group, StarzAI matches it and resolves the pending promise.
+const assistantRelayPending = new Map();
 // Cleanup old assistant tracking entries every 30 minutes
 setInterval(() => {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -2400,6 +2420,9 @@ setInterval(() => {
   }
   for (const [key, val] of assistantPendingRequests) {
     if (val.timestamp < cutoff) assistantPendingRequests.delete(key);
+  }
+  for (const [key, val] of assistantRelayPending) {
+    if (val.timestamp < cutoff) assistantRelayPending.delete(key);
   }
 }, 30 * 60 * 1000);
 
@@ -14414,147 +14437,160 @@ function checkAssistantRateLimit(userId) {
   return true;
 }
 
-// Helper: send message to Starz Assistant bot via Telegram Bot API
-// The bridge works by sending a message to the assistant bot's own chat.
-// OpenClaw bots process messages sent to them and respond in the same chat.
-async function sendToAssistantBot(userMessage, userId) {
-  if (!ASSISTANT_BOT_TOKEN) return null;
-  try {
-    // Send the user's message to the assistant bot by forwarding via sendMessage
-    // We send to the assistant bot's own user (the bot itself processes incoming messages)
-    // OpenClaw bots respond to /start and direct messages in their chat
-    const response = await fetch(`${ASSISTANT_BOT_API()}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: userId, // Send to the user's chat with the assistant bot
-        text: userMessage,
-      }),
-    });
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    console.error("[Assistant] sendToAssistantBot error:", err.message);
-    return null;
-  }
-}
+// ═══ SHARED GROUP RELAY BRIDGE ═══
+// How it works:
+// 1. StarzAI sends the user's message to a private relay group (both bots are members)
+// 2. The message is tagged with a unique request ID so we can match responses
+// 3. OpenClaw (assistant bot) sees the message in the group and responds
+// 4. StarzAI's grammY handler sees the assistant bot's reply in the group
+// 5. StarzAI matches the reply to the pending request and resolves the promise
+// 6. The response is displayed to the user in their original chat
+//
+// Requirements:
+// - Both bots must be in the relay group
+// - Both bots must have privacy mode DISABLED (BotFather: /setprivacy → Disable)
+// - The relay group must be authorized (/allowgroup) or we bypass auth for it
 
-// Helper: get updates from assistant bot (poll for response)
-async function pollAssistantResponse(chatId, afterMessageId, maxWaitMs = 30000) {
-  if (!ASSISTANT_BOT_TOKEN) return null;
-  const startTime = Date.now();
-  const pollInterval = 1500; // 1.5 seconds between polls
-  
-  while (Date.now() - startTime < maxWaitMs) {
-    try {
-      const response = await fetch(`${ASSISTANT_BOT_API()}/getUpdates`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          offset: -10, // Get last 10 updates
-          timeout: 0,
-          allowed_updates: ["message"],
-        }),
-      });
-      const data = await response.json();
-      
-      if (data.ok && data.result) {
-        // Look for a response message from the assistant bot in this chat
-        // that was sent after our message
-        for (const update of data.result.reverse()) {
-          const msg = update.message;
-          if (
-            msg &&
-            String(msg.chat?.id) === String(chatId) &&
-            msg.from?.is_bot &&
-            msg.message_id > afterMessageId &&
-            msg.text
-          ) {
-            return msg.text;
-          }
-        }
-      }
-    } catch (err) {
-      console.error("[Assistant] pollAssistantResponse error:", err.message);
-    }
-    
-    // Wait before next poll
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-  }
-  
-  return null; // Timeout
-}
-
-// Helper: direct fetch approach - send message and wait for response via getUpdates
+// Helper: send message to relay group and wait for assistant's response
 async function queryAssistant(userMessage, userId, chatId) {
   if (!ASSISTANT_BOT_TOKEN) {
     return { success: false, error: "Assistant bot not configured. Set ASSISTANT_BOT_TOKEN in Railway." };
   }
+  if (!ASSISTANT_RELAY_GROUP) {
+    return { success: false, error: "Relay group not configured. Set ASSISTANT_RELAY_GROUP in Railway." };
+  }
+  
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   try {
-    // Step 1: Clear any pending updates first
-    try {
-      const clearResp = await fetch(`${ASSISTANT_BOT_API()}/getUpdates`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ offset: -1, timeout: 0 }),
+    // Step 1: Send the user's message to the relay group via StarzAI's own bot token
+    // We tag it with a request ID header so we can match the response
+    const relayMessage = `🔗 [${requestId}]\n👤 User ${userId}:\n\n${userMessage}`;
+    
+    const sendResp = await bot.api.sendMessage(ASSISTANT_RELAY_GROUP, relayMessage);
+    const relayMsgId = sendResp.message_id;
+    
+    console.log(`[Assistant] Sent to relay group: ${requestId} (msg ${relayMsgId})`);
+    
+    // Step 2: Create a promise that will be resolved when the assistant responds
+    // The grammY message handler for the relay group will resolve this
+    const responsePromise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        assistantRelayPending.delete(requestId);
+        resolve(null); // Timeout
+      }, 90000); // 90 second timeout for complex requests
+      
+      assistantRelayPending.set(requestId, {
+        userId: String(userId),
+        chatId,
+        relayMsgId,
+        timestamp: Date.now(),
+        resolve: (text) => {
+          clearTimeout(timeout);
+          assistantRelayPending.delete(requestId);
+          resolve(text);
+        },
       });
-      const clearData = await clearResp.json();
-      // If there are updates, acknowledge them
-      if (clearData.ok && clearData.result?.length > 0) {
-        const lastUpdateId = clearData.result[clearData.result.length - 1].update_id;
-        await fetch(`${ASSISTANT_BOT_API()}/getUpdates`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ offset: lastUpdateId + 1, timeout: 0 }),
-        });
-      }
-    } catch (e) {
-      // Ignore clear errors
-    }
-    
-    // Step 2: Send message to the assistant bot
-    // The user needs to have started the assistant bot at least once
-    const sendResp = await fetch(`${ASSISTANT_BOT_API()}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: String(userId),
-        text: userMessage,
-      }),
     });
-    const sendData = await sendResp.json();
     
-    if (!sendData.ok) {
-      // If the user hasn't started the assistant bot, we get a 403
-      if (sendData.description?.includes("bot was blocked") || sendData.description?.includes("chat not found") || sendData.description?.includes("Forbidden")) {
-        return {
-          success: false,
-          error: "You need to start the Starz Assistant bot first! Tap the link below, press START, then try /sa again.",
-          needsStart: true,
-        };
-      }
-      return { success: false, error: `Failed to send: ${sendData.description || "Unknown error"}` };
-    }
-    
-    const sentMsgId = sendData.result?.message_id;
-    
-    // Step 3: Poll for the assistant's response
-    const responseText = await pollAssistantResponse(userId, sentMsgId, 45000);
+    // Step 3: Wait for the response
+    const responseText = await responsePromise;
     
     if (!responseText) {
       return {
         success: false,
-        error: "Starz Assistant didn't respond in time. It may be processing a complex request. Try again in a moment.",
+        error: "Starz Assistant didn't respond in time (90s). It may be processing a complex request, or the relay group isn't set up correctly.\n\nMake sure:\n• Both bots are in the relay group\n• Privacy mode is DISABLED for both bots\n• The assistant bot is online",
       };
     }
     
     return { success: true, response: responseText };
   } catch (err) {
     console.error("[Assistant] queryAssistant error:", err);
+    assistantRelayPending.delete(requestId);
+    
+    if (err.description?.includes("chat not found") || err.description?.includes("Forbidden")) {
+      return {
+        success: false,
+        error: `StarzAI can't send to the relay group (${ASSISTANT_RELAY_GROUP}). Make sure StarzAI is a member of the group.`,
+      };
+    }
     return { success: false, error: `Bridge error: ${err.message}` };
   }
 }
+
+// ═══ RELAY GROUP LISTENER ═══
+// This handler watches the relay group for messages from the assistant bot.
+// When the assistant bot replies to a tagged message, we match it to a pending request.
+bot.on("message:text", async (ctx, next) => {
+  const chat = ctx.chat;
+  const msg = ctx.message;
+  const from = msg?.from;
+  
+  // Only process messages in the relay group
+  if (String(chat?.id) !== String(ASSISTANT_RELAY_GROUP)) {
+    return next();
+  }
+  
+  // Only process messages from the assistant bot
+  if (!from?.is_bot || !ASSISTANT_BOT_ID || from.id !== ASSISTANT_BOT_ID) {
+    return next();
+  }
+  
+  const text = msg.text || "";
+  const replyTo = msg.reply_to_message;
+  
+  console.log(`[Assistant Relay] Got message from assistant bot in relay group: "${text.slice(0, 80)}"`);
+  
+  // Strategy 1: The assistant bot replies to our tagged message
+  if (replyTo?.text) {
+    const tagMatch = replyTo.text.match(/🔗 \[(req_[^\]]+)\]/);
+    if (tagMatch) {
+      const requestId = tagMatch[1];
+      const pending = assistantRelayPending.get(requestId);
+      if (pending) {
+        console.log(`[Assistant Relay] Matched response to ${requestId}`);
+        pending.resolve(text);
+        return; // Don't pass to other handlers
+      }
+    }
+  }
+  
+  // Strategy 2: The assistant bot sends a message (not a reply) — match to the most recent pending request
+  // This handles cases where OpenClaw doesn't reply-to but just sends a new message
+  if (!replyTo && assistantRelayPending.size > 0) {
+    // Find the most recent pending request
+    let mostRecent = null;
+    let mostRecentTime = 0;
+    for (const [reqId, pending] of assistantRelayPending) {
+      if (pending.timestamp > mostRecentTime) {
+        mostRecentTime = pending.timestamp;
+        mostRecent = { reqId, pending };
+      }
+    }
+    if (mostRecent) {
+      console.log(`[Assistant Relay] Matched non-reply response to ${mostRecent.reqId}`);
+      mostRecent.pending.resolve(text);
+      return;
+    }
+  }
+  
+  // Strategy 3: Match by proximity — if the assistant replies to any message,
+  // check if the replied-to message is close to a pending relay message
+  if (replyTo && assistantRelayPending.size > 0) {
+    for (const [reqId, pending] of assistantRelayPending) {
+      // If the reply is to a message near our relay message (within 5 message IDs)
+      if (Math.abs(replyTo.message_id - pending.relayMsgId) <= 5) {
+        console.log(`[Assistant Relay] Proximity-matched response to ${reqId}`);
+        pending.resolve(text);
+        return;
+      }
+    }
+  }
+  
+  // Not matched to any pending request — ignore
+  console.log(`[Assistant Relay] Unmatched assistant message in relay group (no pending request)`);
+  return; // Don't pass relay group messages to the main handler
+});
 
 // ─── /sa <message> — One-time request to Starz Assistant ───
 bot.command("sa", async (ctx) => {
@@ -14605,7 +14641,7 @@ bot.command("sa", async (ctx) => {
   // Send processing status
   const statusMsg = await ctx.reply(
     "🤖 <b>Starz Assistant</b> is thinking...\n\n" +
-    "<i>⏳ This may take up to 45 seconds for complex requests.</i>",
+    "<i>⏳ This may take up to 90 seconds for complex requests.</i>",
     { parse_mode: "HTML", reply_to_message_id: msgId }
   );
   
@@ -14623,33 +14659,6 @@ bot.command("sa", async (ctx) => {
     
     if (!result.success) {
       let errorMsg = `❌ <b>Starz Assistant Error</b>\n\n${escapeHTML(result.error)}`;
-      
-      // If user needs to start the assistant bot, show a link
-      if (result.needsStart) {
-        // Get assistant bot username
-        try {
-          const meResp = await fetch(`${ASSISTANT_BOT_API()}/getMe`);
-          const meData = await meResp.json();
-          if (meData.ok && meData.result?.username) {
-            const kb = new InlineKeyboard().url(
-              "🤖 Start Starz Assistant",
-              `https://t.me/${meData.result.username}?start=bridge`
-            );
-            await ctx.api.editMessageText(
-              chatId,
-              statusMsg.message_id,
-              "🤖 <b>First-time Setup Required</b>\n\n" +
-              "You need to start the Starz Assistant bot first.\n" +
-              "Tap the button below, press START, then come back and try <code>/sa</code> again.",
-              { parse_mode: "HTML", reply_markup: kb }
-            );
-            return;
-          }
-        } catch (e) {
-          // Fall through to generic error
-        }
-      }
-      
       await ctx.api.editMessageText(chatId, statusMsg.message_id, errorMsg, {
         parse_mode: "HTML",
       });
@@ -14826,6 +14835,7 @@ bot.command("atoken", async (ctx) => {
     
     const botInfo = testData.result;
     ASSISTANT_BOT_TOKEN = newToken;
+    ASSISTANT_BOT_ID = botInfo.id;
     
     await ctx.reply(
       `✅ *Assistant bot switched!*\n\n` +
@@ -14880,8 +14890,9 @@ bot.command("astatus", async (ctx) => {
       `🆔 *ID:* \`${botInfo.id}\`\n` +
       `👤 *Name:* ${botInfo.first_name}\n\n` +
       `*Agent Access:*\n${allowedList}\n\n` +
+      `*Relay Group:* \`${ASSISTANT_RELAY_GROUP}\`\n` +
       `*Rate Limit:* ${ASSISTANT_RATE_LIMIT}/min per user\n` +
-      `*Pending Requests:* ${assistantPendingRequests.size}`,
+      `*Pending Relay:* ${assistantRelayPending.size}`,
       { parse_mode: "Markdown" }
     );
   } catch (err) {
@@ -21421,24 +21432,6 @@ bot.on("message:text", async (ctx) => {
         
         if (!result.success) {
           let errorMsg = `❌ <b>Starz Assistant Error</b>\n\n${escapeHTML(result.error)}`;
-          if (result.needsStart) {
-            try {
-              const meResp = await fetch(`${ASSISTANT_BOT_API()}/getMe`);
-              const meData = await meResp.json();
-              if (meData.ok && meData.result?.username) {
-                const kb = new InlineKeyboard().url(
-                  "🤖 Start Starz Assistant",
-                  `https://t.me/${meData.result.username}?start=bridge`
-                );
-                await ctx.api.editMessageText(
-                  chat.id, statusMsg.message_id,
-                  "🤖 <b>First-time Setup</b>\n\nStart the Starz Assistant bot first, then try again.",
-                  { parse_mode: "HTML", reply_markup: kb }
-                );
-                return;
-              }
-            } catch (e) { /* fall through */ }
-          }
           await ctx.api.editMessageText(chat.id, statusMsg.message_id, errorMsg, { parse_mode: "HTML" });
         } else {
           const responseText = result.response.slice(0, 3800);
