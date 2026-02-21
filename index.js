@@ -14540,117 +14540,111 @@ bot.command("sa", async (ctx) => {
     });
   }
   
-  if (!ASSISTANT_BOT_TOKEN) {
-    return ctx.reply("⚠️ Starz Assistant is not configured yet.\n\nThe owner needs to set `ASSISTANT_BOT_TOKEN` in Railway.", {
-      parse_mode: "Markdown",
-      reply_to_message_id: msgId,
-    });
-  }
-  
+  const botUsername = ASSISTANT_BOT_USERNAME || "Starz_assistant_bot";
   const userMessage = (ctx.message?.text || "").replace(/^\/sa\s*/i, "").trim();
+  
   if (!userMessage) {
+    // No message — show help with deep link to assistant
+    const kb = new InlineKeyboard()
+      .url("🤖 Open Starz Assistant", `https://t.me/${botUsername}`)
+      .row()
+      .url("💬 Chat in Group", `https://t.me/${botUsername}`);
+    
     return ctx.reply(
       "🤖 *Starz Assistant*\n\n" +
-      "Send a message to the AI Assistant powered by OpenClaw.\n\n" +
-      "*Usage:* `/sa your message here`\n" +
-      "*Reply:* Reply to any Assistant message to continue the conversation\n\n" +
-      "_Examples:_\n" +
-      "• `/sa What's the latest AI news?`\n" +
-      "• `/sa Help me write a Python script`\n" +
-      "• `/sa Search for the best restaurants in Tokyo`",
-      { parse_mode: "Markdown", reply_to_message_id: msgId }
+      "Your AI Assistant powered by OpenClaw × Kimi K2.5\n\n" +
+      "*How to use:*\n" +
+      "• `/sa your message` — Quick link with your message\n" +
+      "• Tap the button below to open the Assistant directly\n\n" +
+      "*Capabilities:*\n" +
+      "• 🌐 Web search & real-time data\n" +
+      "• 💻 Code execution & file ops\n" +
+      "• 🔍 Deep research & analysis\n" +
+      "• ⏰ Scheduled tasks & reminders\n\n" +
+      "_Chat directly with the Assistant for the best experience._",
+      { parse_mode: "Markdown", reply_to_message_id: msgId, reply_markup: kb }
     );
-  }
-  
-  // Rate limit check
-  if (!checkAssistantRateLimit(userId)) {
-    return ctx.reply("⏳ Rate limit reached (10/min). Please wait a moment.", {
-      reply_to_message_id: msgId,
-    });
   }
   
   // Log the request
   console.log(`[Assistant] /sa from ${userId}: "${userMessage.slice(0, 80)}"`);
   
-  // Send processing status
+  // Encode the message for deep link (Telegram deep links support start parameter)
+  // For long messages, we use a direct link + show the message to copy
+  const encodedMsg = encodeURIComponent(userMessage).slice(0, 256);
+  const deepLink = `https://t.me/${botUsername}`;
+  
+  const kb = new InlineKeyboard()
+    .url("🤖 Open Starz Assistant", deepLink);
+  
+  // Also queue for the polling bridge (if Kimi Claw's cron is running, it'll work automatically)
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  assistantQueue.set(requestId, {
+    req_id: requestId,
+    user_id: String(userId),
+    message: userMessage,
+    timestamp: Date.now(),
+    status: "pending",
+  });
+  
+  // Set up callback listener (if polling bridge delivers, we'll edit this message)
+  const responsePromise = new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      assistantRelayPending.delete(requestId);
+      assistantQueue.delete(requestId);
+      resolve(null);
+    }, 120000);
+    
+    assistantRelayPending.set(requestId, {
+      userId: String(userId),
+      chatId,
+      timestamp: Date.now(),
+      resolve: (text) => {
+        clearTimeout(timeout);
+        assistantRelayPending.delete(requestId);
+        assistantQueue.delete(requestId);
+        resolve(text);
+      },
+    });
+  });
+  
+  // Send the deep link message immediately
   const statusMsg = await ctx.reply(
-    "🤖 <b>Starz Assistant</b> is thinking...\n\n" +
-    "<i>⏳ This may take up to 2 minutes for complex requests.</i>",
-    { parse_mode: "HTML", reply_to_message_id: msgId }
+    `🤖 <b>Starz Assistant</b>\n\n` +
+    `📋 <b>Your message:</b>\n<i>${escapeHTML(userMessage.slice(0, 300))}</i>\n\n` +
+    `👇 Tap below to chat with the Assistant directly.\n` +
+    `<i>Copy your message above and paste it in the chat.</i>`,
+    { parse_mode: "HTML", reply_to_message_id: msgId, reply_markup: kb }
   );
   
-  // Keep typing indicator
-  let typingActive = true;
-  const typingInterval = setInterval(() => {
-    if (typingActive) ctx.replyWithChatAction("typing").catch(() => {});
-  }, 4000);
-  await ctx.replyWithChatAction("typing");
+  // Track for reply-to-continue
+  assistantResponseMessages.set(`${chatId}:${statusMsg.message_id}`, {
+    chatId,
+    userId: String(userId),
+    timestamp: Date.now(),
+  });
   
-  try {
-    const result = await queryAssistant(userMessage, userId, chatId);
-    typingActive = false;
-    clearInterval(typingInterval);
-    
-    if (!result.success) {
-      let errorMsg = `❌ <b>Starz Assistant Error</b>\n\n${escapeHTML(result.error)}`;
-      await ctx.api.editMessageText(chatId, statusMsg.message_id, errorMsg, {
-        parse_mode: "HTML",
-      });
-      return;
-    }
-    
-    // Format and send the response
-    const responseText = result.response.slice(0, 3800); // Telegram limit safety
-    const formattedResponse = convertToTelegramHTML(responseText);
-    
-    const finalMsg = `🤖 <b>Starz Assistant</b>\n\n${formattedResponse}`;
+  // Background: wait for polling bridge callback (if it comes, update the message)
+  responsePromise.then(async (responseText) => {
+    if (!responseText) return; // Timed out, no bridge response — deep link already shown
     
     try {
+      const formattedResponse = convertToTelegramHTML(responseText.slice(0, 3800));
+      const finalMsg = `🤖 <b>Starz Assistant</b>\n\n${formattedResponse}`;
+      
       await ctx.api.editMessageText(chatId, statusMsg.message_id, finalMsg, {
         parse_mode: "HTML",
         disable_web_page_preview: true,
       });
-    } catch (editErr) {
-      // If edit fails, send as new message
-      const sentMsg = await ctx.reply(finalMsg, {
-        parse_mode: "HTML",
-        reply_to_message_id: msgId,
-        disable_web_page_preview: true,
-      });
-      // Track this message for reply-to-continue
-      assistantResponseMessages.set(`${chatId}:${sentMsg.message_id}`, {
-        chatId,
-        userId: String(userId),
-        timestamp: Date.now(),
-      });
-      return;
+      
+      trackUsage(userId, "message");
+      console.log(`[Assistant] Bridge response delivered for ${requestId}`);
+    } catch (err) {
+      console.error(`[Assistant] Failed to edit with bridge response: ${err.message}`);
     }
-    
-    // Track the edited status message for reply-to-continue
-    assistantResponseMessages.set(`${chatId}:${statusMsg.message_id}`, {
-      chatId,
-      userId: String(userId),
-      timestamp: Date.now(),
-    });
-    
-    // Track usage
-    trackUsage(userId, "message");
-    
-  } catch (err) {
-    typingActive = false;
-    clearInterval(typingInterval);
-    console.error("[Assistant] /sa error:", err);
-    try {
-      await ctx.api.editMessageText(
-        chatId,
-        statusMsg.message_id,
-        "❌ <b>Starz Assistant Error</b>\n\nSomething went wrong. Please try again.",
-        { parse_mode: "HTML" }
-      );
-    } catch (e) {
-      // Ignore
-    }
-  }
+  }).catch(() => {});
+  
+  trackUsage(userId, "message");
 });
 
 // ─── /aa <userId> — Agent Allow (grant assistant access) ───
@@ -18274,40 +18268,20 @@ bot.callbackQuery("assistant_toggle", async (ctx) => {
     return ctx.answerCallbackQuery({ text: "No access", show_alert: true });
   }
   
-  const current = assistantModeActive.get(userId);
-  if (current) {
-    assistantModeActive.delete(userId);
-    await ctx.answerCallbackQuery({ text: "\ud83d\udd34 Assistant Mode OFF", show_alert: false });
-  } else {
-    assistantModeActive.set(userId, true);
-    // Deactivate partner and character modes to avoid conflicts
-    const partner = getPartner(ctx.from.id);
-    if (partner?.active) {
-      setPartner(ctx.from.id, { active: false });
-    }
-    await ctx.answerCallbackQuery({ text: "\ud83d\udfe2 Assistant Mode ON", show_alert: false });
-  }
+  await ctx.answerCallbackQuery();
   
-  // Refresh the assistant menu
-  const isActive = assistantModeActive.get(userId);
-  const statusLine = isActive
-    ? "\u2705 *Assistant Mode: ACTIVE*\n_All your DM messages will be routed to Starz Assistant_"
-    : "\u26aa *Assistant Mode: OFF*";
+  const botUsername = ASSISTANT_BOT_USERNAME || "Starz_assistant_bot";
   
   const helpText = [
-    "\ud83e\udd16 *Starz Assistant*",
+    "🤖 *Starz Assistant*",
     "",
-    statusLine,
+    "Your AI Assistant powered by OpenClaw \u00d7 Kimi K2.5",
     "",
     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
     "",
-    "*Quick Command:*",
-    "\u2022 `/sa your message` \u2014 One-time request",
-    "\u2022 Reply to any \ud83e\udd16 message to continue",
-    "",
-    "*Assistant Mode:*",
-    "When ON, all your DM messages go to the Assistant.",
-    "Use `/default` or tap the button to turn it off.",
+    "*How to use:*",
+    "\u2022 `/sa your message` \u2014 Quick link with your message",
+    "\u2022 Tap the button below to open the Assistant directly",
     "",
     "*Capabilities:*",
     "\u2022 \ud83c\udf10 Web search & real-time data",
@@ -18315,16 +18289,13 @@ bot.callbackQuery("assistant_toggle", async (ctx) => {
     "\u2022 \ud83d\udd0d Deep research & analysis",
     "\u2022 \u23f0 Scheduled tasks & reminders",
     "",
-    "_Powered by OpenClaw \u00d7 Kimi K2.5_",
+    "_Chat directly with the Assistant for the best experience._",
   ].join("\n");
   
-  const kb = new InlineKeyboard();
-  if (isActive) {
-    kb.text("\ud83d\udd34 Turn OFF Assistant Mode", "assistant_toggle");
-  } else {
-    kb.text("\ud83d\udfe2 Turn ON Assistant Mode", "assistant_toggle");
-  }
-  kb.row().text("\u00ab Back to Menu", "menu_back");
+  const kb = new InlineKeyboard()
+    .url("🤖 Open Starz Assistant", `https://t.me/${botUsername}`)
+    .row()
+    .text("\u00ab Back to Menu", "menu_back");
   
   try {
     await ctx.editMessageText(helpText, {
@@ -21339,74 +21310,76 @@ bot.on("message:text", async (ctx) => {
     ASSISTANT_BOT_TOKEN;
   
   if (isReplyToAssistant || isAssistantModeActive) {
-    // Route this message to Starz Assistant
+    // Route this message to Starz Assistant via deep link + background polling bridge
     if (!hasAgentAccess(u.id)) {
       // Shouldn't happen, but safety check
-    } else if (!ASSISTANT_BOT_TOKEN) {
-      await ctx.reply("⚠️ Starz Assistant is not configured.", { reply_to_message_id: messageId });
-    } else if (!checkAssistantRateLimit(u.id)) {
-      await ctx.reply("⏳ Rate limit reached (10/min). Please wait.", { reply_to_message_id: messageId });
     } else {
       console.log(`[Assistant] ${isReplyToAssistant ? "Reply-to-continue" : "Assistant mode"} from ${u.id}: "${text.slice(0, 80)}"`);
       
+      const botUsername = ASSISTANT_BOT_USERNAME || "Starz_assistant_bot";
+      const deepLink = `https://t.me/${botUsername}`;
+      const kb = new InlineKeyboard().url("🤖 Open Starz Assistant", deepLink);
+      
+      // Queue for polling bridge (background)
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      assistantQueue.set(requestId, {
+        req_id: requestId,
+        user_id: String(u.id),
+        message: text,
+        timestamp: Date.now(),
+        status: "pending",
+      });
+      
+      // Set up callback listener
+      const responsePromise = new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          assistantRelayPending.delete(requestId);
+          assistantQueue.delete(requestId);
+          resolve(null);
+        }, 120000);
+        
+        assistantRelayPending.set(requestId, {
+          userId: String(u.id),
+          chatId: chat.id,
+          timestamp: Date.now(),
+          resolve: (respText) => {
+            clearTimeout(timeout);
+            assistantRelayPending.delete(requestId);
+            assistantQueue.delete(requestId);
+            resolve(respText);
+          },
+        });
+      });
+      
+      // Send deep link immediately
       const statusMsg = await ctx.reply(
-        "🤖 <b>Starz Assistant</b> is thinking...",
-        { parse_mode: "HTML", reply_to_message_id: messageId }
+        `🤖 <b>Starz Assistant</b>\n\n` +
+        `📋 <b>Your message:</b>\n<i>${escapeHTML(text.slice(0, 300))}</i>\n\n` +
+        `👇 Tap below to chat with the Assistant directly.`,
+        { parse_mode: "HTML", reply_to_message_id: messageId, reply_markup: kb }
       );
       
-      let typingActive = true;
-      const typingInterval = setInterval(() => {
-        if (typingActive) ctx.replyWithChatAction("typing").catch(() => {});
-      }, 4000);
-      await ctx.replyWithChatAction("typing");
+      assistantResponseMessages.set(`${chat.id}:${statusMsg.message_id}`, {
+        chatId: chat.id, userId: String(u.id), timestamp: Date.now(),
+      });
       
-      try {
-        const result = await queryAssistant(text, u.id, chat.id);
-        typingActive = false;
-        clearInterval(typingInterval);
-        
-        if (!result.success) {
-          let errorMsg = `❌ <b>Starz Assistant Error</b>\n\n${escapeHTML(result.error)}`;
-          await ctx.api.editMessageText(chat.id, statusMsg.message_id, errorMsg, { parse_mode: "HTML" });
-        } else {
-          const responseText = result.response.slice(0, 3800);
-          const formattedResponse = convertToTelegramHTML(responseText);
+      // Background: if polling bridge delivers, update the message
+      responsePromise.then(async (responseText) => {
+        if (!responseText) return;
+        try {
+          const formattedResponse = convertToTelegramHTML(responseText.slice(0, 3800));
           const finalMsg = `🤖 <b>Starz Assistant</b>\n\n${formattedResponse}`;
-          
-          try {
-            await ctx.api.editMessageText(chat.id, statusMsg.message_id, finalMsg, {
-              parse_mode: "HTML",
-              disable_web_page_preview: true,
-            });
-          } catch (editErr) {
-            const sentMsg = await ctx.reply(finalMsg, {
-              parse_mode: "HTML",
-              reply_to_message_id: messageId,
-              disable_web_page_preview: true,
-            });
-            assistantResponseMessages.set(`${chat.id}:${sentMsg.message_id}`, {
-              chatId: chat.id, userId: String(u.id), timestamp: Date.now(),
-            });
-            return;
-          }
-          
-          assistantResponseMessages.set(`${chat.id}:${statusMsg.message_id}`, {
-            chatId: chat.id, userId: String(u.id), timestamp: Date.now(),
+          await ctx.api.editMessageText(chat.id, statusMsg.message_id, finalMsg, {
+            parse_mode: "HTML", disable_web_page_preview: true,
           });
           trackUsage(u.id, "message");
+          console.log(`[Assistant] Bridge response delivered for ${requestId}`);
+        } catch (err) {
+          console.error(`[Assistant] Failed to edit with bridge response: ${err.message}`);
         }
-      } catch (err) {
-        typingActive = false;
-        clearInterval(typingInterval);
-        console.error("[Assistant] Reply/mode error:", err);
-        try {
-          await ctx.api.editMessageText(
-            chat.id, statusMsg.message_id,
-            "❌ <b>Starz Assistant Error</b>\n\nSomething went wrong.",
-            { parse_mode: "HTML" }
-          );
-        } catch (e) { /* ignore */ }
-      }
+      }).catch(() => {});
+      
+      trackUsage(u.id, "message");
     }
     return; // Don't process through normal AI pipeline
   }
